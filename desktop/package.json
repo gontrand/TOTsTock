@@ -3,7 +3,10 @@
   "version": "5.5.0",
   "private": true,
   "description": "Application de bureau TOT Stock (Windows, macOS, Linux) avec impression silencieuse d'étiquettes",
-  "author": "TOT Inventory & Scan Edition",
+  "author": {
+    "name": "TOT Inventory & Scan Edition",
+    "email": "noreply@users.noreply.github.com"
+  },
   "license": "UNLICENSED",
   "type": "module",
   "main": "main.mjs",
@@ -24,5 +27,6 @@
   "devDependencies": {
     "electron": "^35.1.5",
     "electron-builder": "^26.0.12"
-  }
+  },
+  "homepage": "https://github.com/gontrand/TOTsTock"
 }
