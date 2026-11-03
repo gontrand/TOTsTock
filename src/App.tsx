@@ -47,8 +47,11 @@ import { MaterialOrdersModal } from './components/MaterialOrdersModal';
 import { OrdersPreparationModal } from './components/OrdersPreparationModal';
 import { ScannerPickingMode } from './components/ScannerPickingMode';
 import { LoginWelcomeScreen } from './components/LoginWelcomeScreen';
+import { useLayoutMode } from './hooks/useLayoutMode';
+import { DesktopWorkspace } from './desktop/DesktopWorkspace';
 
 const MainLayout: React.FC = () => {
+  const layoutMode = useLayoutMode();
   useEffect(() => {
     setupGlobalHapticFeedback();
   }, []);
@@ -146,6 +149,10 @@ const MainLayout: React.FC = () => {
       setCheckingCompat(false);
     }
   };
+
+  if (layoutMode === 'desktop' && currentUser && !isBlockedByCompat) {
+    return <DesktopWorkspace />;
+  }
 
   return (
     <div className="min-h-screen w-full max-w-full bg-slate-200/80 dark:bg-[#0b1120] flex justify-center items-center overflow-x-hidden overflow-y-hidden transition-colors duration-200">

@@ -293,4 +293,21 @@ button > svg.lucide:not(.absolute) {
     page-break-before: always !important;
     break-before: page !important;
   }
+
+  /* Desktop Shell print cleanup (Inventory Table & Order Sheet) */
+  aside,
+  .desktop-sidebar,
+  .desktop-topbar {
+    display: none !important;
+  }
+
+  .desktop-printable-order-sheet,
+  main {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    width: 100% !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
 }

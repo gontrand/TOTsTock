@@ -3,6 +3,10 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { formatCurrency } from '../utils/crypto';
 import {
+  buildClosedDepotNamesSet,
+  filterInventoryProducts,
+} from '../services/desktopInventoryLogic';
+import {
   QrCode,
   Search,
   Plus,
@@ -64,13 +68,9 @@ export const InventoryView: React.FC = () => {
   const canInventoryAudit = userHasPermission('perm_menu_inventory_audit');
   const canFilters = userHasPermission('perm_inv_filters') || userHasPermission('perm_prod_view');
 
-  // Closed / Inactive depots
+  // Closed / Inactive depots (shared logic)
   const closedDepotNames = useMemo(() => {
-    return new Set(
-      depots
-        .filter((d) => d.is_active === false)
-        .map((d) => (d.name || '').toLowerCase().trim())
-    );
+    return buildClosedDepotNamesSet(depots);
   }, [depots]);
 
   const closedDepotsList = useMemo(() => {
@@ -107,64 +107,23 @@ export const InventoryView: React.FC = () => {
 
   // Filtered Products: lambda users NEVER see products from closed depots!
   const filteredProducts = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    const rq = roomQuery.toLowerCase().trim();
-    const sq = shelfQuery.toLowerCase().trim();
-
-    return products
-      .filter((p) => {
-        const storeNameTrimmed = (p.store_name || '').toLowerCase().trim();
-        const isDepotClosed = Boolean(p.store_name && closedDepotNames.has(storeNameTrimmed));
-
-        // CRITICAL REQUIREMENT:
-        // Tools of closed depots are unavailable in search for lambda users!
-        if (isLambdaUser && isDepotClosed) {
-          return false;
-        }
-
-        // For managers: respect the toggle if they choose to hide closed depots
-        if (!isLambdaUser && isDepotClosed && !includeClosedDepots) {
-          return false;
-        }
-
-        const qty = p.quantity || 0;
-        const min = p.min_stock_alert || 2;
-
-        // Stock status
-        if (stockStatus === 'LOW' && (qty <= 0 || qty > min)) return false;
-        if (stockStatus === 'OUT' && qty > 0) return false;
-
-        // Subcategory
-        if (selectedSubCat && String(p.sub_category_id) !== selectedSubCat) return false;
-
-        // Store
-        if (selectedStore && p.store_name !== selectedStore) return false;
-
-        // Supplier
-        if (
-          selectedSupplier &&
-          p.supplier_1_name !== selectedSupplier &&
-          p.supplier_2_name !== selectedSupplier
-        )
-          return false;
-
-        // Room / Shelf
-        if (rq && (!p.room_name || !p.room_name.toLowerCase().includes(rq))) return false;
-        if (sq && (!p.shelf_name || !p.shelf_name.toLowerCase().includes(sq))) return false;
-
-        // Main text query
-        if (q) {
-          const matchRef = p.reference.toLowerCase().includes(q);
-          const matchBrand = p.brand.toLowerCase().includes(q);
-          const matchModel = p.model.toLowerCase().includes(q);
-          const matchOem = p.manufacturer_ref?.toLowerCase().includes(q);
-          const matchTags = p.tags?.toLowerCase().includes(q);
-          if (!matchRef && !matchBrand && !matchModel && !matchOem && !matchTags) return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => `${a.brand} ${a.model}`.localeCompare(`${b.brand} ${b.model}`, 'fr'));
+    return filterInventoryProducts(
+      products,
+      {
+        searchQuery,
+        stockStatus,
+        selectedSubCat,
+        selectedStore,
+        selectedSupplier,
+        roomQuery,
+        shelfQuery,
+      },
+      {
+        isLambdaUser,
+        includeClosedDepots,
+        closedDepotNames,
+      }
+    ).sort((a, b) => `${a.brand} ${a.model}`.localeCompare(`${b.brand} ${b.model}`, 'fr'));
   }, [
     products,
     searchQuery,

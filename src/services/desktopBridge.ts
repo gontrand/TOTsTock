@@ -1,3 +1,5 @@
+import { ZplDpi, ZplFormatMm } from './zplLabel';
+
 export type DesktopPlatform = 'win32' | 'darwin' | 'linux';
 
 export interface DesktopPrinterInfo {
@@ -28,12 +30,67 @@ export interface DesktopPrintSettings {
   silent: boolean;
 }
 
+export type ZplTransportMode = 'tcp' | 'raw_queue';
+
+export interface DesktopZplSettings {
+  enabled: boolean;
+  transport: ZplTransportMode;
+  host: string;
+  port: number;
+  rawPrinterName: string;
+  format: ZplFormatMm;
+  dpi: ZplDpi;
+  offsetXMm: number;
+  offsetYMm: number;
+  speed: number;
+  darkness: number;
+}
+
+export interface DesktopSystemSettings {
+  keepInTrayOnClose: boolean;
+  launchAtLogin: boolean;
+  notificationsEnabled: boolean;
+  notifyOrdersWaitingApproval: boolean;
+  notifyOrdersPendingPrep: boolean;
+  notifyPrintJobFailed: boolean;
+  notifyStockAlerts: boolean;
+  printQueuePaused: boolean;
+}
+
 export interface DesktopUpdateStatus {
   enabled: boolean;
   state: 'idle' | 'checking' | 'downloading' | 'not-available' | 'downloaded' | 'error';
   version: string | null;
   error: string | null;
 }
+
+export interface DesktopNotificationPayload {
+  title: string;
+  body: string;
+  route?: string;
+  dedupeKey?: string;
+}
+
+export type DesktopMenuCommandId =
+  | 'new-product'
+  | 'new-order'
+  | 'new-movement'
+  | 'import-csv'
+  | 'export-csv'
+  | 'print-labels'
+  | 'focus-search'
+  | 'command-palette'
+  | 'nav-dashboard'
+  | 'nav-inventory'
+  | 'nav-movements'
+  | 'nav-orders'
+  | 'nav-preparation'
+  | 'nav-print-station'
+  | 'nav-settings'
+  | 'open-shortcuts'
+  | 'open-docs'
+  | 'open-about'
+  | 'toggle-print-pause';
 
 export interface TotDesktopBridge {
   readonly isDesktop: true;
@@ -48,6 +105,37 @@ export interface TotDesktopBridge {
   getUpdateStatus?: () => Promise<DesktopUpdateStatus>;
   quitAndInstallUpdate?: () => Promise<{ ok: boolean; errorMessage?: string }>;
   onUpdateStatus?: (callback: (status: DesktopUpdateStatus) => void) => () => void;
+  // Lot 3 & Lot 4 additions
+  printZplRaw?: (params: {
+    zpl: string;
+    transport?: ZplTransportMode;
+    host?: string;
+    port?: number;
+    rawPrinterName?: string;
+  }) => Promise<DesktopPrintResult>;
+  testZplPrinter?: (params: {
+    host: string;
+    port: number;
+  }) => Promise<{ ok: boolean; latencyMs?: number; errorMessage?: string }>;
+  getZplSettings?: () => Promise<DesktopZplSettings>;
+  setZplSettings?: (
+    settings: Partial<DesktopZplSettings>
+  ) => Promise<{ ok: boolean; settings?: DesktopZplSettings }>;
+  getSystemSettings?: () => Promise<DesktopSystemSettings>;
+  setSystemSettings?: (
+    settings: Partial<DesktopSystemSettings>
+  ) => Promise<{ ok: boolean; settings?: DesktopSystemSettings }>;
+  showNotification?: (
+    payload: DesktopNotificationPayload
+  ) => Promise<{ ok: boolean; errorMessage?: string }>;
+  openSecondaryWindow?: (route?: string) => Promise<{ ok: boolean; errorMessage?: string }>;
+  updateTrayStatus?: (status: {
+    pendingJobsCount: number;
+    paused: boolean;
+  }) => Promise<{ ok: boolean }>;
+  setMenuLocale?: (locale: 'fr' | 'en' | 'nl') => Promise<{ ok: boolean }>;
+  onMenuCommand?: (callback: (command: DesktopMenuCommandId) => void) => () => void;
+  onNavigateRoute?: (callback: (route: string) => void) => () => void;
 }
 
 declare global {
@@ -56,12 +144,41 @@ declare global {
   }
 }
 
+export const DEFAULT_DESKTOP_ZPL_SETTINGS: DesktopZplSettings = {
+  enabled: false,
+  transport: 'tcp',
+  host: '192.168.1.50',
+  port: 9100,
+  rawPrinterName: '',
+  format: '50x30',
+  dpi: 203,
+  offsetXMm: 0,
+  offsetYMm: 0,
+  speed: 4,
+  darkness: 15,
+};
+
+export const DEFAULT_DESKTOP_SYSTEM_SETTINGS: DesktopSystemSettings = {
+  keepInTrayOnClose: false,
+  launchAtLogin: false,
+  notificationsEnabled: false,
+  notifyOrdersWaitingApproval: true,
+  notifyOrdersPendingPrep: true,
+  notifyPrintJobFailed: true,
+  notifyStockAlerts: true,
+  printQueuePaused: false,
+};
+
 function getBridge(): TotDesktopBridge | null {
   const winObj: { totDesktop?: TotDesktopBridge } | undefined =
     typeof window !== 'undefined'
       ? window
-      : (globalThis as unknown as { window?: { totDesktop?: TotDesktopBridge }; totDesktop?: TotDesktopBridge })
-          .window || (globalThis as unknown as { totDesktop?: TotDesktopBridge });
+      : (
+          globalThis as unknown as {
+            window?: { totDesktop?: TotDesktopBridge };
+            totDesktop?: TotDesktopBridge;
+          }
+        ).window || (globalThis as unknown as { totDesktop?: TotDesktopBridge });
 
   if (!winObj || !winObj.totDesktop) {
     return null;
@@ -185,6 +302,231 @@ export async function printDesktopLabel(
 }
 
 /**
+ * Envoie du code ZPL II brut à une imprimante Zebra (TCP 9100 ou file système raw).
+ */
+export async function printDesktopZplRaw(params: {
+  zpl: string;
+  transport?: ZplTransportMode;
+  host?: string;
+  port?: number;
+  rawPrinterName?: string;
+}): Promise<DesktopPrintResult> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.printZplRaw !== 'function') {
+    return {
+      ok: false,
+      errorCode: 'NOT_DESKTOP',
+      errorMessage: 'Impression directe ZPL réservée à la version bureau installée.',
+    };
+  }
+  try {
+    return await bridge.printZplRaw(params);
+  } catch (err: any) {
+    return {
+      ok: false,
+      errorCode: 'ZPL_IPC_ERROR',
+      errorMessage: err?.message || "Erreur lors de l'envoi ZPL.",
+    };
+  }
+}
+
+/**
+ * Teste la connexion TCP vers une imprimante Zebra (port 9100..9102).
+ */
+export async function testDesktopZplPrinter(params: {
+  host: string;
+  port: number;
+}): Promise<{ ok: boolean; latencyMs?: number; errorMessage?: string }> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.testZplPrinter !== 'function') {
+    return {
+      ok: false,
+      errorMessage: 'Test réseau TCP réservé à la version bureau installée.',
+    };
+  }
+  try {
+    return await bridge.testZplPrinter(params);
+  } catch (err: any) {
+    return {
+      ok: false,
+      errorMessage: err?.message || 'Impossible de joindre cette imprimante.',
+    };
+  }
+}
+
+const LOCAL_ZPL_SETTINGS_KEY = 'tot_desktop_zpl_settings';
+const LOCAL_SYS_SETTINGS_KEY = 'tot_desktop_system_settings';
+
+export async function getDesktopZplSettings(): Promise<DesktopZplSettings> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.getZplSettings === 'function') {
+    try {
+      const res = await bridge.getZplSettings();
+      return { ...DEFAULT_DESKTOP_ZPL_SETTINGS, ...res };
+    } catch {
+      // Fallback
+    }
+  }
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LOCAL_ZPL_SETTINGS_KEY) : null;
+    if (raw) {
+      return { ...DEFAULT_DESKTOP_ZPL_SETTINGS, ...JSON.parse(raw) };
+    }
+  } catch {
+    // Ignore
+  }
+  return { ...DEFAULT_DESKTOP_ZPL_SETTINGS };
+}
+
+export async function setDesktopZplSettings(
+  settings: Partial<DesktopZplSettings>
+): Promise<DesktopZplSettings> {
+  const current = await getDesktopZplSettings();
+  const merged: DesktopZplSettings = { ...current, ...settings };
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOCAL_ZPL_SETTINGS_KEY, JSON.stringify(merged));
+    }
+  } catch {
+    // Ignore
+  }
+  const bridge = getBridge();
+  if (bridge && typeof bridge.setZplSettings === 'function') {
+    try {
+      const res = await bridge.setZplSettings(merged);
+      if (res?.settings) return { ...DEFAULT_DESKTOP_ZPL_SETTINGS, ...res.settings };
+    } catch {
+      // Ignore
+    }
+  }
+  return merged;
+}
+
+export async function getDesktopSystemSettings(): Promise<DesktopSystemSettings> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.getSystemSettings === 'function') {
+    try {
+      const res = await bridge.getSystemSettings();
+      return { ...DEFAULT_DESKTOP_SYSTEM_SETTINGS, ...res };
+    } catch {
+      // Fallback
+    }
+  }
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LOCAL_SYS_SETTINGS_KEY) : null;
+    if (raw) {
+      return { ...DEFAULT_DESKTOP_SYSTEM_SETTINGS, ...JSON.parse(raw) };
+    }
+  } catch {
+    // Ignore
+  }
+  return { ...DEFAULT_DESKTOP_SYSTEM_SETTINGS };
+}
+
+export async function setDesktopSystemSettings(
+  settings: Partial<DesktopSystemSettings>
+): Promise<DesktopSystemSettings> {
+  const current = await getDesktopSystemSettings();
+  const merged: DesktopSystemSettings = { ...current, ...settings };
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOCAL_SYS_SETTINGS_KEY, JSON.stringify(merged));
+    }
+  } catch {
+    // Ignore
+  }
+  const bridge = getBridge();
+  if (bridge && typeof bridge.setSystemSettings === 'function') {
+    try {
+      const res = await bridge.setSystemSettings(merged);
+      if (res?.settings) return { ...DEFAULT_DESKTOP_SYSTEM_SETTINGS, ...res.settings };
+    } catch {
+      // Ignore
+    }
+  }
+  return merged;
+}
+
+/**
+ * Déclenche une notification système native (Windows / macOS / Linux) si activée.
+ */
+export async function triggerDesktopSystemNotification(
+  payload: DesktopNotificationPayload
+): Promise<boolean> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.showNotification !== 'function') {
+    return false;
+  }
+  try {
+    const res = await bridge.showNotification(payload);
+    return Boolean(res?.ok);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ouvre une fenêtre secondaire dans l'application bureau (ou un nouvel onglet sur le web).
+ */
+export async function openDesktopSecondaryWindow(route = 'print_station'): Promise<boolean> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.openSecondaryWindow === 'function') {
+    try {
+      const res = await bridge.openSecondaryWindow(route);
+      return Boolean(res?.ok);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export async function updateDesktopTrayStatus(status: {
+  pendingJobsCount: number;
+  paused: boolean;
+}): Promise<void> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.updateTrayStatus === 'function') {
+    try {
+      await bridge.updateTrayStatus(status);
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+export async function setDesktopMenuLocale(locale: 'fr' | 'en' | 'nl'): Promise<void> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.setMenuLocale === 'function') {
+    try {
+      await bridge.setMenuLocale(locale);
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+export function subscribeDesktopMenuCommand(
+  callback: (command: DesktopMenuCommandId) => void
+): () => void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.onMenuCommand !== 'function') {
+    return () => {};
+  }
+  return bridge.onMenuCommand(callback);
+}
+
+export function subscribeDesktopNavigateRoute(
+  callback: (route: string) => void
+): () => void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.onNavigateRoute !== 'function') {
+    return () => {};
+  }
+  return bridge.onNavigateRoute(callback);
+}
+
+/**
  * Ouvre une URL externe (`https:` uniquement) dans le navigateur système.
  */
 export async function openExternalUrl(url: string): Promise<boolean> {
@@ -219,8 +561,6 @@ export async function openExternalUrl(url: string): Promise<boolean> {
 /**
  * Retourne les dimensions de page en millimètres (`pageWidthMm`, `pageHeightMm`)
  * correspondant à un format d'étiquette TOT Stock.
- * - Rouleau thermique (`thermal_50x30` ou `thermal`) : 50 × 30 mm
- * - Planches A4 (`avery_70x37`, `avery_105x42`, `bin_90x50`, `avery_3x8`, `avery_2x7`, `bin_rack`, `catalog`) : 210 × 297 mm
  */
 export function getLabelPageDimensionsMm(format?: string | null): {
   pageWidthMm: number;

@@ -22,7 +22,7 @@ extraResources:
 asar: true
 
 win:
-  icon: build/icon.png
+  icon: build/icon.ico
   signAndEditExecutable: false
   target:
     - target: nsis
@@ -39,7 +39,7 @@ nsis:
   uninstallDisplayName: TOT Stock
 
 mac:
-  icon: build/icon.png
+  icon: build/icon.icns
   category: public.app-category.business
   hardenedRuntime: true
   gatekeeperAssess: false

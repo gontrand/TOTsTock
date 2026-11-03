@@ -31,6 +31,49 @@ const desktopApi = Object.freeze({
       ipcRenderer.removeListener('tot:update-status', listener);
     };
   },
+  // Lot 3 & Lot 4 additions
+  printZplRaw: (params) => ipcRenderer.invoke('tot:print-zpl-raw', params),
+  testZplPrinter: (params) => ipcRenderer.invoke('tot:test-zpl-printer', params),
+  getZplSettings: () => ipcRenderer.invoke('tot:get-zpl-settings'),
+  setZplSettings: (settings) => ipcRenderer.invoke('tot:set-zpl-settings', settings),
+  getSystemSettings: () => ipcRenderer.invoke('tot:get-system-settings'),
+  setSystemSettings: (settings) => ipcRenderer.invoke('tot:set-system-settings', settings),
+  showNotification: (payload) => ipcRenderer.invoke('tot:show-notification', payload),
+  openSecondaryWindow: (route) => ipcRenderer.invoke('tot:open-secondary-window', route),
+  updateTrayStatus: (status) => ipcRenderer.invoke('tot:update-tray-status', status),
+  setMenuLocale: (locale) => ipcRenderer.invoke('tot:set-menu-locale', locale),
+  onMenuCommand: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, commandId) => {
+      try {
+        callback(commandId);
+      } catch {
+        // Ignorer
+      }
+    };
+    ipcRenderer.on('tot:menu-command', listener);
+    return () => {
+      ipcRenderer.removeListener('tot:menu-command', listener);
+    };
+  },
+  onNavigateRoute: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, route) => {
+      try {
+        callback(route);
+      } catch {
+        // Ignorer
+      }
+    };
+    ipcRenderer.on('tot:navigate-route', listener);
+    return () => {
+      ipcRenderer.removeListener('tot:navigate-route', listener);
+    };
+  },
 });
 
 contextBridge.exposeInMainWorld('totDesktop', desktopApi);
