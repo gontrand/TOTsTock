@@ -1,0 +1,235 @@
+import { SupabaseClient } from '@supabase/supabase-js';
+import {
+  getPendingSyncOperations,
+  updateSyncOperationStatus,
+  SyncOperation,
+  setSyncMetadata,
+  getSyncMetadata,
+  putManyToStore,
+} from './indexedDb';
+import { isNetworkOrFetchError, upsertOrderToSupabase } from '../clientSupabase';
+
+export interface SyncEngineResult {
+  success: boolean;
+  processedCount: number;
+  syncedCount: number;
+  failedCount: number;
+  rejectedCount: number;
+  conflicts: Array<{ operation_id: string; message: string; details?: any }>;
+}
+
+let isSyncRunning = false;
+
+/**
+ * Processes all pending operations in the sync_queue sequentially against the Supabase client.
+ * Enforces server idempotency (operation_id) and explicit rejection handling.
+ */
+export async function processSyncQueue(client: SupabaseClient | null): Promise<SyncEngineResult> {
+  if (!client) {
+    return {
+      success: false,
+      processedCount: 0,
+      syncedCount: 0,
+      failedCount: 0,
+      rejectedCount: 0,
+      conflicts: [],
+    };
+  }
+
+  if (isSyncRunning) {
+    return {
+      success: true,
+      processedCount: 0,
+      syncedCount: 0,
+      failedCount: 0,
+      rejectedCount: 0,
+      conflicts: [],
+    };
+  }
+
+  isSyncRunning = true;
+  const result: SyncEngineResult = {
+    success: true,
+    processedCount: 0,
+    syncedCount: 0,
+    failedCount: 0,
+    rejectedCount: 0,
+    conflicts: [],
+  };
+
+  try {
+    const queue = await getPendingSyncOperations();
+    result.processedCount = queue.length;
+
+    for (const op of queue) {
+      // Mark as syncing
+      await updateSyncOperationStatus(op.operation_id, 'syncing');
+
+      try {
+        let opSuccess = false;
+        let rejectReason: string | undefined;
+
+        if (op.action === 'RPC_STOCK_MOVEMENT') {
+          // Transactional server RPC
+          const { data, error } = await client.rpc('process_stock_movement', {
+            p_operation_id: op.operation_id,
+            p_product_id: op.payload.product_id,
+            p_depot_name: op.payload.depot_name || null,
+            p_type: op.payload.type,
+            p_quantity: op.payload.quantity,
+            p_reason: op.payload.reason || null,
+            p_project_name: op.payload.project_name || null,
+            p_department: op.payload.department || null,
+            p_metadata: op.payload.metadata || {},
+          });
+
+          if (error) {
+            if (isNetworkOrFetchError(error)) {
+              throw error; // trigger retry on network error
+            }
+            rejectReason = error.message;
+          } else if (data && data.success === false) {
+            rejectReason = data.message || 'Mouvement rejeté par le serveur.';
+            const conflictMsg = rejectReason || 'Mouvement rejeté par le serveur.';
+            if (data.error_code === 'REJECTED_STOCK_CONFLICT') {
+              result.conflicts.push({
+                operation_id: op.operation_id,
+                message: conflictMsg,
+                details: data,
+              });
+            }
+          } else {
+            opSuccess = true;
+          }
+        } else if (op.action === 'RPC_ORDER_TRANSITION') {
+          // Transactional order transition RPC
+          const { data, error } = await client.rpc('transition_order_status', {
+            p_operation_id: op.operation_id,
+            p_order_id: op.payload.order_id,
+            p_target_status: op.payload.target_status,
+            p_comment: op.payload.comment || null,
+            p_preparer_id: op.payload.preparer_id || op.payload.assigned_preparer || null,
+          });
+
+          if (error) {
+            if (isNetworkOrFetchError(error)) {
+              throw error;
+            }
+            rejectReason = error.message;
+          } else if (data && data.success === false) {
+            rejectReason = data.message;
+          } else {
+            opSuccess = true;
+          }
+        } else if (op.action === 'INSERT' || op.action === 'UPDATE') {
+          if (op.entity === 'material_orders') {
+            const ordRes = await upsertOrderToSupabase(client, op.payload);
+            if (ordRes.isNetworkError) {
+              throw new Error(ordRes.error || 'Failed to fetch');
+            }
+            if (ordRes.success) {
+              opSuccess = true;
+            } else {
+              rejectReason = ordRes.error;
+            }
+          } else {
+            // Standard upsert
+            const { error } = await client.from(op.entity).upsert([op.payload]);
+            if (error) {
+              if (isNetworkOrFetchError(error)) {
+                throw error;
+              }
+              rejectReason = error.message;
+            } else {
+              opSuccess = true;
+            }
+          }
+        } else if (op.action === 'DELETE') {
+          // Standard delete
+          const { error } = await client.from(op.entity).delete().eq('id', op.payload.id);
+          if (error) {
+            if (isNetworkOrFetchError(error)) {
+              throw error;
+            }
+            rejectReason = error.message;
+          } else {
+            opSuccess = true;
+          }
+        }
+
+        if (opSuccess) {
+          await updateSyncOperationStatus(op.operation_id, 'synced');
+          result.syncedCount++;
+        } else {
+          await updateSyncOperationStatus(op.operation_id, 'rejected', rejectReason);
+          result.rejectedCount++;
+        }
+      } catch (err: any) {
+        if (isNetworkOrFetchError(err)) {
+          // Network interruption: keep in queue with 'failed' status for automatic retry
+          await updateSyncOperationStatus(op.operation_id, 'failed', err.message || 'Réseau indisponible');
+          result.failedCount++;
+          // Bail early to avoid pounding an unreachable network
+          result.success = false;
+          break;
+        } else {
+          await updateSyncOperationStatus(op.operation_id, 'rejected', err?.message || 'Erreur inattendue');
+          result.rejectedCount++;
+        }
+      }
+    }
+  } finally {
+    isSyncRunning = false;
+  }
+
+  return result;
+}
+
+/**
+ * Performs incremental sync from Supabase into IndexedDB based on updated_at / timestamps.
+ */
+export async function performIncrementalSync(client: SupabaseClient | null): Promise<boolean> {
+  if (!client) return false;
+
+  try {
+    const lastSync = await getSyncMetadata<string>('last_incremental_sync_at');
+    const nowIso = new Date().toISOString();
+
+    // 1. Products updated since lastSync
+    let prodQuery = client.from('products').select('*');
+    if (lastSync) {
+      prodQuery = prodQuery.gt('updated_at', lastSync);
+    }
+    const { data: prods, error: prodErr } = await prodQuery;
+    if (!prodErr && prods && prods.length > 0) {
+      await putManyToStore('products', prods);
+    }
+
+    // 2. Stock movements since lastSync
+    let movQuery = client.from('stock_movements').select('*');
+    if (lastSync) {
+      movQuery = movQuery.gt('timestamp', lastSync);
+    }
+    const { data: movs, error: movErr } = await movQuery;
+    if (!movErr && movs && movs.length > 0) {
+      await putManyToStore('stock_movements', movs);
+    }
+
+    // 3. Orders updated since lastSync
+    let ordQuery = client.from('material_orders').select('*');
+    if (lastSync) {
+      ordQuery = ordQuery.gt('updated_at', lastSync);
+    }
+    const { data: ords, error: ordErr } = await ordQuery;
+    if (!ordErr && ords && ords.length > 0) {
+      await putManyToStore('material_orders', ords);
+    }
+
+    // Update metadata timestamp
+    await setSyncMetadata('last_incremental_sync_at', nowIso);
+    return true;
+  } catch (err) {
+    console.warn('[SyncEngine] Error during incremental sync:', err);
+    return false;
+  }
+}

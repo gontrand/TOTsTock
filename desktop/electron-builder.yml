@@ -1,0 +1,67 @@
+appId: com.tot.stock.desktop
+productName: TOT Stock
+copyright: Copyright © 2026 TOT Inventory & Scan Edition
+artifactName: "TOT-Stock-${version}-${os}-${arch}.${ext}"
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - main.mjs
+  - preload.cjs
+  - security.mjs
+  - package.json
+
+extraResources:
+  - from: ../dist
+    to: app-dist
+    filter:
+      - "**/*"
+
+asar: true
+
+win:
+  icon: build/icon.png
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: TOT Stock
+  uninstallDisplayName: TOT Stock
+
+mac:
+  icon: build/icon.png
+  category: public.app-category.business
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - universal
+
+dmg:
+  sign: false
+
+linux:
+  icon: build/icon.png
+  category: Office
+  synopsis: Gestion de stock, inventaire et poste d'impression d'étiquettes
+  maintainer: TOT Inventory <support@tot-stock.local>
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64

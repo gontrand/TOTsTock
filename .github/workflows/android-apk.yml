@@ -1,0 +1,173 @@
+# ==============================================================================
+# TOT Stock — Construction de l'APK Android dans le cloud (GitHub Actions)
+# ==============================================================================
+# Lancement : onglet "Actions" > "TOT Stock — APK Android" > "Run workflow".
+#   - Mode "test"        : APK signée par une clé de test automatique. Aucun secret requis.
+#                          Réservé aux essais (ne pas donner aux clients).
+#   - Mode "publication" : APK signée avec VOTRE clé (secrets du dépôt, voir docs/APK_CLOUD.md).
+# Résultat : un artefact téléchargeable (APK + empreinte SHA-256) en bas de la page du travail.
+# ==============================================================================
+
+name: TOT Stock — APK Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Type de construction"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - test
+          - publication
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Construire l'APK (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BUILD_MODE: ${{ inputs.mode }}
+
+    steps:
+      - name: Récupération du code source
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Installer Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Lire la version de l'application
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version de l'application : $VERSION"
+
+      - name: Vérifier les secrets (mode publication uniquement)
+        if: ${{ inputs.mode == 'publication' }}
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -z "$KS_B64" ] && missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -z "$KS_PASS" ] && missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -z "$KS_ALIAS" ] && missing="$missing ANDROID_KEY_ALIAS"
+          [ -z "$KS_KEYPASS" ] && missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets manquants :$missing. Voir docs/APK_CLOUD.md (étape « Mode publication »)."
+            exit 1
+          fi
+
+      - name: Installer les dépendances
+        run: npm install --no-audit --no-fund
+
+      - name: Compiler l'application web et synchroniser Android
+        run: npm run build:android
+
+      - name: Installer les composants Android SDK
+        run: |
+          set -e
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$(command -v sdkmanager)"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+      - name: Préparer la clé de signature (mode publication)
+        if: ${{ inputs.mode == 'publication' }}
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          KS_FILE="$RUNNER_TEMP/tot-release.jks"
+          printf '%s' "$KS_B64" | base64 -d > "$KS_FILE"
+          chmod 600 "$KS_FILE"
+          {
+            echo "ANDROID_KEYSTORE_PATH=$KS_FILE"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KS_PASS"
+            echo "ANDROID_KEY_ALIAS=$KS_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$KS_KEYPASS"
+          } >> "$GITHUB_ENV"
+
+      - name: Construire l'APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          if [ "$BUILD_MODE" = "publication" ]; then
+            ./gradlew --no-daemon clean assembleRelease
+          else
+            ./gradlew --no-daemon clean assembleDebug
+          fi
+
+      - name: Vérifier et nommer l'APK
+        id: apk
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          if [ "$BUILD_MODE" = "publication" ]; then
+            SRC="android/app/build/outputs/apk/release/app-release.apk"
+            OUT="tot-stock-v${VERSION}.apk"
+          else
+            SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+            OUT="tot-stock-v${VERSION}-TEST.apk"
+          fi
+          [ -f "$SRC" ] || { echo "::error::APK introuvable : $SRC"; exit 1; }
+          mkdir -p dist-apk
+          cp "$SRC" "dist-apk/$OUT"
+
+          SIZE=$(stat -c %s "dist-apk/$OUT")
+          echo "Taille : $SIZE octets"
+          [ "$SIZE" -gt 3000000 ] || { echo "::error::Fichier trop petit pour une APK ($SIZE octets)."; exit 1; }
+          unzip -tq "dist-apk/$OUT" > /dev/null || { echo "::error::Le fichier n'est pas une archive APK valide."; exit 1; }
+
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/36.0.0/apksigner)
+          "$APKSIGNER" verify --verbose --print-certs "dist-apk/$OUT" | tee apk-verify.txt
+          grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" apk-verify.txt \
+            || grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" apk-verify.txt \
+            || { echo "::error::Signature moderne (v2/v3) absente."; exit 1; }
+
+          if [ "$BUILD_MODE" = "publication" ]; then
+            if grep -qi "Android Debug" apk-verify.txt; then
+              echo "::error::L'APK de publication est signée avec une clé de test."; exit 1
+            fi
+          fi
+
+          (cd dist-apk && sha256sum "$OUT" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          cp apk-verify.txt dist-apk/signature-info.txt
+          echo "name=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Publier l'artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: dist-apk/
+          retention-days: ${{ inputs.mode == 'publication' && 90 || 14 }}
+          if-no-files-found: error
+
+      - name: Supprimer la clé temporaire
+        if: ${{ always() && inputs.mode == 'publication' }}
+        run: rm -f "$RUNNER_TEMP/tot-release.jks"

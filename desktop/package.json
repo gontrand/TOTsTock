@@ -1,0 +1,28 @@
+{
+  "name": "tot-stock-desktop",
+  "version": "5.5.0",
+  "private": true,
+  "description": "Application de bureau TOT Stock (Windows, macOS, Linux) avec impression silencieuse d'étiquettes",
+  "author": "TOT Inventory & Scan Edition",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "prepare:icons": "node scripts/generate-icons.mjs",
+    "start": "node scripts/generate-icons.mjs && electron .",
+    "dev": "TOT_DESKTOP_DEV=1 node scripts/generate-icons.mjs && electron .",
+    "pack": "node scripts/generate-icons.mjs && electron-builder --dir --config electron-builder.yml",
+    "dist": "node scripts/generate-icons.mjs && electron-builder --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
+    "dist:win": "node scripts/generate-icons.mjs && electron-builder --win nsis --x64 --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
+    "dist:mac": "node scripts/generate-icons.mjs && electron-builder --mac dmg --universal --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
+    "dist:linux": "node scripts/generate-icons.mjs && electron-builder --linux AppImage deb --x64 --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
+    "checksums": "node scripts/generate-checksums.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12"
+  }
+}

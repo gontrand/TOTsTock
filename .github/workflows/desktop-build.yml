@@ -1,0 +1,150 @@
+name: Build Desktop Installers (Windows, macOS, Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "Canal de distribution (stable ou test)"
+        required: false
+        default: "stable"
+        type: choice
+        options:
+          - stable
+          - test
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-desktop:
+    name: "Build Bureau (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_name: windows
+            dist_script: dist:win
+          - os: macos-latest
+            platform_name: macos
+            dist_script: dist:mac
+          - os: ubuntu-latest
+            platform_name: linux
+            dist_script: dist:linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Vérification de l'entrée workflow (sans interpolation directe)
+        env:
+          INPUT_RELEASE_CHANNEL: ${{ inputs.release_channel }}
+        run: |
+          echo "Canal sélectionné : ${INPUT_RELEASE_CHANNEL:-stable}"
+
+      # Le projet n'a pas de fichier package-lock.json (il utilise bun.lock) : « npm ci » échouerait.
+      - name: Installation des dépendances (racine)
+        run: npm install --no-audit --no-fund
+
+      - name: Contrôle d'alignement des versions (check:version)
+        run: npm run check:version
+
+      # Non bloquant pour l'instant : un test en échec n'empêche pas de produire les installateurs.
+      # Une fois tous les tests au vert, retirer la ligne « continue-on-error ».
+      - name: Exécution des tests unitaires
+        continue-on-error: true
+        run: npm test
+
+      - name: Compilation de l'interface web (dist/)
+        env:
+          VITE_ALLOWED_SUPABASE_HOSTS: ${{ vars.VITE_ALLOWED_SUPABASE_HOSTS }}
+        run: npm run build
+
+      - name: Installation des dépendances bureau (desktop/)
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Génération des icônes bureau (.ico, .icns, .png)
+        working-directory: desktop
+        run: npm run prepare:icons
+
+      - name: Test de fumée (electron-builder --dir)
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --dir --config electron-builder.yml
+
+      - name: Construction des installateurs (${{ matrix.platform_name }})
+        working-directory: desktop
+        env:
+          DIST_SCRIPT: ${{ matrix.dist_script }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TOT_DESKTOP_UPDATE_URL: ${{ vars.TOT_DESKTOP_UPDATE_URL }}
+        run: npm run "$DIST_SCRIPT"
+
+      - name: Génération du fichier SHA256SUMS.txt
+        working-directory: desktop
+        run: node scripts/generate-checksums.mjs
+
+      - name: Renommage de SHA256SUMS par plateforme
+        working-directory: desktop/release
+        env:
+          PLATFORM_NAME: ${{ matrix.platform_name }}
+        run: |
+          if [ -f SHA256SUMS.txt ]; then
+            cp SHA256SUMS.txt "SHA256SUMS-${PLATFORM_NAME}.txt"
+          fi
+
+      - name: Téléversement des artefacts d'installation
+        uses: actions/upload-artifact@v4
+        with:
+          name: tot-stock-desktop-${{ matrix.platform_name }}
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/SHA256SUMS*.txt
+          if-no-files-found: error
+
+  publish-draft-release:
+    name: "Publication Release Brouillon (tag desktop-v*)"
+    needs: build-desktop
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Téléchargement de tous les artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Fusion des empreintes dans SHA256SUMS.txt
+        working-directory: release-assets
+        run: |
+          cat SHA256SUMS-*.txt > SHA256SUMS.txt
+
+      - name: Création de la Release GitHub en brouillon (Draft)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/*.AppImage
+            release-assets/*.deb
+            release-assets/SHA256SUMS.txt

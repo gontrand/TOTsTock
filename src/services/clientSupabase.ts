@@ -1,0 +1,3481 @@
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import {
+  APP_VERSION,
+  EXPECTED_SCHEMA_VERSION,
+  MIN_SUPPORTED_SCHEMA_VERSION,
+} from '../appVersion';
+import {
+  Product,
+  StockMovement,
+  User,
+  Role,
+  Department,
+  Project,
+  SubCategory,
+  Depot,
+  MaterialOrder,
+  OrderBasket,
+  BatchCartItem,
+} from '../types';
+
+let cachedClient: SupabaseClient | null = null;
+let cachedUrl = '';
+let cachedKey = '';
+
+/**
+ * Normalise l'URL Supabase pour corriger les erreurs courantes :
+ * - Dashboard URL au lieu de l'URL API (ex: https://supabase.com/dashboard/project/xyz -> https://xyz.supabase.co)
+ * - Chaîne de connexion PostgreSQL (@db.xyz.supabase.co -> https://xyz.supabase.co)
+ * - Omission du protocole https://
+ * - Espaces, guillemets ou slashs finals résiduels
+ */
+export function normalizeSupabaseUrl(rawUrl?: string): string {
+  if (!rawUrl) return '';
+  let url = rawUrl.trim().replace(/^["']|["']$/g, '');
+  if (!url) return '';
+
+  // 1. Détection de l'URL du Dashboard Supabase (erreur très fréquente lors du copier/coller)
+  const dashboardMatch = url.match(/supabase\.(?:com|io)\/(?:dashboard\/)?project\/([a-zA-Z0-9_-]+)/);
+  if (dashboardMatch && dashboardMatch[1]) {
+    return `https://${dashboardMatch[1]}.supabase.co`;
+  }
+
+  // 2. Détection de chaîne de connexion PostgreSQL directe
+  const dbMatch = url.match(/@db\.([a-zA-Z0-9_-]+)\.supabase\.co/);
+  if (dbMatch && dbMatch[1]) {
+    return `https://${dbMatch[1]}.supabase.co`;
+  }
+
+  // 3. Ajout https:// uniquement si aucun schéma (ex: http://, https://, ftp://) n'est présent
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    url = 'https://' + url;
+  }
+
+  // 4. Nettoyage des sous-chemins API ou slashs finaux
+  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/rest\/v1\/?$/, '');
+  url = url.replace(/\/auth\/v1\/?$/, '');
+
+  return url;
+}
+
+export type SupabaseUrlErrorCode =
+  | 'EMPTY_URL'
+  | 'INVALID_URL'
+  | 'CREDENTIALS_FORBIDDEN'
+  | 'INSECURE_PROTOCOL'
+  | 'HOST_NOT_ALLOWED';
+
+export interface SupabaseUrlValidationResult {
+  valid: boolean;
+  normalizedUrl: string;
+  hostname: string;
+  isOfficialSupabaseHost: boolean;
+  requiresCustomDomainConfirmation: boolean;
+  errorCode?: SupabaseUrlErrorCode;
+  errorMessage?: string;
+}
+
+/**
+ * Vérifie si un nom d'hôte correspond à un motif autorisé (ex: "abcd.supabase.co" ou "*.exemple.com").
+ */
+export function matchesAllowedHostPattern(hostname: string, pattern: string): boolean {
+  const cleanHost = hostname.trim().toLowerCase();
+  const cleanPattern = pattern.trim().toLowerCase();
+  if (!cleanHost || !cleanPattern) return false;
+
+  if (cleanPattern.startsWith('*.')) {
+    const suffix = cleanPattern.slice(1); // ".exemple.com"
+    if (suffix.length <= 1) return false;
+    return cleanHost.endsWith(suffix) && cleanHost.length > suffix.length;
+  }
+  return cleanHost === cleanPattern;
+}
+
+/**
+ * Valide l'adresse du serveur Supabase avant enregistrement :
+ * 1. Analyse l'URL avec `new URL()` (en réutilisant `normalizeSupabaseUrl`).
+ * 2. Refuse toute URL vide ou invalide.
+ * 3. Refuse toute URL contenant un identifiant ou un mot de passe (`user:pass@`).
+ * 4. Refuse tout schéma autre que `https:` (`http:` autorisé uniquement pour `localhost` et `127.0.0.1` en build de développement).
+ * 5. Applique la liste blanche optionnelle `VITE_ALLOWED_SUPABASE_HOSTS`.
+ * 6. Indique si le domaine nécessite une double confirmation (domaine hors `.supabase.co`).
+ */
+export function validateSupabaseServerUrl(
+  rawUrl?: string,
+  options?: {
+    allowedHostsEnv?: string;
+    isDevBuild?: boolean;
+  }
+): SupabaseUrlValidationResult {
+  const trimmed = (rawUrl || '').trim().replace(/^["']|["']$/g, '');
+  if (!trimmed) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      isOfficialSupabaseHost: false,
+      requiresCustomDomainConfirmation: false,
+      errorCode: 'EMPTY_URL',
+      errorMessage: 'Veuillez saisir une URL de serveur Supabase.',
+    };
+  }
+
+  // Détection préalable d'identifiants dans l'URL brute (avant normalisation éventuelle)
+  const rawWithScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const rawParsed = new URL(rawWithScheme);
+    if (rawParsed.username || rawParsed.password) {
+      return {
+        valid: false,
+        normalizedUrl: '',
+        hostname: '',
+        isOfficialSupabaseHost: false,
+        requiresCustomDomainConfirmation: false,
+        errorCode: 'CREDENTIALS_FORBIDDEN',
+        errorMessage: "L'URL ne doit contenir ni identifiant ni mot de passe (user:pass@).",
+      };
+    }
+  } catch {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      isOfficialSupabaseHost: false,
+      requiresCustomDomainConfirmation: false,
+      errorCode: 'INVALID_URL',
+      errorMessage: "Format d'URL invalide.",
+    };
+  }
+
+  const normalizedUrl = normalizeSupabaseUrl(trimmed);
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedUrl);
+  } catch {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      isOfficialSupabaseHost: false,
+      requiresCustomDomainConfirmation: false,
+      errorCode: 'INVALID_URL',
+      errorMessage: "Format d'URL invalide.",
+    };
+  }
+
+  if (parsed.username || parsed.password) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      isOfficialSupabaseHost: false,
+      requiresCustomDomainConfirmation: false,
+      errorCode: 'CREDENTIALS_FORBIDDEN',
+      errorMessage: "L'URL ne doit contenir ni identifiant ni mot de passe (user:pass@).",
+    };
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+  if (!hostname || (!isLocalhost && !hostname.includes('.'))) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      isOfficialSupabaseHost: false,
+      requiresCustomDomainConfirmation: false,
+      errorCode: 'INVALID_URL',
+      errorMessage: 'Nom de domaine du serveur invalide.',
+    };
+  }
+
+  const isDevBuild =
+    options?.isDevBuild !== undefined
+      ? options.isDevBuild
+      : Boolean(
+          (typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV) ||
+            (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production')
+        );
+
+  if (parsed.protocol !== 'https:') {
+    const allowHttpLocal = parsed.protocol === 'http:' && isLocalhost && isDevBuild;
+    if (!allowHttpLocal) {
+      return {
+        valid: false,
+        normalizedUrl: '',
+        hostname,
+        isOfficialSupabaseHost: false,
+        requiresCustomDomainConfirmation: false,
+        errorCode: 'INSECURE_PROTOCOL',
+        errorMessage:
+          'Seul le protocole sécurisé https:// est autorisé (http:// uniquement sur localhost en développement).',
+      };
+    }
+  }
+
+  const isExplicitTestPolicy = options?.allowedHostsEnv !== undefined;
+  const rawAllowedHosts = isExplicitTestPolicy
+    ? options.allowedHostsEnv
+    : (typeof import.meta !== 'undefined' &&
+        (import.meta as any).env?.VITE_ALLOWED_SUPABASE_HOSTS) ||
+      (typeof process !== 'undefined' && process.env?.VITE_ALLOWED_SUPABASE_HOSTS) ||
+      '';
+
+  const EXAMPLE_PLACEHOLDER_PATTERNS = new Set([
+    'abcd1234.supabase.co',
+    '*.mon-entreprise.fr',
+    '*.exemple.com',
+    '*.example.com',
+  ]);
+
+  const allowedPatterns = String(rawAllowedHosts)
+    .replace(/^["']+|["']+$/g, '')
+    .split(',')
+    .map((s) => s.trim().replace(/^["']+|["']+$/g, '').trim().toLowerCase())
+    .filter(
+      (s) =>
+        Boolean(s) &&
+        s !== 'undefined' &&
+        s !== 'null' &&
+        s !== 'false' &&
+        !s.startsWith('my_') &&
+        !s.startsWith('your_') &&
+        (isExplicitTestPolicy || !EXAMPLE_PLACEHOLDER_PATTERNS.has(s)) &&
+        (s.includes('.') || s === 'localhost')
+    );
+
+  if (allowedPatterns.length > 0) {
+    const isAllowed = allowedPatterns.some((pattern) =>
+      matchesAllowedHostPattern(hostname, pattern)
+    );
+    if (!isAllowed) {
+      return {
+        valid: false,
+        normalizedUrl: '',
+        hostname,
+        isOfficialSupabaseHost: false,
+        requiresCustomDomainConfirmation: false,
+        errorCode: 'HOST_NOT_ALLOWED',
+        errorMessage: `Le domaine "${hostname}" n'est pas autorisé par la politique de cette application (VITE_ALLOWED_SUPABASE_HOSTS).`,
+      };
+    }
+  }
+
+  const isOfficialSupabaseHost = hostname.endsWith('.supabase.co');
+  return {
+    valid: true,
+    normalizedUrl: parsed.origin,
+    hostname,
+    isOfficialSupabaseHost,
+    requiresCustomDomainConfirmation: !isOfficialSupabaseHost,
+  };
+}
+
+/**
+ * Nettoie la clé Supabase anon / public
+ */
+export function normalizeSupabaseKey(rawKey?: string): string {
+  if (!rawKey) return '';
+  return rawKey.trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Détecte si une erreur est une erreur réseau ou d'indisponibilité (ex: Failed to fetch, offline, paused)
+ */
+export function isNetworkOrFetchError(err: any): boolean {
+  if (!err) return false;
+  const msg = typeof err === 'string' ? err : err.message || '';
+  return (
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('fetch failed') ||
+    msg.includes('Load failed') ||
+    msg.includes('Network request failed') ||
+    msg.includes('ERR_CONNECTION') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('503') ||
+    msg.includes('521') ||
+    msg.includes('522')
+  );
+}
+
+export function getClientSupabase(url?: string, key?: string): SupabaseClient | null {
+  const rawUrl = url || localStorage.getItem('tqt_company_url') || '';
+  const rawKey = key || localStorage.getItem('tqt_company_key') || '';
+
+  const finalUrl = normalizeSupabaseUrl(rawUrl);
+  const finalKey = normalizeSupabaseKey(rawKey);
+
+  if (!finalUrl || !finalKey) {
+    cachedClient = null;
+    return null;
+  }
+
+  if (cachedClient && cachedUrl === finalUrl && cachedKey === finalKey) {
+    return cachedClient;
+  }
+
+  try {
+    cachedClient = createClient(finalUrl, finalKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+      },
+    });
+    cachedUrl = finalUrl;
+    cachedKey = finalKey;
+    return cachedClient;
+  } catch (err) {
+    console.error('Erreur initialisation Supabase client:', err);
+    cachedClient = null;
+    return null;
+  }
+}
+
+const workingTableCache = new Map<string, string>();
+
+// Helper to determine table name with fallback support (uses 'id' instead of '*' to avoid column-level RLS rejection on users.pin)
+async function findWorkingTable(
+  client: SupabaseClient,
+  candidates: string[],
+  testCol = 'id'
+): Promise<string | null> {
+  const cacheKey = `${cachedUrl || 'default'}:${candidates.join(',')}:${testCol}`;
+  const cachedTable = workingTableCache.get(cacheKey);
+  if (cachedTable) return cachedTable;
+
+  for (const table of candidates) {
+    try {
+      const { error } = await client.from(table).select(testCol).limit(1);
+      if (!error) {
+        workingTableCache.set(cacheKey, table);
+        return table;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+let licenseInfoWriteQueue: Promise<any> = Promise.resolve();
+let lastKnownLicenseInfoObj: Record<string, any> = {};
+
+/**
+ * Serialized, session-checked updater for public.app_settings[key = 'company_license_info'].
+ * Because 'company_license_info' is whitelisted for SELECT (anon + authenticated) and INSERT/UPDATE (all authenticated users)
+ * in every version of 02_rls_hardening.sql, storing shared sync state (users_directory, orders_sync, user_baskets_sync)
+ * inside 'company_license_info' avoids 403 RLS errors and race conditions.
+ */
+export async function updateCompanyLicenseInfoShared(
+  client: SupabaseClient | null,
+  mutator: (currentObj: Record<string, any>) => Record<string, any>
+): Promise<boolean> {
+  if (!client) return false;
+
+  const task = licenseInfoWriteQueue.then(async () => {
+    try {
+      const { data: sessionData } = await client.auth.getSession();
+      if (!sessionData?.session) {
+        // Never attempt to write to app_settings when unauthenticated (anon)
+        return false;
+      }
+
+      let dbObj: Record<string, any> = {};
+      try {
+        const { data: licRow } = await client
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'company_license_info')
+          .maybeSingle();
+
+        if (licRow?.value) {
+          const parsed = typeof licRow.value === 'string' ? JSON.parse(licRow.value) : licRow.value;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            dbObj = parsed;
+          }
+        }
+      } catch {}
+
+      const mergedCurrent: Record<string, any> = {
+        ...lastKnownLicenseInfoObj,
+        ...dbObj,
+        users_directory: dbObj.users_directory || lastKnownLicenseInfoObj.users_directory,
+        orders_sync: dbObj.orders_sync || lastKnownLicenseInfoObj.orders_sync,
+        user_baskets_sync: {
+          ...(lastKnownLicenseInfoObj.user_baskets_sync || {}),
+          ...(dbObj.user_baskets_sync || {}),
+        },
+      };
+
+      const nextObj = mutator(mergedCurrent);
+      lastKnownLicenseInfoObj = nextObj;
+
+      const nowIso = new Date().toISOString();
+      const { error } = await client.from('app_settings').upsert(
+        [
+          {
+            key: 'company_license_info',
+            value: JSON.stringify(nextObj),
+            updated_at: nowIso,
+          },
+        ],
+        { onConflict: 'key' }
+      );
+      return !error;
+    } catch {
+      return false;
+    }
+  });
+
+  licenseInfoWriteQueue = task.catch(() => false);
+  return task;
+}
+
+/**
+ * Charge de manière résiliente la liste des profils utilisateurs (sans jamais lire pin ni pin_hash)
+ * Fonctionne aussi bien avant connexion (écran de login) qu'après connexion.
+ */
+export function sanitizeUserForDirectory(u: any): User {
+  const name = String(u?.name || u?.email?.split('@')[0] || 'Utilisateur').trim();
+  const trigram = String(
+    u?.trigram || name.replace(/[^a-zA-Z0-9]/g, '').substring(0, 3).toUpperCase() || 'USR'
+  )
+    .toUpperCase()
+    .slice(0, 4);
+  return {
+    id: u?.id !== undefined && u?.id !== null ? u.id : u?.auth_user_id || Date.now(),
+    ...(u?.auth_user_id ? { auth_user_id: u.auth_user_id } : {}),
+    name,
+    trigram,
+    email: u?.email ? String(u.email).trim().toLowerCase() : '',
+    department: u?.department ? String(u.department).trim() : 'Général',
+    role_id: u?.role_id !== undefined && u?.role_id !== null ? Number(u.role_id) : 4,
+    is_blocked: Boolean(u?.is_blocked),
+    must_change_pin: Boolean(u?.must_change_pin),
+    is_preparer: Boolean(u?.is_preparer),
+    allowed_depots: Array.isArray(u?.allowed_depots) && u.allowed_depots.length > 0 ? u.allowed_depots : ['*'],
+    ...(u?.binome_id !== undefined ? { binome_id: u.binome_id } : {}),
+    ...(u?.binome_name !== undefined ? { binome_name: u.binome_name } : {}),
+  };
+}
+
+export function mergeUserLists(...lists: (User[] | undefined | null)[]): User[] {
+  const byKey = new Map<string, User>();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      if (!raw || (!raw.name && !raw.email && raw.id === undefined)) continue;
+      const u = sanitizeUserForDirectory(raw);
+      const emailKey = u.email ? `email:${u.email.toLowerCase()}` : '';
+      const authKey = (u as any).auth_user_id ? `auth:${(u as any).auth_user_id}` : '';
+      const idKey = `id:${String(u.id)}`;
+
+      let existingKey: string | null = null;
+      if (emailKey && byKey.has(emailKey)) existingKey = emailKey;
+      else if (authKey && byKey.has(authKey)) existingKey = authKey;
+      else if (byKey.has(idKey)) existingKey = idKey;
+      else {
+        for (const [k, v] of byKey.entries()) {
+          if (
+            (u.email && v.email && u.email.toLowerCase() === v.email.toLowerCase()) ||
+            ((u as any).auth_user_id && (v as any).auth_user_id && (u as any).auth_user_id === (v as any).auth_user_id) ||
+            String(u.id) === String(v.id)
+          ) {
+            existingKey = k;
+            break;
+          }
+        }
+      }
+
+      if (existingKey) {
+        const prev = byKey.get(existingKey)!;
+        byKey.set(existingKey, {
+          ...prev,
+          ...u,
+          id: prev.id !== undefined ? prev.id : u.id,
+          email: u.email || prev.email,
+          department: u.department && u.department !== 'Général' ? u.department : prev.department || u.department,
+        });
+      } else {
+        byKey.set(emailKey || authKey || idKey, u);
+      }
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+/**
+ * Synchronise de manière résiliente un profil utilisateur dans public.users ET dans le miroir d'annuaire app_settings
+ * pour que tous les terminaux (PC et Mobile, avant ou après connexion) voient immédiatement l'utilisateur.
+ */
+export function isDefaultDemoEmail(email?: string | null): boolean {
+  if (!email) return false;
+  const clean = email.trim().toLowerCase();
+  return clean.endsWith('@entreprise.com') || clean === 'admin@tot-stock.app';
+}
+
+export async function mirrorUsersDirectoryToSettings(
+  _client: SupabaseClient,
+  _usersToMirror: User[]
+): Promise<void> {
+  // Sécurité V18 : Aucun miroir d'annuaire d'utilisateurs dans app_settings
+  return;
+}
+
+export async function removeUserFromDirectoryMirrorInSupabase(
+  _client: SupabaseClient | null,
+  _userId: string | number
+): Promise<void> {
+  // Sécurité V18 : Aucun miroir d'annuaire d'utilisateurs dans app_settings
+  return;
+}
+
+export async function syncUserProfileAndDirectoryToSupabase(
+  client: SupabaseClient | null,
+  user: Partial<User>,
+  _allUsers?: User[]
+): Promise<User | null> {
+  if (!client || (!user.name && !user.email)) return null;
+  const cleanUser = sanitizeUserForDirectory(user);
+
+  // Sécurité V18 : L'écriture sur public.users passe par l'Edge Function admin-users ;
+  // côté client, on tente uniquement de lire le profil existant lié à la session authentifiée.
+  try {
+    const { data: sessionData } = await client.auth.getSession();
+    if (!sessionData?.session) return cleanUser;
+
+    if (cleanUser.email) {
+      const { data: existingByEmail } = await client
+        .from('users')
+        .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
+        .ilike('email', cleanUser.email)
+        .maybeSingle();
+
+      if (existingByEmail) {
+        return sanitizeUserForDirectory(existingByEmail);
+      }
+    }
+  } catch {}
+
+  return cleanUser;
+}
+
+/**
+ * Charge de manière sécurisée la liste des profils utilisateurs (sans jamais lire pin ni pin_hash)
+ * UNIQUEMENT lorsqu'une session Supabase Auth authentifiée est active (Sécurité V18 : aucun annuaire anonyme).
+ */
+export async function fetchUsersDirectorySafe(client: SupabaseClient): Promise<User[]> {
+  let rpcUsersList: User[] = [];
+  let tableUsersList: User[] = [];
+  let sessionUserList: User[] = [];
+
+  // 0. Sécurité V18 : Vérifier qu'une session Supabase Auth est active (aucun chargement anonyme)
+  try {
+    const { data: sessionData } = await client.auth.getSession();
+    if (!sessionData?.session?.user) {
+      return [];
+    }
+    try {
+      const { data: linked } = await client.rpc('get_or_link_my_profile');
+      if (linked?.user) {
+        sessionUserList.push(sanitizeUserForDirectory(linked.user));
+      }
+    } catch {}
+  } catch {
+    return [];
+  }
+
+  // 1. Essayer la RPC authentifiée get_visible_users si installée (jamais get_login_users_directory / get_login_directory)
+  try {
+    const { data: rpcUsers, error: rpcErr } = await client.rpc('get_visible_users');
+    if (!rpcErr && rpcUsers) {
+      let parsedRpc: any[] = [];
+      if (Array.isArray(rpcUsers)) {
+        parsedRpc = rpcUsers;
+      } else if (typeof rpcUsers === 'string') {
+        try {
+          const p = JSON.parse(rpcUsers);
+          if (Array.isArray(p)) parsedRpc = p;
+        } catch {}
+      } else if (Array.isArray((rpcUsers as any).users)) {
+        parsedRpc = (rpcUsers as any).users;
+      }
+      if (parsedRpc.length > 0) {
+        rpcUsersList = mergeUserLists(rpcUsersList, parsedRpc);
+      }
+    }
+  } catch {}
+
+  // 2. Requête directe sur public.users avec sous-ensembles de colonnes sécurisés (sans pin ni pin_hash)
+  const userTable = (await findWorkingTable(client, ['users', 'tot_users', 'APP_TOT_users'], 'id, name')) || 'users';
+  const columnSets = [
+    'id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at',
+    'id, name, trigram, email, department, role_id, is_blocked, allowed_depots, created_at',
+    'id, name, trigram, email, department, role_id, is_blocked',
+    'id, name, trigram, email, department, role_id',
+  ];
+
+  for (const cols of columnSets) {
+    try {
+      const { data, error } = await client.from(userTable).select(cols);
+      if (!error && Array.isArray(data)) {
+        if (data.length > 0) {
+          tableUsersList = data as unknown as User[];
+        }
+        break;
+      }
+    } catch {}
+  }
+
+  let deletedIds: string[] = [];
+  try {
+    const rawDel = localStorage.getItem('tot_deleted_user_ids');
+    if (rawDel) deletedIds = JSON.parse(rawDel);
+  } catch {}
+
+  const merged = mergeUserLists(rpcUsersList, tableUsersList, sessionUserList);
+  return merged.filter((u) => !(u as any).is_deleted && !deletedIds.includes(String(u.id)));
+}
+
+/**
+ * Charge l'annuaire uniquement si une session authentifiée est déjà active.
+ * Sécurité V18 : Aucun annuaire d'utilisateurs ou de départements n'est exposé avant connexion.
+ */
+export async function fetchLoginDirectory(client: SupabaseClient): Promise<{
+  users?: User[];
+  departments?: Department[];
+  roles?: Role[];
+}> {
+  const result: { users?: User[]; departments?: Department[]; roles?: Role[] } = {};
+
+  try {
+    const { data: sessionData } = await client.auth.getSession();
+    if (!sessionData?.session?.user) {
+      return result;
+    }
+  } catch {
+    return result;
+  }
+
+  try {
+    const loadedUsers = await fetchUsersDirectorySafe(client);
+    if (loadedUsers.length > 0) {
+      result.users = loadedUsers;
+    }
+  } catch {}
+
+  try {
+    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
+    const { data, error } = await client.from(depTable).select('*');
+    if (!error && Array.isArray(data) && data.length > 0) {
+      result.departments = data as Department[];
+    }
+  } catch {}
+
+  try {
+    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
+    const { data, error } = await client.from(roleTable).select('*');
+    if (!error && Array.isArray(data) && data.length > 0) {
+      result.roles = data as Role[];
+    }
+  } catch {}
+
+  return result;
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  success: boolean;
+  message: string;
+  tables?: {
+    products?: number;
+    users?: number;
+    movements?: number;
+    departments?: number;
+    projects?: number;
+    depots?: number;
+  };
+}
+
+export async function testClientSupabaseConnection(
+  url: string,
+  key: string
+): Promise<ConnectionTestResult> {
+  const cleanUrl = normalizeSupabaseUrl(url);
+  const cleanKey = normalizeSupabaseKey(key);
+
+  if (!cleanUrl || !cleanKey) {
+    return { ok: false, success: false, message: 'URL et clé Supabase requises.' };
+  }
+
+  try {
+    const tempClient = createClient(cleanUrl, cleanKey, {
+      auth: { persistSession: false },
+    });
+
+    const results: {
+      products?: number;
+      users?: number;
+      movements?: number;
+      departments?: number;
+      projects?: number;
+      depots?: number;
+    } = {};
+
+    // Test products table
+    const prodTable = (await findWorkingTable(tempClient, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
+    const { data: prodData, error: prodErr, count: prodCount } = await tempClient
+      .from(prodTable)
+      .select('*', { count: 'exact', head: false })
+      .limit(5);
+
+    if (prodErr) {
+      if (prodErr.code === 'PGRST301' || prodErr.message?.includes('JWT')) {
+        return { ok: false, success: false, message: 'Erreur d\'authentification : clé API anon invalide ou expirée.' };
+      }
+      if (isNetworkOrFetchError(prodErr)) {
+        return {
+          ok: false,
+          success: false,
+          message: 'Échec de connexion réseau ("Failed to fetch") : Impossible de joindre votre projet Supabase. Vérifiez si votre projet gratuit est en veille (Paused sur supabase.com) ou si l\'URL API est exacte.',
+        };
+      }
+    }
+
+    if (!prodErr && prodData) {
+      results.products = prodCount !== null && prodCount !== undefined ? prodCount : prodData.length;
+    }
+
+    // Test users table
+    const loadedUsers = await fetchUsersDirectorySafe(tempClient);
+    if (loadedUsers.length > 0) {
+      results.users = loadedUsers.length;
+    } else {
+      const userTable = (await findWorkingTable(tempClient, ['users', 'tot_users', 'APP_TOT_users'], 'id, name')) || 'users';
+      const { data: userData, error: userErr } = await tempClient.from(userTable).select('id, name').limit(20);
+      if (!userErr && userData) {
+        results.users = userData.length;
+      }
+    }
+
+    // Test movements table
+    const movTable = (await findWorkingTable(tempClient, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
+    const { data: movData, error: movErr } = await tempClient.from(movTable).select('id').limit(5);
+    if (!movErr && movData) {
+      results.movements = movData.length;
+    }
+
+    // Test depots table
+    const depTable = await findWorkingTable(tempClient, ['depots', 'warehouses', 'magasins', 'tot_depots']);
+    if (depTable) {
+      const { data: depData, error: depErr } = await tempClient.from(depTable).select('id').limit(10);
+      if (!depErr && depData) {
+        results.depots = depData.length;
+      }
+    }
+
+    if (results.products !== undefined || results.users !== undefined) {
+      const pCount = results.products ?? 0;
+      const uCount = results.users ?? 0;
+      const dCount = results.depots !== undefined ? `, ${results.depots} dépôt(s)` : '';
+      return {
+        ok: true,
+        success: true,
+        message: `Connexion réussie ! ${pCount} produit(s), ${uCount} utilisateur(s)${dCount} détecté(s).`,
+        tables: results,
+      };
+    }
+
+    // If tables aren't found yet
+    return {
+      ok: true,
+      success: true,
+      message: 'Connecté à Supabase avec succès ! (Serveur en ligne et joignable).',
+      tables: results,
+    };
+  } catch (err: any) {
+    if (isNetworkOrFetchError(err)) {
+      return {
+        ok: false,
+        success: false,
+        message: 'Échec de connexion réseau ("Failed to fetch") : Impossible de joindre votre projet Supabase. Vérifiez si votre projet gratuit est en veille (Paused sur supabase.com) ou si l\'URL API est exacte.',
+      };
+    }
+    return {
+      ok: false,
+      success: false,
+      message: `Échec de connexion : ${err.message || 'Vérifiez l\'URL et la clé API.'}`,
+    };
+  }
+}
+
+export interface ClientDataPayload {
+  products?: Product[];
+  movements?: StockMovement[];
+  users?: User[];
+  roles?: Role[];
+  departments?: Department[];
+  projects?: Project[];
+  subCategories?: SubCategory[];
+  depots?: Depot[];
+  orders?: MaterialOrder[];
+}
+
+export function normalizeProductRecord(p: any): Product {
+  const ref = String(p?.reference ?? '').trim();
+  const qr = p?.qr_code != null && String(p.qr_code).trim() !== '' ? String(p.qr_code).trim() : undefined;
+  return {
+    ...p,
+    id: String(p?.id ?? '').trim(),
+    reference: ref,
+    brand: String(p?.brand ?? ''),
+    model: String(p?.model ?? ''),
+    barcode: p?.barcode != null && String(p.barcode).trim() !== '' ? String(p.barcode).trim() : undefined,
+    qr_code: qr,
+    manufacturer_ref:
+      p?.manufacturer_ref != null && String(p.manufacturer_ref).trim() !== ''
+        ? String(p.manufacturer_ref).trim()
+        : undefined,
+    store_name: p?.store_name != null ? String(p.store_name) : undefined,
+    room_name: p?.room_name != null ? String(p.room_name) : undefined,
+    shelf_name: p?.shelf_name != null ? String(p.shelf_name) : undefined,
+    quantity: Number(p?.quantity) || 0,
+    min_stock_alert: Number(p?.min_stock_alert ?? 2),
+    unit_price: Number(p?.unit_price) || 0,
+  };
+}
+
+export function normalizeMovementRecord(m: any): StockMovement {
+  return {
+    ...m,
+    id: String(m?.id ?? ''),
+    product_id: String(m?.product_id ?? ''),
+    product_ref: m?.product_ref != null ? String(m.product_ref) : undefined,
+    user_name: m?.user_name != null ? String(m.user_name) : '',
+    site_number: m?.site_number != null && m?.site_number !== '' ? String(m.site_number) : null,
+    department_name: m?.department_name != null && m?.department_name !== '' ? String(m.department_name) : null,
+    depot_name: m?.depot_name != null && m?.depot_name !== '' ? String(m.depot_name) : undefined,
+    order_number: m?.order_number != null && m?.order_number !== '' ? String(m.order_number) : undefined,
+    quantity_changed: Number(m?.quantity_changed) || 0,
+    movement_type: m?.movement_type === 'IN' ? 'IN' : 'OUT',
+    created_at: m?.created_at ? String(m.created_at) : new Date().toISOString(),
+  };
+}
+
+export function normalizeDepartmentRecord(d: any): Department {
+  return {
+    ...d,
+    name: String(d?.name ?? 'Général'),
+  };
+}
+
+export function normalizeProjectRecord(p: any): Project {
+  return {
+    ...p,
+    project_number: String(p?.project_number ?? ''),
+    project_name: String(p?.project_name ?? ''),
+  };
+}
+
+export function normalizeDepotRecord(d: any): Depot {
+  return {
+    ...d,
+    id: String(d?.id ?? ''),
+    name: String(d?.name ?? ''),
+    code: d?.code != null ? String(d.code) : undefined,
+    address: d?.address != null ? String(d.address) : undefined,
+    description: d?.description != null ? String(d.description) : undefined,
+    license_plate: d?.license_plate != null ? String(d.license_plate) : undefined,
+    vehicle_type: d?.vehicle_type != null ? String(d.vehicle_type) : undefined,
+    manager_name: d?.manager_name != null ? String(d.manager_name) : undefined,
+    department_name: d?.department_name != null ? String(d.department_name) : undefined,
+  };
+}
+
+export function normalizeOrderRecord(o: any): MaterialOrder {
+  return {
+    ...o,
+    id: String(o?.id ?? o?.order_number ?? ''),
+    order_number: String(o?.order_number ?? o?.id ?? ''),
+    site_number: String(o?.site_number ?? ''),
+    site_name: o?.site_name != null ? String(o.site_name) : undefined,
+    requester_name: String(o?.requester_name ?? ''),
+    requester_department: o?.requester_department != null ? String(o.requester_department) : undefined,
+    depot_name: o?.depot_name != null ? String(o.depot_name) : undefined,
+    pickup_delegate_name: o?.pickup_delegate_name != null ? String(o.pickup_delegate_name) : undefined,
+    collected_by: o?.collected_by != null ? String(o.collected_by) : undefined,
+    items: Array.isArray(o?.items)
+      ? o.items.map((it: any) => ({
+          ...it,
+          product_id: String(it?.product_id ?? ''),
+          product_ref: String(it?.product_ref ?? ''),
+          product_name: String(it?.product_name ?? ''),
+          substituted_with_ref: it?.substituted_with_ref != null ? String(it.substituted_with_ref) : undefined,
+        }))
+      : [],
+  };
+}
+
+export async function fetchAllClientData(client: SupabaseClient): Promise<ClientDataPayload> {
+  const result: ClientDataPayload = {};
+
+  // 1. Products
+  try {
+    const prodTable = (await findWorkingTable(client, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
+    const { data, error } = await client.from(prodTable).select('*').order('brand', { ascending: true });
+    if (!error && data && data.length > 0) {
+      result.products = data.map(normalizeProductRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement products Supabase:', e);
+  }
+
+  // 2. Stock Movements
+  try {
+    const movTable = (await findWorkingTable(client, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
+    const { data, error } = await client
+      .from(movTable)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(500);
+    if (!error && data && data.length > 0) {
+      result.movements = data.map(normalizeMovementRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement movements Supabase:', e);
+  }
+
+  // 3. Users (Resilient loader with explicit safe column sets, never select('*'), never pin or pin_hash)
+  try {
+    const loadedUsers = await fetchUsersDirectorySafe(client);
+    if (loadedUsers.length > 0) {
+      result.users = loadedUsers;
+    }
+  } catch (e) {
+    console.warn('Erreur chargement users Supabase:', e);
+  }
+
+  // 4. Roles
+  try {
+    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
+    const { data, error } = await client.from(roleTable).select('*');
+    if (!error && data && data.length > 0) {
+      result.roles = data as Role[];
+    }
+  } catch (e) {
+    console.warn('Erreur chargement roles Supabase:', e);
+  }
+
+  // 5. Departments
+  try {
+    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
+    const { data, error } = await client.from(depTable).select('*');
+    if (!error && data && data.length > 0) {
+      result.departments = data.map(normalizeDepartmentRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement departments Supabase:', e);
+  }
+
+  // 6. Projects
+  try {
+    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+    const { data, error } = await client.from(projTable).select('*');
+    if (!error && data && data.length > 0) {
+      result.projects = data.map(normalizeProjectRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement projects Supabase:', e);
+  }
+
+  // 7. Subcategories
+  try {
+    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
+    const { data, error } = await client.from(catTable).select('*');
+    if (!error && data && data.length > 0) {
+      result.subCategories = data as SubCategory[];
+    }
+  } catch (e) {
+    console.warn('Erreur chargement subcategories Supabase:', e);
+  }
+
+  // 8. Depots / Magasins
+  try {
+    const depotTable = (await findWorkingTable(client, ['depots', 'warehouses', 'magasins', 'tot_depots'])) || 'depots';
+    const { data, error } = await client.from(depotTable).select('*');
+    if (!error && data && data.length > 0) {
+      result.depots = data.map(normalizeDepotRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement depots Supabase:', e);
+  }
+
+  // 9. Material Orders (Drive Chantier & Préparation) — Fusion table + miroir temps réel app_settings
+  try {
+    const mergedOrders = await fetchOrdersMergedFromSupabase(client);
+    if (mergedOrders.length > 0) {
+      result.orders = mergedOrders;
+    }
+  } catch (e) {
+    console.warn('Erreur chargement material_orders Supabase:', e);
+  }
+
+  return result;
+}
+
+const ORDER_STATUS_RANK: Record<string, number> = {
+  WAITING_APPROVAL: 1,
+  PENDING: 2,
+  PREPARING: 3,
+  READY: 4,
+  COLLECTED: 5,
+  REJECTED: 5,
+  CANCELLED: 5,
+};
+
+export function getOrderLastModifiedMs(o: MaterialOrder): number {
+  let maxMs = 0;
+  const candidates = [
+    o.updated_at,
+    o.collected_at,
+    o.ready_at,
+    o.assigned_at,
+    o.approved_at,
+    o.rejected_at,
+    o.pickup_delegate_at,
+    o.created_at,
+  ];
+  for (const c of candidates) {
+    if (c) {
+      const parsed = Date.parse(c);
+      if (!Number.isNaN(parsed) && parsed > maxMs) maxMs = parsed;
+    }
+  }
+  if (Array.isArray(o.items)) {
+    for (const it of o.items) {
+      if (it?.scanned_at) {
+        const parsed = Date.parse(it.scanned_at);
+        if (!Number.isNaN(parsed) && parsed > maxMs) maxMs = parsed;
+      }
+    }
+  }
+  return maxMs;
+}
+
+export function pickNewerOrder(a: MaterialOrder, b: MaterialOrder): MaterialOrder {
+  const rankA = ORDER_STATUS_RANK[a.status] || 0;
+  const rankB = ORDER_STATUS_RANK[b.status] || 0;
+  const timeA = getOrderLastModifiedMs(a);
+  const timeB = getOrderLastModifiedMs(b);
+
+  if (rankB > rankA) return { ...a, ...b };
+  if (rankA > rankB) return { ...b, ...a };
+
+  if (timeB > timeA) return { ...a, ...b };
+  if (timeA > timeB) return { ...b, ...a };
+
+  const pickedA = Array.isArray(a.items) ? a.items.filter((i) => i.picked || i.unavailable).length : 0;
+  const pickedB = Array.isArray(b.items) ? b.items.filter((i) => i.picked || i.unavailable).length : 0;
+  if (pickedB >= pickedA) return { ...a, ...b };
+  return { ...b, ...a };
+}
+
+export function mergeMaterialOrdersLists(...lists: (MaterialOrder[] | undefined | null)[]): MaterialOrder[] {
+  const byKey = new Map<string, MaterialOrder>();
+  const orderNumberToId = new Map<string, string>();
+
+  let deletedOrderIds: string[] = [];
+  try {
+    const rawDel = localStorage.getItem('tot_deleted_order_ids');
+    if (rawDel) deletedOrderIds = JSON.parse(rawDel);
+  } catch {}
+  const deletedSet = new Set(deletedOrderIds.map(String));
+
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      if (!raw || (!raw.id && !raw.order_number)) continue;
+      const norm = normalizeOrderRecord(raw);
+      const idKey = String(norm.id || norm.order_number);
+      const ordNum = norm.order_number ? String(norm.order_number).trim() : '';
+      if (deletedSet.has(idKey) || (ordNum && deletedSet.has(ordNum))) continue;
+      const mappedKey =
+        (!raw.id && ordNum && orderNumberToId.get(ordNum)) || idKey;
+
+      const existing = byKey.get(mappedKey);
+      if (!existing) {
+        byKey.set(mappedKey, norm);
+        if (ordNum && !orderNumberToId.has(ordNum)) {
+          orderNumberToId.set(ordNum, mappedKey);
+        }
+      } else {
+        const winner = pickNewerOrder(existing, norm);
+        byKey.set(mappedKey, winner);
+      }
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    const tA = Date.parse(a.created_at || '') || 0;
+    const tB = Date.parse(b.created_at || '') || 0;
+    return tB - tA;
+  });
+}
+
+async function fetchOrdersFromSettingsMirror(client: SupabaseClient): Promise<MaterialOrder[]> {
+  const collected: MaterialOrder[][] = [];
+  try {
+    const { data, error } = await client
+      .from('app_settings')
+      .select('key, value')
+      .in('key', ['company_orders_sync', 'company_license_info']);
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (row.key === 'company_orders_sync' && row.value) {
+          try {
+            const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+            if (Array.isArray(parsed)) collected.push(parsed as MaterialOrder[]);
+          } catch {}
+        } else if (row.key === 'company_license_info' && row.value) {
+          try {
+            const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+            if (parsed && Array.isArray(parsed.orders_sync)) {
+              collected.push(parsed.orders_sync as MaterialOrder[]);
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  return collected.length > 0 ? mergeMaterialOrdersLists(...collected) : [];
+}
+
+async function mirrorOrderToSettings(client: SupabaseClient, order: MaterialOrder): Promise<void> {
+  try {
+    const existingMirror = await fetchOrdersFromSettingsMirror(client);
+    const merged = mergeMaterialOrdersLists(existingMirror, [order]).slice(0, 150);
+
+    await updateCompanyLicenseInfoShared(client, (licObj) => ({
+      ...licObj,
+      orders_sync: mergeMaterialOrdersLists(
+        Array.isArray(licObj.orders_sync) ? licObj.orders_sync : [],
+        merged
+      ).slice(0, 150),
+    }));
+  } catch {}
+}
+
+export interface UserBasketSyncEntry {
+  userId: string;
+  authUserId?: string;
+  trigram?: string;
+  email?: string;
+  baskets: OrderBasket[];
+  activeBasketId: string;
+  batchCart?: BatchCartItem[];
+  updatedAt: number;
+}
+
+export function getCanonicalUserBasketKey(user: {
+  id?: string | number;
+  auth_user_id?: string | null;
+  trigram?: string | null;
+  email?: string | null;
+}): string {
+  if (user.email && String(user.email).trim()) {
+    return `email:${String(user.email).trim().toLowerCase()}`;
+  }
+  if (user.auth_user_id && String(user.auth_user_id).trim()) {
+    return `auth:${String(user.auth_user_id).trim().toLowerCase()}`;
+  }
+  if (user.trigram && String(user.trigram).trim()) {
+    return `trigram:${String(user.trigram).trim().toUpperCase()}`;
+  }
+  return `id:${String(user.id ?? 'anon')}`;
+}
+
+export function mergeOrderBasketsForInitialSync(
+  localBaskets: OrderBasket[],
+  remoteBaskets: OrderBasket[]
+): OrderBasket[] {
+  const localNonEmpty = (localBaskets || []).filter((b) => Array.isArray(b.items) && b.items.length > 0);
+  const remoteNonEmpty = (remoteBaskets || []).filter((b) => Array.isArray(b.items) && b.items.length > 0);
+
+  if (localNonEmpty.length === 0) return remoteBaskets.length > 0 ? remoteBaskets : localBaskets;
+  if (remoteNonEmpty.length === 0) return localBaskets.length > 0 ? localBaskets : remoteBaskets;
+
+  const mergedMap = new Map<string, OrderBasket>();
+
+  for (const rb of remoteBaskets) {
+    mergedMap.set(rb.id, { ...rb, items: [...(rb.items || [])] });
+  }
+
+  for (const lb of localNonEmpty) {
+    // Match by id or by same depot_name + name
+    let target = mergedMap.get(lb.id);
+    if (!target) {
+      target = Array.from(mergedMap.values()).find(
+        (b) =>
+          (b.depot_name || '').toLowerCase() === (lb.depot_name || '').toLowerCase() &&
+          (b.name.toLowerCase() === lb.name.toLowerCase() || b.items.length === 0)
+      );
+    }
+
+    if (target) {
+      const itemMap = new Map<string, any>();
+      for (const it of target.items) {
+        itemMap.set(String(it.product_id), { ...it });
+      }
+      for (const it of lb.items) {
+        const key = String(it.product_id);
+        const ex = itemMap.get(key);
+        if (ex) {
+          itemMap.set(key, {
+            ...ex,
+            ...it,
+            quantity: Math.max(Number(ex.quantity) || 1, Number(it.quantity) || 1),
+          });
+        } else {
+          itemMap.set(key, { ...it });
+        }
+      }
+      const combinedItems = Array.from(itemMap.values());
+      mergedMap.set(target.id, {
+        ...target,
+        depot_name: target.depot_name || lb.depot_name || combinedItems[0]?.depot_name,
+        site_number: target.site_number || lb.site_number,
+        notes: target.notes || lb.notes,
+        items: combinedItems,
+      });
+    } else {
+      const uniqueId = mergedMap.has(lb.id) ? `${lb.id}-${Date.now()}` : lb.id;
+      mergedMap.set(uniqueId, { ...lb, id: uniqueId });
+    }
+  }
+
+  return Array.from(mergedMap.values());
+}
+
+async function fetchAllUserBasketsMapFromSettings(
+  client: SupabaseClient
+): Promise<Record<string, UserBasketSyncEntry>> {
+  const combined: Record<string, UserBasketSyncEntry> = {};
+
+  const mergeDict = (dict: any) => {
+    if (!dict || typeof dict !== 'object' || Array.isArray(dict)) return;
+    for (const [k, val] of Object.entries(dict)) {
+      const entry = val as UserBasketSyncEntry;
+      if (!entry || !Array.isArray(entry.baskets)) continue;
+      const existing = combined[k];
+      if (!existing || (Number(entry.updatedAt) || 0) >= (Number(existing.updatedAt) || 0)) {
+        combined[k] = entry;
+      }
+    }
+  };
+
+  try {
+    const { data, error } = await client
+      .from('app_settings')
+      .select('key, value')
+      .in('key', ['company_user_baskets', 'company_license_info']);
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (row.key === 'company_user_baskets' && row.value) {
+          try {
+            const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+            mergeDict(parsed);
+          } catch {}
+        } else if (row.key === 'company_license_info' && row.value) {
+          try {
+            const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+            if (parsed && parsed.user_baskets_sync) {
+              mergeDict(parsed.user_baskets_sync);
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  return combined;
+}
+
+export async function fetchUserBasketsFromSupabase(
+  client: SupabaseClient | null,
+  user: User | null
+): Promise<UserBasketSyncEntry | null> {
+  if (!client || !user) return null;
+  try {
+    let sessionAuthId = '';
+    let sessionEmail = '';
+    try {
+      const { data: sessionData } = await client.auth.getSession();
+      if (sessionData?.session?.user) {
+        sessionAuthId = String(sessionData.session.user.id || '').trim().toLowerCase();
+        sessionEmail = String(sessionData.session.user.email || '').trim().toLowerCase();
+      }
+    } catch {}
+
+    const map = await fetchAllUserBasketsMapFromSettings(client);
+    const effectiveUser = {
+      ...user,
+      email: user.email || sessionEmail || undefined,
+      auth_user_id: user.auth_user_id || sessionAuthId || undefined,
+    };
+    const canonicalKey = getCanonicalUserBasketKey(effectiveUser);
+    const candidates: UserBasketSyncEntry[] = [];
+
+    if (map[canonicalKey]) {
+      candidates.push(map[canonicalKey]);
+    }
+
+    const userTrig = (user.trigram || '').trim().toUpperCase();
+    const userEmail = (user.email || sessionEmail || '').trim().toLowerCase();
+    const userAuthId = (user.auth_user_id || sessionAuthId || '').trim().toLowerCase();
+    const userIdStr = String(user.id);
+
+    for (const entry of Object.values(map)) {
+      if (!entry || !Array.isArray(entry.baskets)) continue;
+      const eTrig = (entry.trigram || '').trim().toUpperCase();
+      const eEmail = (entry.email || '').trim().toLowerCase();
+      const eAuthId = (entry.authUserId || '').trim().toLowerCase();
+      const eId = String(entry.userId || '');
+
+      if (
+        (userEmail && eEmail && userEmail === eEmail) ||
+        (userAuthId && eAuthId && userAuthId === eAuthId) ||
+        (userAuthId && eId && userAuthId === eId.toLowerCase()) ||
+        (userTrig && eTrig && userTrig === eTrig) ||
+        (userIdStr && eId && userIdStr === eId)
+      ) {
+        candidates.push(entry);
+      }
+    }
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+    return candidates[0];
+  } catch {
+    return null;
+  }
+}
+
+export async function pushUserBasketsToSupabase(
+  client: SupabaseClient | null,
+  user: User | null,
+  baskets: OrderBasket[],
+  activeBasketId: string,
+  batchCart?: BatchCartItem[],
+  updatedAt?: number
+): Promise<boolean> {
+  if (!client || !user) return false;
+  try {
+    let sessionAuthId = '';
+    let sessionEmail = '';
+    try {
+      const { data: sessionData } = await client.auth.getSession();
+      if (sessionData?.session?.user) {
+        sessionAuthId = String(sessionData.session.user.id || '').trim();
+        sessionEmail = String(sessionData.session.user.email || '').trim().toLowerCase();
+      }
+    } catch {}
+
+    const ts = updatedAt || Date.now();
+    const effectiveEmail = (user.email || sessionEmail || '').trim().toLowerCase();
+    const effectiveAuthId = (user.auth_user_id || sessionAuthId || '').trim();
+    const canonicalKey = getCanonicalUserBasketKey({
+      ...user,
+      email: effectiveEmail || undefined,
+      auth_user_id: effectiveAuthId || undefined,
+    });
+
+    const entry: UserBasketSyncEntry = {
+      userId: String(user.id),
+      authUserId: effectiveAuthId || undefined,
+      trigram: user.trigram || undefined,
+      email: effectiveEmail || undefined,
+      baskets,
+      activeBasketId,
+      batchCart: batchCart || [],
+      updatedAt: ts,
+    };
+
+    const userTrig = (user.trigram || '').trim().toUpperCase();
+    const userIdStr = String(user.id);
+
+    return await updateCompanyLicenseInfoShared(client, (licObj) => {
+      const existingMap: Record<string, UserBasketSyncEntry> = {
+        ...(licObj.user_baskets_sync && typeof licObj.user_baskets_sync === 'object'
+          ? licObj.user_baskets_sync
+          : {}),
+      };
+
+      for (const [k, v] of Object.entries(existingMap)) {
+        if (!v) continue;
+        const eTrig = (v.trigram || '').trim().toUpperCase();
+        const eEmail = (v.email || '').trim().toLowerCase();
+        const eAuthId = (v.authUserId || '').trim().toLowerCase();
+        const eId = String(v.userId || '');
+        if (
+          (effectiveEmail && eEmail && effectiveEmail === eEmail) ||
+          (effectiveAuthId && eAuthId && effectiveAuthId.toLowerCase() === eAuthId) ||
+          (userTrig && eTrig && userTrig === eTrig) ||
+          (userIdStr && eId && userIdStr === eId)
+        ) {
+          delete existingMap[k];
+        }
+      }
+
+      existingMap[canonicalKey] = entry;
+      return {
+        ...licObj,
+        user_baskets_sync: existingMap,
+      };
+    });
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Promise<MaterialOrder[]> {
+  let tableOrders: MaterialOrder[] = [];
+  let mirrorOrders: MaterialOrder[] = [];
+
+  try {
+    const orderTable = (await findWorkingTable(client, ['material_orders', 'orders', 'tot_orders'])) || 'material_orders';
+    const { data, error } = await client
+      .from(orderTable)
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!error && Array.isArray(data)) {
+      tableOrders = data as MaterialOrder[];
+    }
+  } catch {}
+
+  try {
+    mirrorOrders = await fetchOrdersFromSettingsMirror(client);
+  } catch {}
+
+  return mergeMaterialOrdersLists(tableOrders, mirrorOrders);
+}
+
+export async function fetchLiveOperationalData(
+  client: SupabaseClient,
+  currentUser?: User | null
+): Promise<{
+  orders?: MaterialOrder[];
+  products?: Product[];
+  movements?: StockMovement[];
+  depots?: Depot[];
+  userBaskets?: UserBasketSyncEntry | null;
+}> {
+  const result: {
+    orders?: MaterialOrder[];
+    products?: Product[];
+    movements?: StockMovement[];
+    depots?: Depot[];
+    userBaskets?: UserBasketSyncEntry | null;
+  } = {};
+
+  await Promise.all([
+    (async () => {
+      try {
+        const orders = await fetchOrdersMergedFromSupabase(client);
+        if (orders.length > 0) result.orders = orders;
+      } catch {}
+    })(),
+    (async () => {
+      if (!currentUser) return;
+      try {
+        const ub = await fetchUserBasketsFromSupabase(client, currentUser);
+        if (ub) result.userBaskets = ub;
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const prodTable = (await findWorkingTable(client, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
+        const { data, error } = await client.from(prodTable).select('*').order('brand', { ascending: true });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          result.products = data.map(normalizeProductRecord);
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const movTable = (await findWorkingTable(client, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
+        const { data, error } = await client
+          .from(movTable)
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(500);
+        if (!error && Array.isArray(data) && data.length > 0) {
+          result.movements = data.map(normalizeMovementRecord);
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const depotTable = (await findWorkingTable(client, ['depots', 'warehouses', 'magasins', 'tot_depots'])) || 'depots';
+        const { data, error } = await client.from(depotTable).select('*');
+        if (!error && Array.isArray(data) && data.length > 0) {
+          result.depots = data.map(normalizeDepotRecord);
+        }
+      } catch {}
+    })(),
+  ]);
+
+  return result;
+}
+
+/**
+ * Cleanly formats PostgreSQL / Supabase errors, especially RLS code 42501 (insufficient_privilege).
+ */
+export function formatPostgresErrorMessage(error: any, fallback = 'Une erreur est survenue.'): string {
+  if (!error) return fallback;
+  const code = String(error.code || error.statusCode || '');
+  const msg = String(error.message || error.details || error || '');
+  if (
+    code === '42501' ||
+    msg.includes('42501') ||
+    msg.toLowerCase().includes('permission denied') ||
+    msg.toLowerCase().includes('violates row-level security') ||
+    msg.toLowerCase().includes('row-level security policy')
+  ) {
+    return 'Action refusée (Code Postgres 42501) : Vos privilèges ou rôle actuel ne vous permettent pas d\'effectuer cette modification (politique de sécurité RLS).';
+  }
+  return msg || fallback;
+}
+
+/**
+ * Fetches public app settings (company currency, name, logo, license) before authentication.
+ */
+export async function fetchPublicAppSettings(client: SupabaseClient): Promise<Record<string, string>> {
+  const settingsMap: Record<string, string> = {};
+  try {
+    const { data, error } = await client
+      .from('app_settings')
+      .select('key, value')
+      .in('key', [
+        'company_currency',
+        'company_name',
+        'company_logo',
+        'app_logo_url',
+        'company_license_info',
+        'license_key',
+        'company_users_directory',
+      ]);
+
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        throw error;
+      }
+      return settingsMap;
+    }
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        if (item.key && item.value) {
+          settingsMap[item.key] = item.value;
+        }
+      }
+    }
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      throw err;
+    }
+  }
+  return settingsMap;
+}
+
+// Write Operations with error resilience
+export async function pushMovementToSupabase(
+  client: SupabaseClient,
+  movement: StockMovement,
+  newProductQty?: number,
+  currentUserId?: string | number,
+  operationId?: string,
+  destDepotName?: string,
+  destRack?: string
+): Promise<{ success: boolean; newQty?: number; error?: string; conflict?: boolean; depotQty?: number }> {
+  const opId =
+    operationId ||
+    (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7));
+
+  try {
+    // 1. Priorité N°7 : RPC transactionnelle côté serveur (process_stock_movement)
+    const { data: rpcData, error: rpcErr } = await client.rpc('process_stock_movement', {
+      p_operation_id: opId,
+      p_product_id: String(movement.product_id),
+      p_depot_name: movement.depot_name || null,
+      p_type: movement.type || movement.movement_type,
+      p_quantity: movement.quantity ?? movement.quantity_changed,
+      p_reason: movement.reason || (movement.site_number ? `Chantier: ${movement.site_number}` : null),
+      p_project_name: movement.project_name || movement.site_number || null,
+      p_department: movement.department || movement.department_name || null,
+      p_dest_depot_name: destDepotName || (movement.metadata?.dest_depot_name as string) || null,
+      p_dest_rack: destRack || (movement.metadata?.dest_rack as string) || null,
+      p_metadata: { id: movement.id, product_ref: movement.product_ref, ...(movement.metadata || {}) },
+    });
+
+    if (!rpcErr && rpcData) {
+      if (rpcData.success === false) {
+        return {
+          success: false,
+          error: rpcData.message,
+          conflict: rpcData.error_code === 'REJECTED_STOCK_CONFLICT',
+        };
+      }
+      return {
+        success: true,
+        newQty: rpcData.new_quantity,
+        depotQty: rpcData.depot_quantity,
+      };
+    }
+
+    // Si la RPC a levé une exception de sécurité ou de validation (ex: 42501, 23514, P0002), ne pas tenter de contourner
+    if (rpcErr && rpcErr.code !== '42883' && !rpcErr.message?.toLowerCase().includes('does not exist')) {
+      return { success: false, error: formatPostgresErrorMessage(rpcErr) };
+    }
+
+    // 2. Fallback de compatibilité ascendante si la RPC n'est pas encore déployée (42883)
+    const movTable = (await findWorkingTable(client, ['movements', 'stock_movements', 'tot_movements'])) || 'movements';
+    
+    // Strict RLS requirement: user_id must match authenticated user
+    const payload = { ...movement };
+    if (!payload.user_id && currentUserId !== undefined && currentUserId !== null) {
+      payload.user_id = currentUserId;
+    }
+
+    const { error: movErr } = await client.from(movTable).insert([payload]);
+    if (movErr) {
+      console.error('Erreur écriture mouvement Supabase:', formatPostgresErrorMessage(movErr));
+      return { success: false, error: formatPostgresErrorMessage(movErr) };
+    }
+
+    if (newProductQty !== undefined && payload.product_id) {
+      const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
+      const { error: qtyErr } = await client
+        .from(prodTable)
+        .update({ quantity: newProductQty })
+        .eq('id', payload.product_id);
+      if (qtyErr) {
+        console.warn('Erreur mise à jour quantité produit Supabase:', formatPostgresErrorMessage(qtyErr));
+      }
+    }
+    return { success: true, newQty: newProductQty };
+  } catch (err: any) {
+    console.error('Exception enregistrement mouvement Supabase:', err);
+    return { success: false, error: err?.message || 'Exception mouvement' };
+  }
+}
+
+/**
+ * Priorité N°8 : Transition d'état contrôlée des commandes côté serveur
+ */
+export async function transitionOrderStatusSupabase(
+  client: SupabaseClient | null,
+  orderId: string,
+  targetStatus: string,
+  comment?: string,
+  preparerId?: string,
+  operationId?: string
+): Promise<{ success: boolean; error?: string }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.' };
+  const opId =
+    operationId ||
+    (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'ord-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7));
+
+  try {
+    // 1. Essai via RPC serveur transition_order_status
+    const { data: rpcData, error: rpcErr } = await client.rpc('transition_order_status', {
+      p_operation_id: opId,
+      p_order_id: orderId,
+      p_target_status: targetStatus,
+      p_comment: comment || null,
+      p_preparer_id: preparerId || null,
+    });
+
+    if (!rpcErr && rpcData) {
+      if (rpcData.success === false) {
+        return { success: false, error: rpcData.message };
+      }
+      return { success: true };
+    }
+
+    // Si la RPC a levé une exception de sécurité ou de machine d'état (ex: 42501, 22023, P0002), ne pas tenter de contourner
+    if (rpcErr && rpcErr.code !== '42883' && !rpcErr.message?.toLowerCase().includes('does not exist')) {
+      return { success: false, error: formatPostgresErrorMessage(rpcErr) };
+    }
+
+    // 2. Fallback direct update uniquement si la RPC n'existe pas encore sur la base
+    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
+    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+    const { error: updErr } = await client
+      .from(orderTable)
+      .update({
+        status: targetStatus,
+        preparer_id: preparerId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId);
+
+    if (updErr) {
+      return { success: false, error: formatPostgresErrorMessage(updErr) };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+}
+
+export async function upsertProductToSupabase(
+  client: SupabaseClient,
+  product: Product,
+  canEditAllFields: boolean = true
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
+    
+    // Si l'utilisateur n'a pas les droits d'édition de métadonnées, aucune mise à jour directe n'est permise
+    // (la modification des quantités passe obligatoirement par process_stock_movement)
+    if (!canEditAllFields) {
+      return { success: true };
+    }
+
+    // Protection stricte : La colonne 'quantity' ne doit JAMAIS être envoyée lors de l'upsert direct de produit
+    // La quantité est la somme des stock_levels gérée exclusivement par process_stock_movement()
+    const { quantity, ...productMetadata } = product;
+
+    // Helper fallback if legacy DB schema does not have qr_code column yet
+    const stripUnsupportedColumns = (meta: Record<string, any>) => {
+      const { qr_code, ...legacyMeta } = meta;
+      return legacyMeta;
+    };
+
+    // 1. Si l'article existe déjà (par id ou reference), exécuter un UPDATE d'abord pour éviter
+    // de déclencher inutilement les triggers BEFORE INSERT de quota sur une simple modification
+    if (product.id) {
+      let { data: updatedById, error: updErr } = await client
+        .from(prodTable)
+        .update(productMetadata)
+        .eq('id', product.id)
+        .select('id');
+      if (updErr && (updErr.message?.includes('qr_code') || updErr.code === 'PGRST204')) {
+        const retry = await client
+          .from(prodTable)
+          .update(stripUnsupportedColumns(productMetadata))
+          .eq('id', product.id)
+          .select('id');
+        updatedById = retry.data;
+        updErr = retry.error;
+      }
+      if (!updErr && Array.isArray(updatedById) && updatedById.length > 0) {
+        return { success: true };
+      }
+      if (updErr && updErr.code === '23505') {
+        return {
+          success: false,
+          error:
+            'Doublon refusé par la base de données : La référence, le code-barres fabricant, le QR Code ou la référence fabricant est déjà utilisé par un autre article.',
+        };
+      }
+    }
+
+    let { error } = await client.from(prodTable).upsert([productMetadata]);
+    if (error && (error.message?.includes('qr_code') || error.code === 'PGRST204')) {
+      const retry = await client.from(prodTable).upsert([stripUnsupportedColumns(productMetadata)]);
+      error = retry.error;
+    }
+    if (error) {
+      if (error.code === '23505') {
+        return {
+          success: false,
+          error:
+            'Doublon refusé par la base de données : La référence, le code-barres fabricant, le QR Code ou la référence fabricant est déjà utilisé par un autre article.',
+        };
+      }
+      return { success: false, error: formatPostgresErrorMessage(error) };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Erreur inconnue' };
+  }
+}
+
+/**
+ * Test de cohérence du stock :
+ * Vérifie que products.quantity est strictement égale à la somme de stock_levels pour chaque article.
+ */
+export async function testStockConsistency(
+  client: SupabaseClient
+): Promise<{ consistent: boolean; discrepancies: Array<{ productId: string; productQty: number; levelsSum: number }>; error?: string }> {
+  try {
+    const { data: prods, error: pErr } = await client
+      .from('products')
+      .select('id, reference, quantity');
+
+    if (pErr) {
+      return { consistent: false, discrepancies: [], error: formatPostgresErrorMessage(pErr) };
+    }
+
+    const { data: levels, error: lErr } = await client
+      .from('stock_levels')
+      .select('product_id, quantity');
+
+    if (lErr) {
+      return { consistent: false, discrepancies: [], error: formatPostgresErrorMessage(lErr) };
+    }
+
+    const levelSums = new Map<string, number>();
+    for (const lvl of (levels || [])) {
+      const pid = String(lvl.product_id);
+      levelSums.set(pid, (levelSums.get(pid) || 0) + Number(lvl.quantity || 0));
+    }
+
+    const discrepancies: Array<{ productId: string; productQty: number; levelsSum: number }> = [];
+    for (const prod of (prods || [])) {
+      const pQty = Number(prod.quantity || 0);
+      const lSum = levelSums.get(String(prod.id)) || 0;
+      if (Math.abs(pQty - lSum) > 0.0001) {
+        discrepancies.push({
+          productId: String(prod.id),
+          productQty: pQty,
+          levelsSum: lSum,
+        });
+      }
+    }
+
+    return {
+      consistent: discrepancies.length === 0,
+      discrepancies,
+    };
+  } catch (err: any) {
+    return { consistent: false, discrepancies: [], error: err?.message || 'Erreur inconnue' };
+  }
+}
+
+export async function deleteProductFromSupabase(
+  client: SupabaseClient,
+  productId: string
+): Promise<boolean> {
+  try {
+    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
+    const { error } = await client.from(prodTable).delete().eq('id', productId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertDepartmentToSupabase(
+  client: SupabaseClient,
+  dep: Department
+): Promise<boolean> {
+  try {
+    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'])) || 'departments';
+    const payload = {
+      id: dep.id,
+      name: dep.name,
+      manager_id: dep.manager_id ? String(dep.manager_id) : null,
+      deputy_manager_ids: Array.isArray(dep.deputy_manager_ids) ? dep.deputy_manager_ids.map(String) : [],
+      allow_global_kpis: Boolean(dep.allow_global_kpis),
+      is_preparer_dept: Boolean(dep.is_preparer_dept),
+      require_order_approval: Boolean(dep.require_order_approval),
+      order_approval_threshold: dep.order_approval_threshold !== undefined ? Number(dep.order_approval_threshold) : 0,
+    };
+    const { error } = await client.from(depTable).upsert([payload]);
+    if (error) {
+      // Fallback for legacy schemas missing require_order_approval or order_approval_threshold
+      const legacyDep1 = {
+        id: dep.id,
+        name: dep.name,
+        manager_id: dep.manager_id ? String(dep.manager_id) : null,
+        deputy_manager_ids: Array.isArray(dep.deputy_manager_ids) ? dep.deputy_manager_ids.map(String) : [],
+        allow_global_kpis: Boolean(dep.allow_global_kpis),
+        is_preparer_dept: Boolean(dep.is_preparer_dept),
+      };
+      const { error: err1 } = await client.from(depTable).upsert([legacyDep1]);
+      if (err1) {
+        // Fallback for very early schemas
+        const legacyDep2 = { id: dep.id, name: dep.name, manager_id: dep.manager_id ? String(dep.manager_id) : null };
+        const { error: err2 } = await client.from(depTable).upsert([legacyDep2]);
+        return !err2;
+      }
+      return true;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteDepartmentFromSupabase(
+  client: SupabaseClient,
+  depId: number
+): Promise<boolean> {
+  try {
+    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'])) || 'departments';
+    const { error } = await client.from(depTable).delete().eq('id', depId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertProjectToSupabase(
+  client: SupabaseClient,
+  proj: Project
+): Promise<boolean> {
+  try {
+    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+    const { error } = await client.from(projTable).upsert([proj]);
+    if (error) {
+      // Fallback for legacy schemas
+      const legacyProj = {
+        id: proj.id,
+        department_id: proj.department_id,
+        project_number: proj.project_number,
+        project_name: proj.project_name,
+        manager_id: proj.manager_id || null,
+      };
+      const { error: err2 } = await client.from(projTable).upsert([legacyProj]);
+      return !err2;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteProjectFromSupabase(
+  client: SupabaseClient,
+  projId: number
+): Promise<boolean> {
+  try {
+    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+    const { error } = await client.from(projTable).delete().eq('id', projId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertRoleToSupabase(
+  client: SupabaseClient,
+  role: Role
+): Promise<boolean> {
+  try {
+    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
+    const { error } = await client.from(roleTable).upsert([role]);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteRoleFromSupabase(
+  client: SupabaseClient,
+  roleId: number
+): Promise<boolean> {
+  try {
+    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
+    const { error } = await client.from(roleTable).delete().eq('id', roleId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertSubCategoryToSupabase(
+  client: SupabaseClient,
+  category: SubCategory
+): Promise<boolean> {
+  try {
+    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
+    const { error } = await client.from(catTable).upsert([category]);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteSubCategoryFromSupabase(
+  client: SupabaseClient,
+  catId: number
+): Promise<boolean> {
+  try {
+    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
+    const { error } = await client.from(catTable).delete().eq('id', catId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export interface DepotSyncResult {
+  success: boolean;
+  table?: string;
+  error?: string;
+  isTableMissing?: boolean;
+  isNetworkError?: boolean;
+  isSupabaseConnected?: boolean;
+  inserted?: Depot;
+}
+
+export interface CheckDepotsTableResult {
+  exists: boolean;
+  table: string;
+  count: number;
+  error?: string;
+  isNetworkError?: boolean;
+}
+
+export async function checkDepotTableInSupabase(
+  client: SupabaseClient | null
+): Promise<CheckDepotsTableResult> {
+  if (!client) {
+    return { exists: false, table: 'depots', count: 0, error: 'Supabase non configuré.' };
+  }
+
+  const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
+  for (const table of candidateTables) {
+    try {
+      const { data, count, error } = await client
+        .from(table)
+        .select('*', { count: 'exact', head: false })
+        .limit(1);
+
+      if (!error) {
+        return { exists: true, table, count: count ?? (data ? data.length : 0) };
+      }
+
+      if (isNetworkOrFetchError(error)) {
+        return {
+          exists: false,
+          table: 'depots',
+          count: 0,
+          isNetworkError: true,
+          error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
+        };
+      }
+    } catch (e: any) {
+      if (isNetworkOrFetchError(e)) {
+        return {
+          exists: false,
+          table: 'depots',
+          count: 0,
+          isNetworkError: true,
+          error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
+        };
+      }
+    }
+  }
+
+  return {
+    exists: false,
+    table: 'depots',
+    count: 0,
+    isNetworkError: false,
+    error: 'Table public.depots introuvable dans votre projet Supabase.',
+  };
+}
+
+export async function upsertDepotToSupabase(
+  client: SupabaseClient | null,
+  depot: Depot
+): Promise<DepotSyncResult> {
+  if (!client) {
+    return {
+      success: false,
+      isSupabaseConnected: false,
+      error: 'Supabase non configuré (URL et clé API manquantes dans Paramètres Entreprise).',
+    };
+  }
+
+  try {
+    const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
+    let depotTable = (await findWorkingTable(client, candidateTables)) || 'depots';
+
+    // Prepare clean payload
+    // Note: Do NOT pass large Date.now() timestamps as 'id' into PostgreSQL sequences/integers
+    const payloadFull: Record<string, any> = {
+      name: depot.name.trim(),
+      code: depot.code?.trim() || null,
+      address: depot.address?.trim() || null,
+      description: depot.description?.trim() || null,
+      type: depot.type || 'FIXED',
+      vehicle_type: depot.vehicle_type || null,
+      license_plate: depot.license_plate?.trim() || null,
+      manager_id: depot.manager_id ? String(depot.manager_id) : null,
+      manager_name: depot.manager_name || null,
+      binome_ids: depot.binome_ids || [],
+      binome_names: depot.binome_names || [],
+      department_id: depot.department_id ? String(depot.department_id) : null,
+      department_name: depot.department_name || null,
+      pickup_zones: depot.pickup_zones || [],
+      is_active: depot.is_active ?? true,
+      created_at: depot.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    // If depot has an existing database ID (numeric <= 2147483647 or string UUID), include it
+    if (typeof depot.id === 'number' && depot.id > 0 && depot.id <= 2147483647) {
+      payloadFull.id = depot.id;
+    } else if (typeof depot.id === 'string' && depot.id.length > 0 && !/^\d{13,}$/.test(depot.id)) {
+      payloadFull.id = depot.id;
+    }
+
+    // Attempt 0: Try UPDATE first if depot already exists in DB (by id or name)
+    // so editing an existing depot does not fire BEFORE INSERT quota triggers
+    if (payloadFull.id) {
+      const { data: updById, error: updIdErr } = await client
+        .from(depotTable)
+        .update(payloadFull)
+        .eq('id', payloadFull.id)
+        .select();
+      if (!updIdErr && Array.isArray(updById) && updById.length > 0) {
+        return { success: true, table: depotTable, inserted: updById[0] as Depot };
+      }
+    }
+    {
+      const { data: updByName, error: updNameErr } = await client
+        .from(depotTable)
+        .update(payloadFull)
+        .eq('name', depot.name.trim())
+        .select();
+      if (!updNameErr && Array.isArray(updByName) && updByName.length > 0) {
+        return { success: true, table: depotTable, inserted: updByName[0] as Depot };
+      }
+    }
+
+    // Attempt 1: Upsert full payload on 'name'
+    const { data: resData, error: err1 } = await client
+      .from(depotTable)
+      .upsert([payloadFull], { onConflict: 'name' })
+      .select();
+
+    if (!err1) {
+      const insertedRow = resData && resData[0] ? (resData[0] as Depot) : undefined;
+      return { success: true, table: depotTable, inserted: insertedRow };
+    }
+
+    console.warn(`Supabase upsert depots (attempt 1) sur ${depotTable}:`, err1);
+
+    // If network / fetch error, bail out immediately and explain clearly
+    if (isNetworkOrFetchError(err1)) {
+      return {
+        success: false,
+        isNetworkError: true,
+        table: depotTable,
+        error: "Impossible de joindre le serveur Supabase (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused sur supabase.com) ou l'URL configurée est inaccessible.",
+      };
+    }
+
+    // If server-side quota constraint error (Modèle B), bail out immediately
+    if (
+      err1.message?.toLowerCase().includes('quota') ||
+      err1.message?.toLowerCase().includes('licence') ||
+      err1.message?.toLowerCase().includes('license')
+    ) {
+      return {
+        success: false,
+        table: depotTable,
+        error: err1.message,
+      };
+    }
+
+    // Check if table missing (PostgreSQL 42P01 or PostgREST PGRST204/PGRST205)
+    if (
+      err1.code === '42P01' ||
+      err1.message?.includes('does not exist') ||
+      err1.code === 'PGRST204' ||
+      err1.code === 'PGRST205'
+    ) {
+      return {
+        success: false,
+        isTableMissing: true,
+        table: depotTable,
+        error: `La table "${depotTable}" n'existe pas dans votre base de données Supabase. Veuillez exécuter le script SQL fourni dans l'éditeur SQL de Supabase.`,
+      };
+    }
+
+    // Attempt 2: Minimal payload without updated_at / is_active
+    const payloadBasic: Record<string, any> = {
+      name: depot.name.trim(),
+      code: depot.code?.trim() || null,
+      address: depot.address?.trim() || null,
+      description: depot.description?.trim() || null,
+      pickup_zones: depot.pickup_zones || [],
+    };
+
+    const { data: resData2, error: err2 } = await client
+      .from(depotTable)
+      .upsert([payloadBasic], { onConflict: 'name' })
+      .select();
+
+    if (!err2) {
+      const insertedRow = resData2 && resData2[0] ? (resData2[0] as Depot) : undefined;
+      return { success: true, table: depotTable, inserted: insertedRow };
+    }
+
+    if (isNetworkOrFetchError(err2)) {
+      return {
+        success: false,
+        isNetworkError: true,
+        table: depotTable,
+        error: "Impossible de joindre le serveur Supabase (Failed to fetch).",
+      };
+    }
+
+    // Attempt 3: If onConflict failed, try simple insert
+    const { data: resData3, error: err3 } = await client
+      .from(depotTable)
+      .insert([payloadBasic])
+      .select();
+
+    if (!err3) {
+      const insertedRow = resData3 && resData3[0] ? (resData3[0] as Depot) : undefined;
+      return { success: true, table: depotTable, inserted: insertedRow };
+    }
+
+    // Attempt 4: If insert failed on duplicate, try update where name = depot.name
+    if (
+      err3.code === '23505' ||
+      err3.message?.includes('duplicate key') ||
+      err3.message?.includes('unique')
+    ) {
+      const { data: resData4, error: err4 } = await client
+        .from(depotTable)
+        .update(payloadBasic)
+        .eq('name', depot.name.trim())
+        .select();
+
+      if (!err4) {
+        const insertedRow = resData4 && resData4[0] ? (resData4[0] as Depot) : undefined;
+        return { success: true, table: depotTable, inserted: insertedRow };
+      }
+    }
+
+    return {
+      success: false,
+      table: depotTable,
+      error: `Erreur Supabase (${err1.code || err2?.code || err3?.code || 'Err'}) : ${err1.message || err2?.message || err3?.message}`,
+    };
+  } catch (err: any) {
+    console.error('Erreur upsertDepotToSupabase:', err);
+    const isNet = isNetworkOrFetchError(err);
+    return {
+      success: false,
+      isNetworkError: isNet,
+      error: isNet
+        ? "Impossible de joindre le serveur Supabase (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused sur supabase.com) ou l'URL configurée est inaccessible."
+        : (err.message || 'Erreur inattendue lors de la communication avec Supabase.'),
+    };
+  }
+}
+
+export async function deleteDepotFromSupabase(
+  client: SupabaseClient | null,
+  depotId: string | number,
+  depotName?: string
+): Promise<{ success: boolean; error?: string }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.' };
+
+  try {
+    const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
+    const depotTable = (await findWorkingTable(client, candidateTables)) || 'depots';
+
+    // Delete by name if provided
+    if (depotName) {
+      const { error: errName } = await client.from(depotTable).delete().eq('name', depotName);
+      if (!errName) return { success: true };
+    }
+
+    // Or delete by ID
+    const { error } = await client.from(depotTable).delete().eq('id', depotId);
+    return { success: !error, error: error?.message };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Formate le préfixe de date YYMMDD pour les numéros de commande (ex: "261102")
+ */
+export function formatOrderDatePrefix(date: Date = new Date()): string {
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
+
+/**
+ * Calcule le prochain numéro de commande unique :
+ * - En ligne (serveur) : XXXXXXXX-CMD-YYMMDD-XX
+ * - Hors-ligne (offline) : XXXXXXXX-CMD-YYMMDD-XX_OFF
+ */
+export function computeNextOrderNumber(
+  siteNumber: string,
+  datePrefix: string,
+  existingOrderNumbers: Iterable<string>,
+  isOffline: boolean,
+  minSequence: number = 1
+): string {
+  const cleanSite = (siteNumber || 'CH-00').trim().toUpperCase();
+  const cleanDate = (datePrefix || formatOrderDatePrefix()).trim();
+  const existingUpperSet = new Set<string>();
+  let maxSeqForDate = Math.max(0, minSequence - 1);
+
+  const dateRegex = new RegExp(`-CMD-${cleanDate}-(\\d+)(?:_OFF)?$`, 'i');
+
+  for (const rawNum of existingOrderNumbers) {
+    if (!rawNum) continue;
+    const upper = String(rawNum).trim().toUpperCase();
+    if (!upper) continue;
+    existingUpperSet.add(upper);
+
+    const match = upper.match(dateRegex);
+    if (match && match[1]) {
+      const parsedSeq = parseInt(match[1], 10);
+      if (!Number.isNaN(parsedSeq) && parsedSeq > maxSeqForDate) {
+        maxSeqForDate = parsedSeq;
+      }
+    }
+  }
+
+  let nextSeq = Math.max(minSequence, maxSeqForDate + 1);
+  while (true) {
+    const seq2 = String(nextSeq).padStart(2, '0');
+    const seq3 = String(nextSeq).padStart(3, '0');
+    const base2 = `${cleanSite}-CMD-${cleanDate}-${seq2}`;
+    const off2 = `${base2}_OFF`;
+    const base3 = `${cleanSite}-CMD-${cleanDate}-${seq3}`;
+    const off3 = `${base3}_OFF`;
+
+    if (
+      !existingUpperSet.has(base2) &&
+      !existingUpperSet.has(off2) &&
+      !existingUpperSet.has(base3) &&
+      !existingUpperSet.has(off3)
+    ) {
+      return isOffline ? off2 : base2;
+    }
+    nextSeq++;
+  }
+}
+
+/**
+ * Attribue un numéro de commande strictement unique depuis le serveur Supabase (XXXXXXXX-CMD-YYMMDD-XX)
+ * ou bascule automatiquement avec le suffixe hors-ligne (XXXXXXXX-CMD-YYMMDD-XX_OFF) si hors-ligne / serveur injoignable.
+ */
+export async function allocateUniqueOrderNumberFromSupabase(
+  client: SupabaseClient | null,
+  siteNumber: string,
+  localOrders: MaterialOrder[] = [],
+  forceOffline: boolean = false
+): Promise<{ orderNumber: string; isOffline: boolean }> {
+  const cleanSite = (siteNumber || 'CH-00').trim().toUpperCase();
+  const datePrefix = formatOrderDatePrefix(new Date());
+
+  const allKnownNumbers = new Set<string>();
+  for (const o of localOrders) {
+    if (o?.order_number) {
+      allKnownNumbers.add(String(o.order_number).trim().toUpperCase());
+    }
+  }
+
+  const isBrowserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (forceOffline || !client || isBrowserOffline) {
+    return {
+      orderNumber: computeNextOrderNumber(cleanSite, datePrefix, allKnownNumbers, true),
+      isOffline: true,
+    };
+  }
+
+  let serverReachable = false;
+  let networkFailed = false;
+  let minSeqFromRpc = 1;
+
+  // 1. Tenter la RPC atomique côté serveur PostgreSQL (allocate_unique_order_number)
+  try {
+    const { data: rpcNum, error: rpcErr } = await client.rpc('allocate_unique_order_number', {
+      p_site_number: cleanSite,
+      p_date_prefix: datePrefix,
+    });
+    if (!rpcErr && typeof rpcNum === 'string' && rpcNum.trim()) {
+      serverReachable = true;
+      const cleanRpcNum = rpcNum.trim().toUpperCase();
+      const m = cleanRpcNum.match(new RegExp(`-CMD-${datePrefix}-(\\d+)(?:_OFF)?$`, 'i'));
+      if (m && m[1]) {
+        const seqVal = parseInt(m[1], 10);
+        if (!Number.isNaN(seqVal) && seqVal >= minSeqFromRpc) {
+          minSeqFromRpc = seqVal;
+        }
+      }
+    } else if (rpcErr && isNetworkOrFetchError(rpcErr)) {
+      networkFailed = true;
+    }
+  } catch (err: any) {
+    if (isNetworkOrFetchError(err)) {
+      networkFailed = true;
+    }
+  }
+
+  // 2. Interroger la table material_orders et le miroir app_settings sur le serveur
+  // pour garantir l'unicité absolue même si la RPC n'est pas encore installée ou si des commandes sont dans le miroir
+  if (!networkFailed) {
+    try {
+      const candidateTables = ['material_orders', 'orders', 'tot_orders'];
+      const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+      const { data: rows, error: selErr } = await client
+        .from(orderTable)
+        .select('order_number')
+        .ilike('order_number', `%-CMD-${datePrefix}-%`);
+
+      if (!selErr && Array.isArray(rows)) {
+        serverReachable = true;
+        for (const r of rows) {
+          if (r?.order_number) {
+            allKnownNumbers.add(String(r.order_number).trim().toUpperCase());
+          }
+        }
+      } else if (selErr && isNetworkOrFetchError(selErr)) {
+        networkFailed = true;
+      }
+    } catch (err: any) {
+      if (isNetworkOrFetchError(err)) {
+        networkFailed = true;
+      }
+    }
+  }
+
+  if (!networkFailed) {
+    try {
+      const mirrorOrders = await fetchOrdersFromSettingsMirror(client);
+      if (Array.isArray(mirrorOrders)) {
+        serverReachable = true;
+        for (const mo of mirrorOrders) {
+          if (mo?.order_number) {
+            allKnownNumbers.add(String(mo.order_number).trim().toUpperCase());
+          }
+        }
+      }
+    } catch (err: any) {
+      if (isNetworkOrFetchError(err)) {
+        networkFailed = true;
+      }
+    }
+  }
+
+  if (networkFailed && !serverReachable) {
+    return {
+      orderNumber: computeNextOrderNumber(cleanSite, datePrefix, allKnownNumbers, true),
+      isOffline: true,
+    };
+  }
+
+  const finalOnlineNumber = computeNextOrderNumber(
+    cleanSite,
+    datePrefix,
+    allKnownNumbers,
+    false,
+    minSeqFromRpc
+  );
+  return {
+    orderNumber: finalOnlineNumber,
+    isOffline: false,
+  };
+}
+
+export async function upsertOrderToSupabase(
+  client: SupabaseClient | null,
+  order: MaterialOrder
+): Promise<{ success: boolean; error?: string; orderNumber?: string; isNetworkError?: boolean }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.', isNetworkError: true };
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return { success: false, error: 'Mode hors-ligne actif.', isNetworkError: true };
+  }
+
+  const nowIso = new Date().toISOString();
+  let currentOrderNumber = String(order.order_number || '').trim().toUpperCase();
+  const isOfflineNumber = currentOrderNumber.endsWith('_OFF');
+
+  try {
+    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
+    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+
+    const buildUpdateFields = (ordNum: string) => {
+      const qrCode =
+        order.ready_qr_code && order.ready_qr_code.startsWith('TOT-ORDER:')
+          ? `TOT-ORDER:${ordNum}`
+          : order.ready_qr_code || null;
+      return {
+        site_number: order.site_number,
+        site_name: order.site_name || null,
+        depot_name: order.depot_name || null,
+        status: order.status,
+        items: order.items,
+        notes: order.notes || null,
+        total_cost: Number(order.total_cost) || 0,
+        approved_by: order.approved_by || null,
+        approved_at: order.approved_at || null,
+        rejected_by: order.rejected_by || null,
+        rejected_at: order.rejected_at || null,
+        rejection_reason: order.rejection_reason || null,
+        pickup_zone: order.pickup_zone || null,
+        ready_qr_code: qrCode,
+        signature_data: order.signature_data || null,
+        proof_photo_url: order.proof_photo_url || null,
+        is_edited: order.is_edited ?? false,
+        assigned_at: order.assigned_at || null,
+        preparer_id: order.preparer_id ? String(order.preparer_id) : null,
+        preparer_name: order.preparer_name || null,
+        ready_at: order.ready_at || null,
+        collected_at: order.collected_at || null,
+        collected_by: order.collected_by || null,
+        pickup_delegate_id: order.pickup_delegate_id ? String(order.pickup_delegate_id) : null,
+        pickup_delegate_name: order.pickup_delegate_name || null,
+        pickup_delegate_department: order.pickup_delegate_department || null,
+        pickup_delegate_at: order.pickup_delegate_at || null,
+        pickup_delegate_by: order.pickup_delegate_by || null,
+        pickup_delegate_notes: order.pickup_delegate_notes || null,
+        updated_at: nowIso,
+      };
+    };
+
+    const stripLegacyFields = (fields: ReturnType<typeof buildUpdateFields>) => {
+      const {
+        total_cost: _tc,
+        approved_by: _ab,
+        approved_at: _aa,
+        rejected_by: _rb,
+        rejected_at: _ra,
+        rejection_reason: _rr,
+        pickup_delegate_id: _pdi,
+        pickup_delegate_name: _pdn,
+        pickup_delegate_department: _pdd,
+        pickup_delegate_at: _pda,
+        pickup_delegate_by: _pdb,
+        pickup_delegate_notes: _pdno,
+        ...legacy
+      } = fields;
+      return legacy;
+    };
+
+    const updateFields = buildUpdateFields(currentOrderNumber);
+    const legacyUpdateFields = stripLegacyFields(updateFields);
+
+    // 1. Try UPDATE by id first (existing order)
+    const { data: updatedById, error: updErr } = await client
+      .from(orderTable)
+      .update(updateFields)
+      .eq('id', order.id)
+      .select('id, order_number');
+
+    if (updErr && isNetworkOrFetchError(updErr)) {
+      return { success: false, error: updErr.message, isNetworkError: true };
+    }
+
+    if (!updErr && updatedById && updatedById.length > 0) {
+      const confirmedNumber = updatedById[0]?.order_number || currentOrderNumber;
+      mirrorOrderToSettings(client, {
+        ...order,
+        order_number: confirmedNumber,
+        updated_at: nowIso,
+      }).catch(() => {});
+      return { success: true, orderNumber: confirmedNumber };
+    }
+
+    if (updErr) {
+      const { data: updatedLegacyById, error: updLegacyErr } = await client
+        .from(orderTable)
+        .update(legacyUpdateFields)
+        .eq('id', order.id)
+        .select('id, order_number');
+      if (!updLegacyErr && updatedLegacyById && updatedLegacyById.length > 0) {
+        const confirmedNumber = updatedLegacyById[0]?.order_number || currentOrderNumber;
+        mirrorOrderToSettings(client, {
+          ...order,
+          order_number: confirmedNumber,
+          updated_at: nowIso,
+        }).catch(() => {});
+        return { success: true, orderNumber: confirmedNumber };
+      }
+    }
+
+    // 2. Fallback via SECURITY DEFINER RPC transition_order_status if existing row is being transitioned
+    if (order.status && order.status !== 'WAITING_APPROVAL') {
+      try {
+        const { data: rpcRes, error: rpcErr } = await client.rpc('transition_order_status', {
+          p_operation_id: crypto.randomUUID(),
+          p_order_id: order.id,
+          p_target_status: order.status,
+          p_preparer_id: order.preparer_id ? String(order.preparer_id) : null,
+          p_comment: order.rejection_reason || order.notes || null,
+        });
+        if (!rpcErr && rpcRes) {
+          await client.from(orderTable).update(updateFields).eq('id', order.id);
+          mirrorOrderToSettings(client, {
+            ...order,
+            order_number: currentOrderNumber,
+            updated_at: nowIso,
+          }).catch(() => {});
+          return { success: true, orderNumber: currentOrderNumber };
+        }
+      } catch {}
+    }
+
+    // 3. Row does not exist yet -> Verify uniqueness of order_number on server and retry on collision (23505)
+    const dateMatch = currentOrderNumber.match(/-CMD-(\d{6})-(\d+)(?:_OFF)?$/i);
+    const datePrefix = dateMatch ? dateMatch[1] : formatOrderDatePrefix(new Date());
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      // Check if another order with a DIFFERENT id already owns currentOrderNumber on the server
+      const { data: conflictingRows, error: checkErr } = await client
+        .from(orderTable)
+        .select('id, order_number')
+        .ilike('order_number', currentOrderNumber);
+
+      if (checkErr && isNetworkOrFetchError(checkErr)) {
+        return { success: false, error: checkErr.message, isNetworkError: true };
+      }
+
+      const hasConflict =
+        Array.isArray(conflictingRows) &&
+        conflictingRows.some((r) => String(r.id) !== String(order.id));
+
+      if (hasConflict) {
+        const { data: allDayRows } = await client
+          .from(orderTable)
+          .select('order_number')
+          .ilike('order_number', `%-CMD-${datePrefix}-%`);
+        const takenSet = new Set<string>([currentOrderNumber]);
+        if (Array.isArray(allDayRows)) {
+          for (const r of allDayRows) {
+            if (r?.order_number) takenSet.add(String(r.order_number).trim().toUpperCase());
+          }
+        }
+        currentOrderNumber = computeNextOrderNumber(
+          order.site_number,
+          datePrefix,
+          takenSet,
+          isOfflineNumber
+        );
+      }
+
+      const attemptUpdateFields = buildUpdateFields(currentOrderNumber);
+      const fullPayload = {
+        id: order.id,
+        order_number: currentOrderNumber,
+        requester_id: String(order.requester_id),
+        requester_name: order.requester_name,
+        requester_department: order.requester_department || null,
+        created_at: order.created_at,
+        ...attemptUpdateFields,
+      };
+
+      const { error } = await client.from(orderTable).upsert([fullPayload], { onConflict: 'id' });
+      if (!error) {
+        mirrorOrderToSettings(client, {
+          ...order,
+          order_number: currentOrderNumber,
+          updated_at: nowIso,
+        }).catch(() => {});
+        return { success: true, orderNumber: currentOrderNumber };
+      }
+
+      if (isNetworkOrFetchError(error)) {
+        return { success: false, error: error.message, isNetworkError: true };
+      }
+
+      // Duplicate order_number constraint violation (23505) -> increment and retry
+      const isUniqueViolation =
+        error.code === '23505' ||
+        (error.message &&
+          (error.message.includes('order_number') || error.message.includes('duplicate key')));
+
+      if (isUniqueViolation) {
+        const { data: allDayRows } = await client
+          .from(orderTable)
+          .select('order_number')
+          .ilike('order_number', `%-CMD-${datePrefix}-%`);
+        const takenSet = new Set<string>([currentOrderNumber]);
+        if (Array.isArray(allDayRows)) {
+          for (const r of allDayRows) {
+            if (r?.order_number) takenSet.add(String(r.order_number).trim().toUpperCase());
+          }
+        }
+        currentOrderNumber = computeNextOrderNumber(
+          order.site_number,
+          datePrefix,
+          takenSet,
+          isOfflineNumber
+        );
+        continue;
+      }
+
+      // Otherwise try legacy payload without newer columns
+      console.warn('Supabase upsert order error, trying legacy payload:', error);
+      const legacyFullPayload = {
+        id: order.id,
+        order_number: currentOrderNumber,
+        requester_id: String(order.requester_id),
+        requester_name: order.requester_name,
+        requester_department: order.requester_department || null,
+        created_at: order.created_at,
+        ...stripLegacyFields(attemptUpdateFields),
+      };
+      const { error: err2 } = await client.from(orderTable).upsert([legacyFullPayload], { onConflict: 'id' });
+      if (err2 && isNetworkOrFetchError(err2)) {
+        return { success: false, error: err2.message, isNetworkError: true };
+      }
+      if (
+        err2 &&
+        (err2.code === '23505' ||
+          err2.message?.includes('order_number') ||
+          err2.message?.includes('duplicate key'))
+      ) {
+        currentOrderNumber = computeNextOrderNumber(
+          order.site_number,
+          datePrefix,
+          [currentOrderNumber],
+          isOfflineNumber
+        );
+        continue;
+      }
+
+      mirrorOrderToSettings(client, {
+        ...order,
+        order_number: currentOrderNumber,
+        updated_at: nowIso,
+      }).catch(() => {});
+      return { success: true, orderNumber: currentOrderNumber };
+    }
+
+    mirrorOrderToSettings(client, {
+      ...order,
+      order_number: currentOrderNumber,
+      updated_at: nowIso,
+    }).catch(() => {});
+    return { success: true, orderNumber: currentOrderNumber };
+  } catch (err: any) {
+    if (isNetworkOrFetchError(err)) {
+      return { success: false, error: err.message, isNetworkError: true };
+    }
+    return { success: true, error: err.message, orderNumber: currentOrderNumber };
+  }
+}
+
+export async function deleteOrderFromSupabase(
+  client: SupabaseClient | null,
+  orderId: string
+): Promise<{ success: boolean; error?: string }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.' };
+
+  try {
+    // 1. Retirer du miroir app_settings (company_orders_sync et company_license_info.orders_sync) pour éviter toute résurrection au polling
+    try {
+      const existingMirror = await fetchOrdersFromSettingsMirror(client);
+      const filteredMirror = existingMirror.filter(
+        (o) => String(o.id) !== String(orderId) && String(o.order_number) !== String(orderId)
+      );
+      await client.from('app_settings').upsert(
+        [
+          {
+            key: 'company_orders_sync',
+            value: JSON.stringify(filteredMirror.slice(0, 150)),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        { onConflict: 'key' }
+      );
+      await updateCompanyLicenseInfoShared(client, (licObj) => ({
+        ...licObj,
+        orders_sync: Array.isArray(licObj.orders_sync)
+          ? licObj.orders_sync.filter(
+              (o: any) => String(o?.id) !== String(orderId) && String(o?.order_number) !== String(orderId)
+            )
+          : [],
+      }));
+    } catch {}
+
+    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
+    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+
+    // 2. Tenter la suppression directe si autorisée, puis repli sur statut CANCELLED (RLS)
+    const { error: delErr } = await client.from(orderTable).delete().eq('id', orderId);
+    if (!delErr) {
+      return { success: true };
+    }
+
+    const { error } = await client
+      .from(orderTable)
+      .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+      .eq('id', orderId);
+    if (error?.code === '42501') {
+      return { success: true };
+    }
+    return { success: true, error: error?.message };
+  } catch (err: any) {
+    return { success: true, error: err.message };
+  }
+}
+
+export async function syncAllDepotsToSupabase(
+  client: SupabaseClient | null,
+  depots: Depot[]
+): Promise<{
+  success: boolean;
+  message: string;
+  count: number;
+  isTableMissing?: boolean;
+  isNetworkError?: boolean;
+}> {
+  if (!client) {
+    return {
+      success: false,
+      message: 'Supabase non connecté dans les paramètres.',
+      count: 0,
+    };
+  }
+
+  let successCount = 0;
+  let lastError = '';
+  let missingTable = false;
+  let networkError = false;
+
+  for (const d of depots) {
+    const res = await upsertDepotToSupabase(client, d);
+    if (res.success) {
+      successCount++;
+    } else {
+      if (res.isNetworkError) {
+        networkError = true;
+        lastError = res.error || 'Erreur de communication avec Supabase (Failed to fetch)';
+        break; // Stop immediately to avoid redundant waiting/timeouts
+      }
+      if (res.isTableMissing) missingTable = true;
+      lastError = res.error || 'Erreur inconnue';
+    }
+  }
+
+  if (networkError) {
+    return {
+      success: false,
+      isNetworkError: true,
+      message: lastError,
+      count: successCount,
+    };
+  }
+
+  if (missingTable) {
+    return {
+      success: false,
+      message: 'Table public.depots introuvable dans Supabase. Veuillez exécuter le script SQL fourni.',
+      count: successCount,
+      isTableMissing: true,
+    };
+  }
+
+  if (successCount === depots.length) {
+    return {
+      success: true,
+      message: `${successCount} dépôt(s) synchronisé(s) dans la table Supabase avec succès !`,
+      count: successCount,
+    };
+  }
+
+  return {
+    success: successCount > 0,
+    message: `${successCount}/${depots.length} dépôt(s) synchronisé(s). Note : ${lastError}`,
+    count: successCount,
+  };
+}
+
+export async function exportAllLocalDataToSupabase(
+  client: SupabaseClient,
+  data: {
+    products: Product[];
+    users: User[];
+    roles: Role[];
+    departments: Department[];
+    projects: Project[];
+    subCategories: SubCategory[];
+    depots?: Depot[];
+    orders?: MaterialOrder[];
+    movements: StockMovement[];
+  }
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
+    const userTable = (await findWorkingTable(client, ['users', 'tot_users'])) || 'users';
+
+    if (data.roles && data.roles.length > 0) {
+      const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
+      await client.from(roleTable).upsert(data.roles, { onConflict: 'id' });
+    }
+    if (data.departments && data.departments.length > 0) {
+      const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
+      await client.from(depTable).upsert(data.departments, { onConflict: 'id' });
+    }
+    if (data.projects && data.projects.length > 0) {
+      const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+      await client.from(projTable).upsert(data.projects, { onConflict: 'id' });
+    }
+    if (data.subCategories && data.subCategories.length > 0) {
+      const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
+      await client.from(catTable).upsert(data.subCategories, { onConflict: 'id' });
+    }
+    if (data.products.length > 0) {
+      const cleanProducts = data.products.map(({ quantity, ...meta }) => meta);
+      await client.from(prodTable).upsert(cleanProducts, { onConflict: 'id' });
+    }
+    if (data.users.length > 0) {
+      const cleanUsersForDb = data.users.map((u) => {
+        const s = sanitizeUserForDirectory(u);
+        return {
+          id: String(s.id),
+          ...(s.auth_user_id ? { auth_user_id: s.auth_user_id } : {}),
+          name: s.name,
+          trigram: s.trigram,
+          email: s.email || null,
+          department: s.department || 'Général',
+          role_id: Number(s.role_id ?? 4),
+          is_blocked: Boolean(s.is_blocked),
+          must_change_pin: Boolean(s.must_change_pin),
+          is_preparer: Boolean(s.is_preparer),
+          allowed_depots: Array.isArray(s.allowed_depots) ? s.allowed_depots : ['*'],
+          updated_at: new Date().toISOString(),
+        };
+      });
+      await client.from(userTable).upsert(cleanUsersForDb, { onConflict: 'id' });
+      await syncUserProfileAndDirectoryToSupabase(client, data.users[0], data.users);
+    }
+    if (data.depots && data.depots.length > 0) {
+      await syncAllDepotsToSupabase(client, data.depots);
+    }
+    if (data.orders && data.orders.length > 0) {
+      const orderTable = (await findWorkingTable(client, ['material_orders', 'orders', 'tot_orders'])) || 'material_orders';
+      await client.from(orderTable).upsert(data.orders, { onConflict: 'id' });
+    }
+    return { success: true, message: 'Données exportées vers Supabase avec succès !' };
+  } catch (err: any) {
+    return { success: false, message: `Échec de l'exportation : ${err.message}` };
+  }
+}
+
+export async function recordOrderPreparationScanToSupabase(
+  client: SupabaseClient | null,
+  scanData: {
+    order_id: string;
+    order_number: string;
+    product_id: string;
+    product_ref: string;
+    preparer_id?: string | null;
+    preparer_name?: string | null;
+    picked_quantity: number;
+    scanned_barcode?: string;
+    pickup_zone?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.' };
+  try {
+    const payload = {
+      id: `prep-${Date.now()}-${crypto.randomUUID()}`,
+      order_id: scanData.order_id,
+      order_number: scanData.order_number,
+      product_id: String(scanData.product_id),
+      product_ref: scanData.product_ref,
+      preparer_id: scanData.preparer_id ? String(scanData.preparer_id) : null,
+      preparer_name: scanData.preparer_name || null,
+      picked_quantity: scanData.picked_quantity,
+      scanned_barcode: scanData.scanned_barcode || null,
+      pickup_zone: scanData.pickup_zone || null,
+      scanned_at: new Date().toISOString(),
+    };
+    const { error } = await client.from('order_preparations_log').insert([payload]);
+    return { success: !error, error: error?.message };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function recordInventoryAuditToSupabase(
+  client: SupabaseClient | null,
+  audit: {
+    depot_name?: string;
+    auditor_id?: string | number | null;
+    auditor_name?: string;
+    items_counted: number;
+    items_with_diff: number;
+    total_diff_cost: number;
+    audit_notes?: string;
+    items: {
+      product_id: string;
+      product_ref: string;
+      product_name?: string;
+      theoretical_qty: number;
+      physical_count: number;
+      difference: number;
+      unit_price?: number;
+      diff_cost?: number;
+      scanned_barcode?: string;
+    }[];
+  }
+): Promise<{ success: boolean; auditId?: string; error?: string }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.' };
+  try {
+    const auditId = `audit-${Date.now()}-${crypto.randomUUID()}`;
+    const auditRow = {
+      id: auditId,
+      depot_name: audit.depot_name || null,
+      auditor_id: audit.auditor_id ? String(audit.auditor_id) : null,
+      auditor_name: audit.auditor_name || null,
+      status: 'COMPLETED',
+      items_counted: audit.items_counted,
+      items_with_diff: audit.items_with_diff,
+      total_diff_cost: audit.total_diff_cost,
+      audit_notes: audit.audit_notes || null,
+      created_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    };
+
+    const { error: errAudit } = await client.from('inventory_audits').insert([auditRow]);
+    if (errAudit) {
+      console.warn('Supabase inventory_audits insert:', errAudit);
+      return { success: false, error: errAudit.message };
+    }
+
+    if (audit.items.length > 0) {
+      const itemRows = audit.items.map((it) => ({
+        id: `item-${Date.now()}-${crypto.randomUUID()}`,
+        audit_id: auditId,
+        product_id: String(it.product_id),
+        product_ref: it.product_ref,
+        product_name: it.product_name || null,
+        theoretical_qty: it.theoretical_qty,
+        physical_count: it.physical_count,
+        difference: it.difference,
+        unit_price: it.unit_price || 0,
+        diff_cost: it.diff_cost || 0,
+        scanned_barcode: it.scanned_barcode || null,
+        scanned_at: new Date().toISOString(),
+      }));
+      await client.from('inventory_audit_items').insert(itemRows);
+    }
+
+    return { success: true, auditId };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export interface DashboardKpisResult {
+  total_value: number;
+  total_units: number;
+  low_stock_count: number;
+  out_stock_count: number;
+  outflow_count: number;
+  inflow_count: number;
+  scope: string;
+  depot_filter: string;
+  calculated_at?: string;
+}
+
+export async function fetchDashboardKpisFromSupabase(
+  client: SupabaseClient | null,
+  scope: string = 'COMPANY',
+  depotFilter: string = 'ALL'
+): Promise<DashboardKpisResult | null> {
+  if (!client) return null;
+  try {
+    const { data, error } = await client.rpc('get_dashboard_kpis', {
+      p_scope: scope,
+      p_depot_filter: depotFilter,
+    });
+    if (!error && data) {
+      return data as DashboardKpisResult;
+    }
+  } catch (err) {
+    console.warn('RPC get_dashboard_kpis failed:', err);
+  }
+  return null;
+}
+
+export { APP_VERSION, EXPECTED_SCHEMA_VERSION, MIN_SUPPORTED_SCHEMA_VERSION };
+
+export interface AppCompatStatus {
+  checked: boolean;
+  compatible: boolean;
+  maintenance: boolean;
+  appVersion: string;
+  expectedSchemaVersion: string;
+  minSupportedSchemaVersion: string;
+  schemaVersion?: string;
+  minSchemaVersion?: string;
+  minAppVersion?: string;
+  latestVersion?: string;
+  updateUrl?: string | null;
+  message?: string | null;
+  tableMissing?: boolean;
+  fromCache?: boolean;
+  appOutdated?: boolean;
+  dbOutdated?: boolean;
+  schemaBehindWarning?: boolean;
+  schemaAhead?: boolean;
+  blockingReason?: string | null;
+  warningBanner?: string | null;
+  adminBanner?: string | null;
+}
+
+/**
+ * Compare deux versions sémantiques (ex: "5.4.0" vs "5.5.0").
+ * Retourne -1 si v1 < v2, 0 si v1 == v2, 1 si v1 > v2.
+ */
+export function compareSemver(v1?: string | null, v2?: string | null): number {
+  const clean1 = String(v1 || '0.0.0')
+    .trim()
+    .replace(/^v/i, '')
+    .split(/[-+]/)[0];
+  const clean2 = String(v2 || '0.0.0')
+    .trim()
+    .replace(/^v/i, '')
+    .split(/[-+]/)[0];
+
+  const parts1 = clean1.split('.').map((n) => parseInt(n, 10) || 0);
+  const parts2 = clean2.split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(parts1.length, parts2.length, 3);
+
+  for (let i = 0; i < len; i++) {
+    const a = parts1[i] ?? 0;
+    const b = parts2[i] ?? 0;
+    if (a < b) return -1;
+    if (a > b) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Évalue les règles de compatibilité Point 4 à partir d'une ligne app_compat :
+ * - APP_VERSION < min_app_version (base) : blocage « Mettez l'application à jour »
+ * - schema_version (base) < MIN_SUPPORTED_SCHEMA_VERSION : blocage « La base de données doit être mise à jour »
+ * - schema_version (base) < EXPECTED_SCHEMA_VERSION mais >= MIN_SUPPORTED_SCHEMA_VERSION :
+ *   l'application fonctionne, avec un bandeau d'information pour les administrateurs
+ * - schema_version (base) > EXPECTED_SCHEMA_VERSION : l'application fonctionne (la base est en avance, les migrations sont additives)
+ * - maintenance = true : blocage pour les utilisateurs, simple bandeau pour les rôles 0 et 1
+ */
+export function evaluateAppCompatRules(
+  row: {
+    schema_version?: string | null;
+    min_schema_version?: string | null;
+    min_app_version?: string | null;
+    latest_version?: string | null;
+    update_url?: string | null;
+    maintenance?: boolean | null;
+    message?: string | null;
+  },
+  fromCache = false
+): AppCompatStatus {
+  const minAppVersion = String(row.min_app_version || '1.0.0').trim();
+  const schemaVersion = String(row.schema_version || '1.0.0').trim();
+  const minSchemaVersion = String(row.min_schema_version || '1.0.0').trim();
+  const latestVersion = row.latest_version ? String(row.latest_version).trim() : minAppVersion;
+  const maintenance = Boolean(row.maintenance);
+
+  const appOutdated = compareSemver(APP_VERSION, minAppVersion) < 0;
+  const dbOutdated = compareSemver(schemaVersion, MIN_SUPPORTED_SCHEMA_VERSION) < 0;
+  const schemaBehindWarning =
+    !dbOutdated && compareSemver(schemaVersion, EXPECTED_SCHEMA_VERSION) < 0;
+  const schemaAhead = compareSemver(schemaVersion, EXPECTED_SCHEMA_VERSION) > 0;
+
+  let blockingReason: string | null = null;
+  if (appOutdated) {
+    blockingReason = "Mettez l'application à jour";
+  } else if (dbOutdated) {
+    blockingReason = 'La base de données doit être mise à jour';
+  }
+
+  let adminBanner: string | null = null;
+  if (schemaBehindWarning) {
+    adminBanner = `Schéma de base de données (${schemaVersion}) antérieur à la version attendue (${EXPECTED_SCHEMA_VERSION}) mais toléré (>= ${MIN_SUPPORTED_SCHEMA_VERSION}). Planifiez la mise à jour SQL.`;
+  }
+
+  return {
+    checked: true,
+    compatible: !appOutdated && !dbOutdated && !maintenance,
+    maintenance,
+    appVersion: APP_VERSION,
+    expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+    minSupportedSchemaVersion: MIN_SUPPORTED_SCHEMA_VERSION,
+    schemaVersion,
+    minSchemaVersion,
+    minAppVersion,
+    latestVersion,
+    updateUrl: row.update_url || '/tot-stock.apk',
+    message: row.message || blockingReason || null,
+    tableMissing: false,
+    fromCache,
+    appOutdated,
+    dbOutdated,
+    schemaBehindWarning,
+    schemaAhead,
+    blockingReason,
+    warningBanner: null,
+    adminBanner,
+  };
+}
+
+/**
+ * Vérifie la table singleton public.app_compat (id = 1) au démarrage (Point 4).
+ * Distingue trois cas :
+ * 1) table absente : avertissement non bloquant « installation incomplète, contactez votre administrateur »
+ * 2) erreur réseau ou hors ligne : continuer avec le dernier état connu mis en cache
+ * 3) table présente : appliquer les règles de compatibilité.
+ */
+export async function checkAppCompatibility(
+  client: SupabaseClient | null,
+  _forceCheck = false
+): Promise<AppCompatStatus> {
+  const defaultUnconfigured: AppCompatStatus = {
+    checked: true,
+    compatible: true,
+    maintenance: false,
+    appVersion: APP_VERSION,
+    expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+    minSupportedSchemaVersion: MIN_SUPPORTED_SCHEMA_VERSION,
+  };
+
+  if (!client) return defaultUnconfigured;
+
+  const cacheStorageKey = `tot_app_compat_last_known_${cachedUrl || 'default'}`;
+
+  const loadCachedCompatState = (): AppCompatStatus => {
+    try {
+      const raw = localStorage.getItem(cacheStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.tableMissing) {
+            return {
+              ...defaultUnconfigured,
+              tableMissing: true,
+              fromCache: true,
+              warningBanner: 'installation incomplète, contactez votre administrateur',
+              message: 'installation incomplète, contactez votre administrateur',
+            };
+          }
+          return evaluateAppCompatRules(parsed, true);
+        }
+      }
+    } catch {}
+    return {
+      ...defaultUnconfigured,
+      fromCache: true,
+    };
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return loadCachedCompatState();
+  }
+
+  try {
+    const { data, error } = await client
+      .from('app_compat')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) {
+      if (isNetworkOrFetchError(error)) {
+        return loadCachedCompatState();
+      }
+
+      const code = String(error.code || '');
+      const msg = String(error.message || '').toLowerCase();
+      const isTableAbsent =
+        code === 'PGRST205' ||
+        code === '42P01' ||
+        msg.includes('could not find') ||
+        msg.includes('does not exist') ||
+        msg.includes('not found') ||
+        msg.includes('app_compat');
+
+      if (isTableAbsent) {
+        try {
+          localStorage.setItem(cacheStorageKey, JSON.stringify({ tableMissing: true }));
+        } catch {}
+        return {
+          ...defaultUnconfigured,
+          tableMissing: true,
+          compatible: true,
+          warningBanner: 'installation incomplète, contactez votre administrateur',
+          message: 'installation incomplète, contactez votre administrateur',
+        };
+      }
+
+      return loadCachedCompatState();
+    }
+
+    if (!data) {
+      return {
+        ...defaultUnconfigured,
+        tableMissing: true,
+        compatible: true,
+        warningBanner: 'installation incomplète, contactez votre administrateur',
+        message: 'installation incomplète, contactez votre administrateur',
+      };
+    }
+
+    try {
+      localStorage.setItem(
+        cacheStorageKey,
+        JSON.stringify({
+          schema_version: data.schema_version,
+          min_schema_version: data.min_schema_version,
+          min_app_version: data.min_app_version,
+          latest_version: data.latest_version,
+          update_url: data.update_url,
+          maintenance: data.maintenance,
+          message: data.message,
+        })
+      );
+    } catch {}
+
+    return evaluateAppCompatRules(data, false);
+  } catch (err) {
+    if (isNetworkOrFetchError(err)) {
+      return loadCachedCompatState();
+    }
+    return loadCachedCompatState();
+  }
+}
+
+export interface DiagnosticCheckRow {
+  check_key: string;
+  check_label: string;
+  status: 'OK' | 'ATTENTION' | 'ERREUR';
+  details: string;
+}
+
+export async function checkEmailServiceConfigured(
+  client: SupabaseClient | null
+): Promise<boolean> {
+  if (!client) {
+    try {
+      const cached = localStorage.getItem('tot_email_service_configured');
+      if (cached === 'false') return false;
+    } catch {}
+    return true;
+  }
+
+  try {
+    const { data, error } = await client.functions.invoke('send-report-email', {
+      body: { action: 'status' },
+    });
+    if (!error && data && (data.configured === false || data.status === 'non configuré')) {
+      try {
+        localStorage.setItem('tot_email_service_configured', 'false');
+        window.dispatchEvent(new CustomEvent('tot-email-service-status', { detail: { configured: false } }));
+      } catch {}
+      return false;
+    }
+    if (!error && data && data.configured === true) {
+      try {
+        localStorage.setItem('tot_email_service_configured', 'true');
+        window.dispatchEvent(new CustomEvent('tot-email-service-status', { detail: { configured: true } }));
+      } catch {}
+      return true;
+    }
+  } catch {
+    // ignore network error and keep last known state
+  }
+
+  try {
+    const cached = localStorage.getItem('tot_email_service_configured');
+    if (cached === 'false') return false;
+  } catch {}
+  return true;
+}
+
+export async function runDiagnosticInstallation(
+  client: SupabaseClient | null
+): Promise<{ success: boolean; rows: DiagnosticCheckRow[]; error?: string }> {
+  if (!client) {
+    return {
+      success: false,
+      rows: [],
+      error: 'Base de données Supabase non configurée ou hors ligne.',
+    };
+  }
+
+  try {
+    const { data, error } = await client.rpc('diagnostic_installation');
+    if (error) {
+      return {
+        success: false,
+        rows: [],
+        error: error.message || "Erreur lors de l'exécution de diagnostic_installation().",
+      };
+    }
+
+    const rows: DiagnosticCheckRow[] = Array.isArray(data)
+      ? data.map((r: any) => ({
+          check_key: String(r.check_key || ''),
+          check_label: String(r.check_label || ''),
+          status:
+            r.status === 'OK' || r.status === 'ATTENTION' || r.status === 'ERREUR'
+              ? r.status
+              : 'ATTENTION',
+          details: String(r.details || ''),
+        }))
+      : [];
+
+    // Probe Edge Functions availability if SQL check returned ATTENTION (not yet recorded in app_settings)
+    const edgeRowIdx = rows.findIndex((r) => r.check_key === 'edge_functions_deployed');
+    if (edgeRowIdx !== -1 && rows[edgeRowIdx].status !== 'OK' && cachedUrl) {
+      try {
+        const fnNames = ['admin-users', 'sync-license', 'send-report-email'];
+        const reachable: string[] = [];
+        await Promise.all(
+          fnNames.map(async (fn) => {
+            try {
+              const res = await fetch(`${cachedUrl}/functions/v1/${fn}`, {
+                method: 'OPTIONS',
+              });
+              if (res.ok || res.status === 204 || res.status === 200) {
+                reachable.push(fn);
+              }
+            } catch {}
+          })
+        );
+        if (reachable.length === fnNames.length) {
+          rows[edgeRowIdx] = {
+            ...rows[edgeRowIdx],
+            status: 'OK',
+            details: `3/3 fonctions Edge accessibles (${reachable.join(', ')}).`,
+          };
+        }
+      } catch {}
+    }
+
+    return { success: true, rows };
+  } catch (err: any) {
+    return {
+      success: false,
+      rows: [],
+      error: err?.message || 'Erreur inattendue lors du diagnostic.',
+    };
+  }
+}
+
+
+
+

@@ -1,0 +1,6 @@
+{
+  "name": "TOT - Inventory & Scan Edition",
+  "description": "Gestion d'inventaire professionnelle, suivi des mouvements de stocks, scan QR code/code-barres, traçabilité par chantier et contrôle des flux en temps réel.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

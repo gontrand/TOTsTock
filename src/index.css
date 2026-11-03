@@ -1,0 +1,296 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+html {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden !important;
+  max-width: 100vw;
+  width: 100%;
+}
+
+body, #root {
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden !important;
+  max-width: 100vw;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+*::-webkit-scrollbar:horizontal {
+  display: none !important;
+  height: 0 !important;
+}
+
+.overflow-y-auto {
+  overflow-x: hidden !important;
+}
+
+/* ==========================================================================
+   VERROUILLAGE STRICT DES ICÔNES & GESTION DES TEXTES LONGS
+   Les icônes gardent toujours leur position fixe (shrink-0, z-20) et ne sont
+   jamais déplacées par des textes trop longs (les textes passent derrière en z-0/z-1).
+   ========================================================================== */
+svg.lucide:not(.absolute) {
+  flex-shrink: 0 !important;
+  position: relative;
+  z-index: 20;
+}
+
+/* Conteneurs d'icônes fixes dans les boîtes flexibles */
+.flex > [class*="w-6"][class*="h-6"]:not(.absolute),
+.flex > [class*="w-7"][class*="h-7"]:not(.absolute),
+.flex > [class*="w-8"][class*="h-8"]:not(.absolute),
+.flex > [class*="w-9"][class*="h-9"]:not(.absolute),
+.flex > [class*="w-10"][class*="h-10"]:not(.absolute),
+.flex > [class*="w-11"][class*="h-11"]:not(.absolute),
+.flex > [class*="w-12"][class*="h-12"]:not(.absolute),
+.inline-flex > svg.lucide:not(.absolute),
+.flex > svg.lucide:not(.absolute),
+button > svg.lucide:not(.absolute) {
+  flex-shrink: 0 !important;
+  position: relative;
+  z-index: 20;
+}
+
+/* Icônes positionnées en absolu (barres de recherche, champs de saisie, badges) */
+.relative > svg.lucide.absolute,
+.relative > button.absolute {
+  position: absolute !important;
+  z-index: 25 !important;
+  flex-shrink: 0 !important;
+}
+
+/* Empêcher les conteneurs de texte dans les rangées flex de pousser les icônes */
+.flex.justify-between > div:first-child:not(.shrink-0),
+.flex.items-center > div.flex-1,
+.flex.items-start > div.flex-1 {
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+/* Tout texte trop long dans une carte verrouillée reste en arrière-plan sous les icônes */
+.icon-row-lock {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Animation du bouton central (+) de la barre de navigation */
+@keyframes centerFabPulse {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 10px 20px -4px rgba(249, 115, 22, 0.45), 0 0 0 0 rgba(249, 115, 22, 0.3);
+  }
+  50% {
+    transform: translateY(-2.5px) scale(1.045);
+    box-shadow: 0 14px 26px -4px rgba(249, 115, 22, 0.65), 0 0 14px 3px rgba(251, 146, 60, 0.35);
+  }
+}
+
+@keyframes centerHaloPing {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.65;
+  }
+  75% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+}
+
+.animate-center-fab {
+  animation: centerFabPulse 2.4s ease-in-out infinite;
+}
+
+.animate-center-halo {
+  animation: centerHaloPing 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Animations fluides pour mobile */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Masquer les barres de défilement tout en préservant le scroll tactile fluide */
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar,
+.overflow-x-auto::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.no-scrollbar,
+.scrollbar-none,
+.overflow-x-auto {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm 12mm 10mm;
+  }
+  
+  html, body {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 10.5pt !important;
+    overflow: visible !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Direct printable sheet container - 100% clean isolation for labels & slips */
+  body:has(#tot-direct-printable-sheet) > #root,
+  body:has(#tot-direct-printable-sheet) > div:not(#tot-direct-printable-sheet),
+  body.is-printing-direct-sheet > *:not(#tot-direct-printable-sheet) {
+    display: none !important;
+  }
+
+  #tot-direct-printable-sheet {
+    display: block !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    z-index: 99999999 !important;
+  }
+
+  /* Hide everything on page except active printable modal */
+  body:has(.documentation-modal-backdrop) > #root > div > *:not(.documentation-modal-backdrop) {
+    display: none !important;
+  }
+
+  body:has(.print-labels-modal-backdrop) > #root > div > *:not(.print-labels-modal-backdrop) {
+    display: none !important;
+  }
+
+  /* Hide navigation, fixed overlays, floating action buttons */
+  nav, header, .no-print, .fixed.bottom-0, button, .modal-tab-bar, .documentation-tabs, .documentation-header-bar, .print-labels-controls, .print-labels-header, .print-labels-footer {
+    display: none !important;
+  }
+
+  /* Make modal content full width without modal backdrop container constraints */
+  .fixed.inset-0.z-50,
+  .documentation-modal-backdrop,
+  .print-labels-modal-backdrop {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+    overflow: visible !important;
+    inset: auto !important;
+  }
+
+  .documentation-modal-box,
+  .print-labels-modal-box {
+    position: static !important;
+    max-height: none !important;
+    height: auto !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  .print-labels-body-grid,
+  .print-labels-preview-pane,
+  .print-labels-preview-scroll,
+  .printable-content,
+  #tot-printable-sheet {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Keep screen mockups intact and crisp */
+  .ui-mockup-frame {
+    box-shadow: none !important;
+    border: 1px solid #cbd5e1 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-top: 10px !important;
+    margin-bottom: 14px !important;
+  }
+
+  /* Avoid awkward page breaks inside chapters */
+  .manual-chapter {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-bottom: 24px !important;
+    padding-top: 8px !important;
+  }
+
+  .page-break {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+}

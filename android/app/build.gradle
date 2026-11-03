@@ -1,0 +1,95 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.tot.stock"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.tot.stock"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 3
+        versionName "5.5.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
+            def ksPassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            def kAlias = System.getenv("ANDROID_KEY_ALIAS")
+            def kPassword = System.getenv("ANDROID_KEY_PASSWORD")
+
+            def isReleaseTask = gradle.startParameter.taskNames.any { taskName ->
+                taskName.toLowerCase().contains("release")
+            }
+
+            if (isReleaseTask) {
+                def missingVars = []
+                if (!ksPath) missingVars.add("ANDROID_KEYSTORE_PATH")
+                if (!ksPassword) missingVars.add("ANDROID_KEYSTORE_PASSWORD")
+                if (!kAlias) missingVars.add("ANDROID_KEY_ALIAS")
+                if (!kPassword) missingVars.add("ANDROID_KEY_PASSWORD")
+
+                if (!missingVars.isEmpty()) {
+                    throw new GradleException(
+                        "Build release interrompu : variables d'environnement de signature manquantes : " +
+                        missingVars.join(", ") +
+                        ". Définissez ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS et ANDROID_KEY_PASSWORD avant de compiler l'APK release."
+                    )
+                }
+            }
+
+            if (ksPath && ksPassword && kAlias && kPassword) {
+                storeFile file(ksPath)
+                storePassword ksPassword
+                keyAlias kAlias
+                keyPassword kPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            debuggable false
+            minifyEnabled true
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            debuggable true
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
