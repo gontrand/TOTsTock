@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Installer les dépendances
-        run: npm install --no-audit --no-fund
+        run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Compiler l'application web et synchroniser Android
         run: npm run build:android
