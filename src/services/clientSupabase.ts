@@ -364,6 +364,45 @@ async function findWorkingTable(
 
 let licenseInfoWriteQueue: Promise<any> = Promise.resolve();
 let lastKnownLicenseInfoObj: Record<string, any> = {};
+let activeRealtimeSyncChannel: any = null;
+
+export function setActiveRealtimeSyncChannel(channel: any): void {
+  activeRealtimeSyncChannel = channel;
+}
+
+/**
+ * Notifie instantanément tous les autres onglets/fenêtres (BroadcastChannel + localStorage event)
+ * ET tous les autres appareils connectés (Mobile <-> Bureau via Supabase Realtime Broadcast)
+ * dès qu'une écriture ou suppression est effectuée.
+ */
+export function notifyRealtimeDataMutated(entity: string = 'all'): void {
+  const ts = Date.now();
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel('tot-stock-desktop-sync');
+      bc.postMessage({ type: 'DATA_MUTATED', entity, ts });
+      bc.close();
+    }
+  } catch {}
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('tot_last_mutation_ping', JSON.stringify({ entity, ts }));
+    }
+  } catch {}
+
+  try {
+    if (activeRealtimeSyncChannel && typeof activeRealtimeSyncChannel.send === 'function') {
+      activeRealtimeSyncChannel
+        .send({
+          type: 'broadcast',
+          event: 'tot_data_mutated',
+          payload: { entity, ts },
+        })
+        .catch(() => {});
+    }
+  } catch {}
+}
 
 /**
  * Serialized, session-checked updater for public.app_settings[key = 'company_license_info'].
@@ -426,6 +465,9 @@ export async function updateCompanyLicenseInfoShared(
         ],
         { onConflict: 'key' }
       );
+      if (!error) {
+        notifyRealtimeDataMutated('settings');
+      }
       return !error;
     } catch {
       return false;
@@ -1073,6 +1115,12 @@ export function pickNewerOrder(a: MaterialOrder, b: MaterialOrder): MaterialOrde
   const timeA = getOrderLastModifiedMs(a);
   const timeB = getOrderLastModifiedMs(b);
 
+  const updA = a.updated_at ? Date.parse(a.updated_at) : 0;
+  const updB = b.updated_at ? Date.parse(b.updated_at) : 0;
+  if (!Number.isNaN(updA) && !Number.isNaN(updB) && updA > 0 && updB > 0 && updA !== updB) {
+    return updB > updA ? { ...a, ...b } : { ...b, ...a };
+  }
+
   if (rankB > rankA) return { ...a, ...b };
   if (rankA > rankB) return { ...b, ...a };
 
@@ -1100,6 +1148,11 @@ export function mergeMaterialOrdersLists(...lists: (MaterialOrder[] | undefined 
     if (!Array.isArray(list)) continue;
     for (const raw of list) {
       if (!raw || (!raw.id && !raw.order_number)) continue;
+      if (raw.notes === '[SUPPRIMÉE]') {
+        if (raw.id) deletedSet.add(String(raw.id));
+        if (raw.order_number) deletedSet.add(String(raw.order_number).trim());
+        continue;
+      }
       const norm = normalizeOrderRecord(raw);
       const idKey = String(norm.id || norm.order_number);
       const ordNum = norm.order_number ? String(norm.order_number).trim() : '';
@@ -1127,6 +1180,18 @@ export function mergeMaterialOrdersLists(...lists: (MaterialOrder[] | undefined 
   });
 }
 
+function mergeRemoteDeletedOrderIds(remoteDeletedIds: string[]): void {
+  if (!Array.isArray(remoteDeletedIds) || remoteDeletedIds.length === 0) return;
+  try {
+    const rawDel = localStorage.getItem('tot_deleted_order_ids');
+    const localDel: string[] = rawDel ? JSON.parse(rawDel) : [];
+    const combined = Array.from(new Set([...localDel, ...remoteDeletedIds.map(String)])).filter(Boolean);
+    if (combined.length !== localDel.length) {
+      localStorage.setItem('tot_deleted_order_ids', JSON.stringify(combined));
+    }
+  } catch {}
+}
+
 async function fetchOrdersFromSettingsMirror(client: SupabaseClient): Promise<MaterialOrder[]> {
   const collected: MaterialOrder[][] = [];
   try {
@@ -1139,13 +1204,27 @@ async function fetchOrdersFromSettingsMirror(client: SupabaseClient): Promise<Ma
         if (row.key === 'company_orders_sync' && row.value) {
           try {
             const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-            if (Array.isArray(parsed)) collected.push(parsed as MaterialOrder[]);
+            if (Array.isArray(parsed)) {
+              collected.push(parsed as MaterialOrder[]);
+            } else if (parsed && typeof parsed === 'object') {
+              if (Array.isArray(parsed.deleted_ids)) {
+                mergeRemoteDeletedOrderIds(parsed.deleted_ids);
+              }
+              if (Array.isArray(parsed.orders)) {
+                collected.push(parsed.orders as MaterialOrder[]);
+              }
+            }
           } catch {}
         } else if (row.key === 'company_license_info' && row.value) {
           try {
             const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-            if (parsed && Array.isArray(parsed.orders_sync)) {
-              collected.push(parsed.orders_sync as MaterialOrder[]);
+            if (parsed && typeof parsed === 'object') {
+              if (Array.isArray(parsed.deleted_order_ids)) {
+                mergeRemoteDeletedOrderIds(parsed.deleted_order_ids);
+              }
+              if (Array.isArray(parsed.orders_sync)) {
+                collected.push(parsed.orders_sync as MaterialOrder[]);
+              }
             }
           } catch {}
         }
@@ -1160,8 +1239,34 @@ async function mirrorOrderToSettings(client: SupabaseClient, order: MaterialOrde
     const existingMirror = await fetchOrdersFromSettingsMirror(client);
     const merged = mergeMaterialOrdersLists(existingMirror, [order]).slice(0, 150);
 
+    let deletedIds: string[] = [];
+    try {
+      const rawDel = localStorage.getItem('tot_deleted_order_ids');
+      if (rawDel) deletedIds = JSON.parse(rawDel);
+    } catch {}
+
+    // 1. Écriture directe sur 'company_orders_sync' (autorisée par RLS pour TOUS les utilisateurs authentifiés)
+    await client
+      .from('app_settings')
+      .upsert(
+        [
+          {
+            key: 'company_orders_sync',
+            value: JSON.stringify({
+              orders: merged,
+              deleted_ids: deletedIds.slice(-200),
+            }),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        { onConflict: 'key' }
+      )
+      .then(() => {});
+
+    // 2. Miroir secondaire dans company_license_info (pour administrateurs)
     await updateCompanyLicenseInfoShared(client, (licObj) => ({
       ...licObj,
+      deleted_order_ids: deletedIds.slice(-200),
       orders_sync: mergeMaterialOrdersLists(
         Array.isArray(licObj.orders_sync) ? licObj.orders_sync : [],
         merged
@@ -1408,14 +1513,8 @@ export async function pushUserBasketsToSupabase(
     const userTrig = (user.trigram || '').trim().toUpperCase();
     const userIdStr = String(user.id);
 
-    return await updateCompanyLicenseInfoShared(client, (licObj) => {
-      const existingMap: Record<string, UserBasketSyncEntry> = {
-        ...(licObj.user_baskets_sync && typeof licObj.user_baskets_sync === 'object'
-          ? licObj.user_baskets_sync
-          : {}),
-      };
-
-      for (const [k, v] of Object.entries(existingMap)) {
+    const cleanDuplicatesInMap = (mapObj: Record<string, UserBasketSyncEntry>) => {
+      for (const [k, v] of Object.entries(mapObj)) {
         if (!v) continue;
         const eTrig = (v.trigram || '').trim().toUpperCase();
         const eEmail = (v.email || '').trim().toLowerCase();
@@ -1427,16 +1526,51 @@ export async function pushUserBasketsToSupabase(
           (userTrig && eTrig && userTrig === eTrig) ||
           (userIdStr && eId && userIdStr === eId)
         ) {
-          delete existingMap[k];
+          delete mapObj[k];
         }
       }
+      mapObj[canonicalKey] = entry;
+      return mapObj;
+    };
 
-      existingMap[canonicalKey] = entry;
+    // 1. Écriture directe sur 'company_user_baskets' (autorisée par RLS pour TOUS les utilisateurs authentifiés)
+    let directSuccess = false;
+    try {
+      const currentMap = await fetchAllUserBasketsMapFromSettings(client);
+      const updatedMap = cleanDuplicatesInMap({ ...currentMap });
+      const { error: upErr } = await client.from('app_settings').upsert(
+        [
+          {
+            key: 'company_user_baskets',
+            value: JSON.stringify(updatedMap),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        { onConflict: 'key' }
+      );
+      if (!upErr) {
+        directSuccess = true;
+      }
+    } catch {}
+
+    // 2. Miroir secondaire dans company_license_info
+    const sharedSuccess = await updateCompanyLicenseInfoShared(client, (licObj) => {
+      const existingMap: Record<string, UserBasketSyncEntry> = {
+        ...(licObj.user_baskets_sync && typeof licObj.user_baskets_sync === 'object'
+          ? licObj.user_baskets_sync
+          : {}),
+      };
+      cleanDuplicatesInMap(existingMap);
       return {
         ...licObj,
         user_baskets_sync: existingMap,
       };
     });
+
+    if (directSuccess || sharedSuccess) {
+      notifyRealtimeDataMutated('baskets');
+    }
+    return directSuccess || sharedSuccess;
   } catch {
     return false;
   }
@@ -1446,6 +1580,11 @@ export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Pro
   let tableOrders: MaterialOrder[] = [];
   let mirrorOrders: MaterialOrder[] = [];
 
+  // Charger d'abord le miroir pour récupérer les deleted_ids distants avant la fusion
+  try {
+    mirrorOrders = await fetchOrdersFromSettingsMirror(client);
+  } catch {}
+
   try {
     const orderTable = (await findWorkingTable(client, ['material_orders', 'orders', 'tot_orders'])) || 'material_orders';
     const { data, error } = await client
@@ -1453,12 +1592,19 @@ export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Pro
       .select('*')
       .order('created_at', { ascending: false });
     if (!error && Array.isArray(data)) {
-      tableOrders = data as MaterialOrder[];
+      const newlyDeleted: string[] = [];
+      tableOrders = (data as MaterialOrder[]).filter((row) => {
+        if (row.notes === '[SUPPRIMÉE]') {
+          if (row.id) newlyDeleted.push(String(row.id));
+          if (row.order_number) newlyDeleted.push(String(row.order_number).trim());
+          return false;
+        }
+        return true;
+      });
+      if (newlyDeleted.length > 0) {
+        mergeRemoteDeletedOrderIds(newlyDeleted);
+      }
     }
-  } catch {}
-
-  try {
-    mirrorOrders = await fetchOrdersFromSettingsMirror(client);
   } catch {}
 
   return mergeMaterialOrdersLists(tableOrders, mirrorOrders);
@@ -1472,6 +1618,12 @@ export async function fetchLiveOperationalData(
   products?: Product[];
   movements?: StockMovement[];
   depots?: Depot[];
+  departments?: Department[];
+  projects?: Project[];
+  subCategories?: SubCategory[];
+  users?: User[];
+  roles?: Role[];
+  publicSettings?: Record<string, string>;
   userBaskets?: UserBasketSyncEntry | null;
 }> {
   const result: {
@@ -1479,6 +1631,12 @@ export async function fetchLiveOperationalData(
     products?: Product[];
     movements?: StockMovement[];
     depots?: Depot[];
+    departments?: Department[];
+    projects?: Project[];
+    subCategories?: SubCategory[];
+    users?: User[];
+    roles?: Role[];
+    publicSettings?: Record<string, string>;
     userBaskets?: UserBasketSyncEntry | null;
   } = {};
 
@@ -1486,7 +1644,7 @@ export async function fetchLiveOperationalData(
     (async () => {
       try {
         const orders = await fetchOrdersMergedFromSupabase(client);
-        if (orders.length > 0) result.orders = orders;
+        result.orders = orders;
       } catch {}
     })(),
     (async () => {
@@ -1513,7 +1671,7 @@ export async function fetchLiveOperationalData(
           .select('*')
           .order('created_at', { ascending: false })
           .limit(500);
-        if (!error && Array.isArray(data) && data.length > 0) {
+        if (!error && Array.isArray(data)) {
           result.movements = data.map(normalizeMovementRecord);
         }
       } catch {}
@@ -1524,6 +1682,58 @@ export async function fetchLiveOperationalData(
         const { data, error } = await client.from(depotTable).select('*');
         if (!error && Array.isArray(data) && data.length > 0) {
           result.depots = data.map(normalizeDepotRecord);
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
+        const { data, error } = await client.from(depTable).select('*');
+        if (!error && Array.isArray(data) && data.length > 0) {
+          result.departments = data.map(normalizeDepartmentRecord);
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+        const { data, error } = await client.from(projTable).select('*');
+        if (!error && Array.isArray(data)) {
+          result.projects = data.map(normalizeProjectRecord);
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
+        const { data, error } = await client.from(catTable).select('*');
+        if (!error && Array.isArray(data)) {
+          result.subCategories = data as SubCategory[];
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const loadedUsers = await fetchUsersDirectorySafe(client);
+        if (loadedUsers.length > 0) {
+          result.users = loadedUsers;
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
+        const { data, error } = await client.from(roleTable).select('*');
+        if (!error && Array.isArray(data) && data.length > 0) {
+          result.roles = data as Role[];
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const pub = await fetchPublicAppSettings(client);
+        if (pub && Object.keys(pub).length > 0) {
+          result.publicSettings = pub;
         }
       } catch {}
     })(),
@@ -1671,6 +1881,7 @@ export async function pushMovementToSupabase(
       };
     }
 
+    notifyRealtimeDataMutated('movements');
     return {
       success: true,
       newQty: rpcData?.new_quantity ?? newProductQty,
@@ -1727,6 +1938,7 @@ export async function transitionOrderStatusSupabase(
       return { success: false, error: rpcData.message };
     }
 
+    notifyRealtimeDataMutated('orders');
     return { success: true };
   } catch (err: any) {
     return {
@@ -1753,7 +1965,11 @@ export async function upsertProductToSupabase(
 
     // Protection stricte : La colonne 'quantity' ne doit JAMAIS être envoyée lors de l'upsert direct de produit
     // La quantité est la somme des stock_levels gérée exclusivement par process_stock_movement()
-    const { quantity, ...productMetadata } = product;
+    const { quantity, ...rawMetadata } = product;
+    const productMetadata = {
+      ...rawMetadata,
+      updated_at: new Date().toISOString(),
+    };
 
     // Helper fallback if legacy DB schema does not have qr_code column yet
     const stripUnsupportedColumns = (meta: Record<string, any>) => {
@@ -1779,6 +1995,7 @@ export async function upsertProductToSupabase(
         updErr = retry.error;
       }
       if (!updErr && Array.isArray(updatedById) && updatedById.length > 0) {
+        notifyRealtimeDataMutated('products');
         return { success: true };
       }
       if (updErr && updErr.code === '23505') {
@@ -1805,6 +2022,7 @@ export async function upsertProductToSupabase(
       }
       return { success: false, error: formatPostgresErrorMessage(error) };
     }
+    notifyRealtimeDataMutated('products');
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Erreur inconnue' };
@@ -1870,6 +2088,7 @@ export async function deleteProductFromSupabase(
   try {
     const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
     const { error } = await client.from(prodTable).delete().eq('id', productId);
+    if (!error) notifyRealtimeDataMutated('products');
     return !error;
   } catch {
     return false;
@@ -1908,10 +2127,13 @@ export async function upsertDepartmentToSupabase(
         // Fallback for very early schemas
         const legacyDep2 = { id: dep.id, name: dep.name, manager_id: dep.manager_id ? String(dep.manager_id) : null };
         const { error: err2 } = await client.from(depTable).upsert([legacyDep2]);
+        if (!err2) notifyRealtimeDataMutated('departments');
         return !err2;
       }
+      notifyRealtimeDataMutated('departments');
       return true;
     }
+    notifyRealtimeDataMutated('departments');
     return true;
   } catch {
     return false;
@@ -1925,6 +2147,7 @@ export async function deleteDepartmentFromSupabase(
   try {
     const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'])) || 'departments';
     const { error } = await client.from(depTable).delete().eq('id', depId);
+    if (!error) notifyRealtimeDataMutated('departments');
     return !error;
   } catch {
     return false;
@@ -1948,8 +2171,10 @@ export async function upsertProjectToSupabase(
         manager_id: proj.manager_id || null,
       };
       const { error: err2 } = await client.from(projTable).upsert([legacyProj]);
+      if (!err2) notifyRealtimeDataMutated('projects');
       return !err2;
     }
+    notifyRealtimeDataMutated('projects');
     return true;
   } catch {
     return false;
@@ -1963,6 +2188,7 @@ export async function deleteProjectFromSupabase(
   try {
     const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
     const { error } = await client.from(projTable).delete().eq('id', projId);
+    if (!error) notifyRealtimeDataMutated('projects');
     return !error;
   } catch {
     return false;
@@ -1976,6 +2202,7 @@ export async function upsertRoleToSupabase(
   try {
     const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
     const { error } = await client.from(roleTable).upsert([role]);
+    if (!error) notifyRealtimeDataMutated('roles');
     return !error;
   } catch {
     return false;
@@ -1989,6 +2216,7 @@ export async function deleteRoleFromSupabase(
   try {
     const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
     const { error } = await client.from(roleTable).delete().eq('id', roleId);
+    if (!error) notifyRealtimeDataMutated('roles');
     return !error;
   } catch {
     return false;
@@ -2002,6 +2230,7 @@ export async function upsertSubCategoryToSupabase(
   try {
     const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
     const { error } = await client.from(catTable).upsert([category]);
+    if (!error) notifyRealtimeDataMutated('sub_categories');
     return !error;
   } catch {
     return false;
@@ -2015,6 +2244,7 @@ export async function deleteSubCategoryFromSupabase(
   try {
     const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
     const { error } = await client.from(catTable).delete().eq('id', catId);
+    if (!error) notifyRealtimeDataMutated('sub_categories');
     return !error;
   } catch {
     return false;
@@ -2143,6 +2373,7 @@ export async function upsertDepotToSupabase(
         .eq('id', payloadFull.id)
         .select();
       if (!updIdErr && Array.isArray(updById) && updById.length > 0) {
+        notifyRealtimeDataMutated('depots');
         return { success: true, table: depotTable, inserted: updById[0] as Depot };
       }
     }
@@ -2153,6 +2384,7 @@ export async function upsertDepotToSupabase(
         .eq('name', depot.name.trim())
         .select();
       if (!updNameErr && Array.isArray(updByName) && updByName.length > 0) {
+        notifyRealtimeDataMutated('depots');
         return { success: true, table: depotTable, inserted: updByName[0] as Depot };
       }
     }
@@ -2165,6 +2397,7 @@ export async function upsertDepotToSupabase(
 
     if (!err1) {
       const insertedRow = resData && resData[0] ? (resData[0] as Depot) : undefined;
+      notifyRealtimeDataMutated('depots');
       return { success: true, table: depotTable, inserted: insertedRow };
     }
 
@@ -2224,6 +2457,7 @@ export async function upsertDepotToSupabase(
 
     if (!err2) {
       const insertedRow = resData2 && resData2[0] ? (resData2[0] as Depot) : undefined;
+      notifyRealtimeDataMutated('depots');
       return { success: true, table: depotTable, inserted: insertedRow };
     }
 
@@ -2244,6 +2478,7 @@ export async function upsertDepotToSupabase(
 
     if (!err3) {
       const insertedRow = resData3 && resData3[0] ? (resData3[0] as Depot) : undefined;
+      notifyRealtimeDataMutated('depots');
       return { success: true, table: depotTable, inserted: insertedRow };
     }
 
@@ -2261,6 +2496,7 @@ export async function upsertDepotToSupabase(
 
       if (!err4) {
         const insertedRow = resData4 && resData4[0] ? (resData4[0] as Depot) : undefined;
+        notifyRealtimeDataMutated('depots');
         return { success: true, table: depotTable, inserted: insertedRow };
       }
     }
@@ -2297,11 +2533,15 @@ export async function deleteDepotFromSupabase(
     // Delete by name if provided
     if (depotName) {
       const { error: errName } = await client.from(depotTable).delete().eq('name', depotName);
-      if (!errName) return { success: true };
+      if (!errName) {
+        notifyRealtimeDataMutated('depots');
+        return { success: true };
+      }
     }
 
     // Or delete by ID
     const { error } = await client.from(depotTable).delete().eq('id', depotId);
+    if (!error) notifyRealtimeDataMutated('depots');
     return { success: !error, error: error?.message };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -2758,6 +2998,7 @@ export async function upsertOrderToSupabase(
         order_number: currentOrderNumber,
         updated_at: nowIso,
       }).catch(() => {});
+      notifyRealtimeDataMutated('orders');
       return { success: true, orderNumber: currentOrderNumber };
     }
 
@@ -2766,6 +3007,7 @@ export async function upsertOrderToSupabase(
       order_number: currentOrderNumber,
       updated_at: nowIso,
     }).catch(() => {});
+    notifyRealtimeDataMutated('orders');
     return { success: true, orderNumber: currentOrderNumber };
   } catch (err: any) {
     if (isNetworkOrFetchError(err)) {
@@ -2782,9 +3024,29 @@ export async function deleteOrderFromSupabase(
   if (!client) return { success: false, error: 'Supabase non connecté.' };
 
   try {
-    // 1. Retirer du miroir app_settings (company_orders_sync et company_license_info.orders_sync) pour éviter toute résurrection au polling
+    // 1. Retirer du miroir app_settings (company_orders_sync et company_license_info.orders_sync)
+    // et publier l'ID supprimé dans deleted_ids pour synchronisation immédiate multi-appareils
     try {
       const existingMirror = await fetchOrdersFromSettingsMirror(client);
+      const targetInMirror = existingMirror.find(
+        (o) => String(o.id) === String(orderId) || String(o.order_number) === String(orderId)
+      );
+      let deletedIds: string[] = [];
+      try {
+        const rawDel = localStorage.getItem('tot_deleted_order_ids');
+        if (rawDel) deletedIds = JSON.parse(rawDel);
+      } catch {}
+      const nextDeletedIds = Array.from(
+        new Set([
+          ...deletedIds.map(String),
+          String(orderId),
+          ...(targetInMirror?.order_number ? [String(targetInMirror.order_number)] : []),
+        ])
+      ).filter(Boolean);
+      try {
+        localStorage.setItem('tot_deleted_order_ids', JSON.stringify(nextDeletedIds));
+      } catch {}
+
       const filteredMirror = existingMirror.filter(
         (o) => String(o.id) !== String(orderId) && String(o.order_number) !== String(orderId)
       );
@@ -2792,7 +3054,10 @@ export async function deleteOrderFromSupabase(
         [
           {
             key: 'company_orders_sync',
-            value: JSON.stringify(filteredMirror.slice(0, 150)),
+            value: JSON.stringify({
+              orders: filteredMirror.slice(0, 150),
+              deleted_ids: nextDeletedIds.slice(-200),
+            }),
             updated_at: new Date().toISOString(),
           },
         ],
@@ -2800,6 +3065,7 @@ export async function deleteOrderFromSupabase(
       );
       await updateCompanyLicenseInfoShared(client, (licObj) => ({
         ...licObj,
+        deleted_order_ids: nextDeletedIds.slice(-200),
         orders_sync: Array.isArray(licObj.orders_sync)
           ? licObj.orders_sync.filter(
               (o: any) => String(o?.id) !== String(orderId) && String(o?.order_number) !== String(orderId)
@@ -2811,21 +3077,34 @@ export async function deleteOrderFromSupabase(
     const candidateTables = ['material_orders', 'orders', 'tot_orders'];
     const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
 
-    // 2. Tenter la suppression directe si autorisée, puis repli sur statut CANCELLED (RLS)
-    const { error: delErr } = await client.from(orderTable).delete().eq('id', orderId);
-    if (!delErr) {
+    // 2. Tenter la suppression directe avec .select('id') pour vérifier si au moins 1 ligne a été supprimée,
+    // puis repli sur statut CANCELLED + notes '[SUPPRIMÉE]' (autorisé par RLS)
+    const { data: delRows, error: delErr } = await client
+      .from(orderTable)
+      .delete()
+      .eq('id', orderId)
+      .select('id');
+
+    if (!delErr && Array.isArray(delRows) && delRows.length > 0) {
+      notifyRealtimeDataMutated('orders');
       return { success: true };
     }
 
     const { error } = await client
       .from(orderTable)
-      .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+      .update({
+        status: 'CANCELLED',
+        notes: '[SUPPRIMÉE]',
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', orderId);
+    notifyRealtimeDataMutated('orders');
     if (error?.code === '42501') {
       return { success: true };
     }
     return { success: true, error: error?.message };
   } catch (err: any) {
+    notifyRealtimeDataMutated('orders');
     return { success: true, error: err.message };
   }
 }

@@ -56,8 +56,10 @@ import {
   validateZplPrinterAddress,
 } from '../../services/zplLabel';
 
+import { getClientSupabase } from '../../services/clientSupabase';
+
 export const DesktopPrintStationPage: React.FC = () => {
-  const { products, orders, depots, canViewPrices } = useApp();
+  const { products, orders, depots, canViewPrices, supabaseUrl, supabaseKey } = useApp();
 
   const savedMeta = getSavedPrintStationMeta();
   const [stationId, setStationId] = useState<string | null>(savedMeta.id);
@@ -268,9 +270,42 @@ export const DesktopPrintStationPage: React.FC = () => {
   useEffect(() => {
     if (!stationId) return;
     pollStationJobs();
-    const timer = setInterval(pollStationJobs, 10_000);
-    return () => clearInterval(timer);
-  }, [stationId, pollStationJobs]);
+    const timer = setInterval(pollStationJobs, 4_000);
+
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    const channel = client
+      ? client
+          .channel(`tot-print-station-${stationId}`)
+          .on('broadcast', { event: 'new_print_job' }, () => {
+            pollStationJobs();
+          })
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'print_jobs' },
+            () => {
+              pollStationJobs();
+            }
+          )
+          .subscribe()
+      : null;
+
+    const handleWakeup = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        pollStationJobs();
+      }
+    };
+    window.addEventListener('focus', handleWakeup);
+    document.addEventListener('visibilitychange', handleWakeup);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', handleWakeup);
+      document.removeEventListener('visibilitychange', handleWakeup);
+      if (channel && client) {
+        client.removeChannel(channel).catch(() => {});
+      }
+    };
+  }, [stationId, pollStationJobs, supabaseUrl, supabaseKey]);
 
   useEffect(() => {
     if (desktopMode) {

@@ -157,6 +157,9 @@ import {
   UserBasketSyncEntry,
   checkAppCompatibility,
   AppCompatStatus,
+  setActiveRealtimeSyncChannel,
+  notifyRealtimeDataMutated,
+  getOrderLastModifiedMs,
 } from '../services/clientSupabase';
 import {
   APP_VERSION,
@@ -1225,10 +1228,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (remoteEntry?: UserBasketSyncEntry | null) => {
       if (!currentUser) return;
       const tsKey = getBasketTsStorageKey(currentUser);
-      const localTs = Math.max(
-        Number(localStorage.getItem(tsKey)) || 0,
-        lastPushedBasketTsRef.current || 0
-      );
+      const localTs =
+        lastPushedBasketTsRef.current > 0
+          ? lastPushedBasketTsRef.current
+          : Number(localStorage.getItem(tsKey)) || 0;
       const localBaskets = orderBasketsRef.current;
       const localHasItems =
         localBaskets.some((b) => Array.isArray(b.items) && b.items.length > 0) ||
@@ -1926,20 +1929,90 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [supabaseUrl, supabaseKey, currentUser, syncFromSupabase]);
 
-  // Synchronisation temps réel multi-appareils (Mobile <-> PC) via WebSocket Realtime + Polling rapide (6s) + Focus
+  // Synchronisation temps réel multi-appareils (Mobile <-> PC) et multi-fenêtres via WebSocket Realtime + BroadcastChannel + Polling rapide (3s) + Focus
   useEffect(() => {
-    if (!supabaseUrl || !supabaseKey) return;
-    const client = getClientSupabase(supabaseUrl, supabaseKey);
-    if (!client) return;
-
     let isMounted = true;
     let isPolling = false;
+    let pendingSync = false;
     let lastLiveSyncAt = 0;
 
+    // Hydratation immédiate entre onglets/fenêtres locales (ex: Vue Bureau + Vue Mobile sur le même poste)
+    const hydrateFromLocalStorage = () => {
+      if (!isMounted) return;
+      try {
+        const readJson = <T,>(key: string): T | null => {
+          const raw = localStorage.getItem(`${LOCAL_PREFIX}${key}`);
+          if (!raw) return null;
+          return JSON.parse(raw) as T;
+        };
+        const lsOrders = readJson<MaterialOrder[]>('orders');
+        if (Array.isArray(lsOrders)) {
+          setOrders((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsOrders) ? prev : lsOrders
+          );
+        }
+        const lsProducts = readJson<Product[]>('products');
+        if (Array.isArray(lsProducts) && lsProducts.length > 0) {
+          setProducts((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsProducts) ? prev : lsProducts
+          );
+        }
+        const lsMovements = readJson<StockMovement[]>('movements');
+        if (Array.isArray(lsMovements)) {
+          setMovements((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsMovements) ? prev : lsMovements
+          );
+        }
+        const lsDepots = readJson<Depot[]>('depots');
+        if (Array.isArray(lsDepots) && lsDepots.length > 0) {
+          setDepots((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsDepots) ? prev : lsDepots
+          );
+        }
+        const lsDepartments = readJson<Department[]>('departments');
+        if (Array.isArray(lsDepartments) && lsDepartments.length > 0) {
+          setDepartments((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsDepartments) ? prev : lsDepartments
+          );
+        }
+        const lsProjects = readJson<Project[]>('projects');
+        if (Array.isArray(lsProjects)) {
+          setProjects((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsProjects) ? prev : lsProjects
+          );
+        }
+        const lsSubCats = readJson<SubCategory[]>('subCategories');
+        if (Array.isArray(lsSubCats)) {
+          setSubCategories((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsSubCats) ? prev : lsSubCats
+          );
+        }
+        const lsRoles = readJson<Role[]>('roles');
+        if (Array.isArray(lsRoles) && lsRoles.length > 0) {
+          setRoles((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsRoles) ? prev : lsRoles
+          );
+        }
+        const lsUsers = readJson<User[]>('users');
+        if (Array.isArray(lsUsers) && lsUsers.length > 0) {
+          setUsers((prev) =>
+            JSON.stringify(prev) === JSON.stringify(lsUsers) ? prev : lsUsers
+          );
+        }
+      } catch {}
+    };
+
+    const client = supabaseUrl && supabaseKey ? getClientSupabase(supabaseUrl, supabaseKey) : null;
+
     const runSilentLiveSync = async (force = false) => {
+      if (!client) return;
       const now = Date.now();
-      if (!force && now - lastLiveSyncAt < 3000) return;
-      if (!isMounted || isPolling || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+      if (!force && now - lastLiveSyncAt < 1500) return;
+      if (!isMounted || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+      if (isPolling) {
+        if (force) pendingSync = true;
+        return;
+      }
       isPolling = true;
       lastLiveSyncAt = now;
       try {
@@ -1969,14 +2042,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           );
         }
 
-        // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel sans re-rendu inutile
+        // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel complet
         await performIncrementalSync(client).catch(() => {});
         const live = await fetchLiveOperationalData(client, currentUser);
         if (!isMounted) return;
-        if (live.orders && live.orders.length > 0) {
+        if (live.orders !== undefined) {
           const liveOrders = live.orders;
+          const nowMs = Date.now();
           setOrders((prev) => {
-            const next = mergeMaterialOrdersLists(prev, liveOrders);
+            // Ne conserver localement que les commandes hors ligne (_OFF) ou créées/modifiées il y a moins de 4s
+            // afin que les suppressions distantes soient répercutées immédiatement
+            const recentOrOfflineLocal = prev.filter((o) => {
+              const isOffline = String(o.order_number || '').endsWith('_OFF');
+              const ageMs = nowMs - getOrderLastModifiedMs(o);
+              return isOffline || (ageMs >= 0 && ageMs < 4000);
+            });
+            const next = mergeMaterialOrdersLists(recentOrOfflineLocal, liveOrders);
             return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
           });
         }
@@ -1989,7 +2070,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             JSON.stringify(prev) === JSON.stringify(liveProducts) ? prev : liveProducts
           );
         }
-        if (live.movements && live.movements.length > 0) {
+        if (live.movements !== undefined) {
           const liveMovements = live.movements;
           setMovements((prev) =>
             JSON.stringify(prev) === JSON.stringify(liveMovements) ? prev : liveMovements
@@ -2001,43 +2082,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             JSON.stringify(prev) === JSON.stringify(liveDepots) ? prev : liveDepots
           );
         }
+        if (live.departments && live.departments.length > 0) {
+          const liveDeps = live.departments;
+          setDepartments((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveDeps) ? prev : liveDeps
+          );
+        }
+        if (live.projects !== undefined) {
+          const liveProjs = live.projects;
+          setProjects((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveProjs) ? prev : liveProjs
+          );
+        }
+        if (live.subCategories !== undefined) {
+          const liveCats = live.subCategories;
+          setSubCategories((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveCats) ? prev : liveCats
+          );
+        }
+        if (live.roles && live.roles.length > 0) {
+          const liveRoles = live.roles;
+          setRoles((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveRoles) ? prev : liveRoles
+          );
+        }
+        if (live.users && live.users.length > 0) {
+          const liveUsers = live.users;
+          setUsers((prev) => {
+            const next = mergeUserLists(liveUsers, prev);
+            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+          });
+        }
+        if (live.publicSettings?.company_license_info) {
+          try {
+            const parsedLic = JSON.parse(live.publicSettings.company_license_info) as LicenseInfo;
+            if (parsedLic && parsedLic.signed_token) {
+              verifyAndApplySignedLicenseQuotas(parsedLic, supabaseUrl)
+                .then((verified) => {
+                  if (!isMounted || !verified.valid || verified.downgraded) return;
+                  const nextLic = verified.license;
+                  setLicense((prev) => {
+                    if (
+                      prev.license_key === nextLic.license_key &&
+                      prev.plan_type === nextLic.plan_type &&
+                      prev.status === nextLic.status &&
+                      prev.signed_token?.signature === nextLic.signed_token?.signature
+                    ) {
+                      return prev;
+                    }
+                    saveLicenseLocally(nextLic);
+                    return nextLic;
+                  });
+                })
+                .catch(() => {});
+            }
+          } catch {}
+        }
       } catch {
         // Ignorer silencieusement les erreurs réseau transitoires en arrière-plan
       } finally {
         isPolling = false;
+        if (pendingSync && isMounted) {
+          pendingSync = false;
+          setTimeout(() => {
+            if (isMounted) runSilentLiveSync(true);
+          }, 150);
+        }
       }
     };
 
     const channel = client
-      .channel('tot-live-multi-device-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_orders' }, () => {
-        runSilentLiveSync();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
-        runSilentLiveSync();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'stock_movements' }, () => {
-        runSilentLiveSync();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'depots' }, () => {
-        runSilentLiveSync();
-      })
-      .subscribe();
+      ? client
+          .channel('tot-live-multi-device-sync')
+          .on('broadcast', { event: 'tot_data_mutated' }, () => {
+            runSilentLiveSync(true);
+          })
+          .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+            runSilentLiveSync(true);
+          })
+          .subscribe()
+      : null;
+
+    if (channel) {
+      setActiveRealtimeSyncChannel(channel);
+    }
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('tot-stock-desktop-sync');
+        bc.onmessage = (ev) => {
+          if (ev?.data?.type === 'DATA_MUTATED') {
+            hydrateFromLocalStorage();
+            runSilentLiveSync(true);
+          }
+        };
+      }
+    } catch {}
+
+    const handleStorageEvent = (ev: StorageEvent) => {
+      if (!ev.key) return;
+      if (ev.key === 'tot_last_mutation_ping' || ev.key.startsWith(LOCAL_PREFIX)) {
+        hydrateFromLocalStorage();
+        runSilentLiveSync(true);
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
 
     const intervalId = setInterval(() => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         runSilentLiveSync();
       }
-    }, 6000);
+    }, 3000);
 
     // Exécuter immédiatement à la connexion ou au changement de session utilisateur
     const initialTimer = setTimeout(() => {
-      runSilentLiveSync();
-    }, 300);
+      runSilentLiveSync(true);
+    }, 250);
 
     const handleFocusOrVisible = () => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-        runSilentLiveSync();
+        hydrateFromLocalStorage();
+        runSilentLiveSync(true);
       }
     };
     window.addEventListener('focus', handleFocusOrVisible);
@@ -2048,14 +2214,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isMounted = false;
       clearTimeout(initialTimer);
       clearInterval(intervalId);
+      window.removeEventListener('storage', handleStorageEvent);
       window.removeEventListener('focus', handleFocusOrVisible);
       window.removeEventListener('online', handleFocusOrVisible);
       document.removeEventListener('visibilitychange', handleFocusOrVisible);
       try {
-        client.removeChannel(channel);
+        bc?.close();
       } catch {}
+      if (channel && client) {
+        setActiveRealtimeSyncChannel(null);
+        try {
+          client.removeChannel(channel);
+        } catch {}
+      }
     };
-  }, [supabaseUrl, supabaseKey, currentUser, reconcileUserBasketsWithRemote]);
+  }, [supabaseUrl, supabaseKey, currentUser, language, reconcileUserBasketsWithRemote]);
 
   const saveSupabaseConfig = useCallback((url: string, key: string) => {
     const cleanUrl = normalizeSupabaseUrl(url);
@@ -5433,9 +5606,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               setProducts((prev) => prev.filter((item) => item.id !== savedProduct.id));
             }
             alert(res.error);
+          } else if (res.success) {
+            const targetQty = Number(savedProduct.quantity) || 0;
+            const prevQty = existingProd ? Number(existingProd.quantity) || 0 : 0;
+            if ((isNew && targetQty > 0) || (!isNew && existingProd && targetQty !== prevQty)) {
+              const delta = Math.abs(targetQty - prevQty);
+              const syncMov: StockMovement = {
+                id: `mov-init-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                product_id: savedProduct.id,
+                product_ref: savedProduct.reference,
+                user_id: currentUser?.id || null,
+                user_name: currentUser?.name || 'Administrateur',
+                movement_type: targetQty >= prevQty ? 'IN' : 'OUT',
+                type: 'INVENTORY',
+                quantity: targetQty,
+                quantity_changed: delta,
+                depot_name: savedProduct.store_name || 'Dépôt Principal',
+                reason: isNew ? 'Stock initial à la création' : 'Ajustement fiche article',
+                site_number: 'CATALOGUE',
+                department_name: isNew ? 'Stock initial' : 'Ajustement fiche article',
+                total_cost: delta * (savedProduct.unit_price || 0),
+                created_at: new Date().toISOString(),
+              };
+              pushMovementToSupabase(client, syncMov, targetQty, currentUser?.id).catch(() => {});
+            }
           }
         }
       }
+      notifyRealtimeDataMutated('products');
       return true;
     },
     [products, license, supabaseUrl, supabaseKey, currentUser, language, logActivity, userHasPermission]
@@ -5649,9 +5847,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (duplicate) {
       return false;
     }
+    const nextDepId =
+      dep.id ||
+      departments.reduce((max, d) => {
+        const n = Number(d.id);
+        return Number.isFinite(n) && n < 2000000000 && n > max ? n : max;
+      }, 0) + 1;
     const savedDep: Department = {
       ...dep,
-      id: dep.id || Date.now(),
+      id: nextDepId,
       name,
       manager_id: dep.manager_id || null,
       deputy_manager_ids: dep.deputy_manager_ids || [],
@@ -5667,6 +5871,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur upsert department Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('departments');
     return true;
   }, [departments, supabaseUrl, supabaseKey]);
 
@@ -5682,6 +5887,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur delete department Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('departments');
     return true;
   }, [supabaseUrl, supabaseKey, userHasPermission]);
 
@@ -5698,9 +5904,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (duplicate) {
       return false;
     }
+    const nextProjId =
+      proj.id ||
+      projects.reduce((max, p) => {
+        const n = Number(p.id);
+        return Number.isFinite(n) && n < 2000000000 && n > max ? n : max;
+      }, 0) + 1;
     const savedProj: Project = {
       ...proj,
-      id: proj.id || Date.now(),
+      id: nextProjId,
       department_id: proj.department_id || 1,
       project_number,
       project_name,
@@ -5717,6 +5929,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur upsert project Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('projects');
     return true;
   }, [projects, supabaseUrl, supabaseKey]);
 
@@ -5732,6 +5945,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur delete project Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('projects');
     return true;
   }, [supabaseUrl, supabaseKey, userHasPermission]);
 
@@ -5740,9 +5954,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const name = role.name?.trim();
     if (!name) return false;
     const hasId = role.id !== undefined && role.id !== null;
+    const nextRoleId = hasId
+      ? role.id!
+      : roles.reduce((max, r) => {
+          const n = Number(r.id);
+          return Number.isFinite(n) && n < 2000000000 && n > max ? n : max;
+        }, 10) + 1;
     const savedRole: Role = {
       ...role,
-      id: hasId ? role.id! : Date.now(),
+      id: nextRoleId,
       name,
       permissions: role.permissions || [],
     };
@@ -5756,8 +5976,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur upsert role Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('roles');
     return true;
-  }, [supabaseUrl, supabaseKey]);
+  }, [roles, supabaseUrl, supabaseKey]);
 
   const deleteRole = useCallback(async (id: number) => {
     if (Number(id) === 0) return false; // Prevent super role deletion
@@ -5972,7 +6193,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (duplicate) {
       return false;
     }
-    const catId = id || Date.now();
+    const catId =
+      id ||
+      subCategories.reduce((max, s) => {
+        const n = Number(s.id);
+        return Number.isFinite(n) && n < 2000000000 && n > max ? n : max;
+      }, 0) + 1;
     const updatedCat: SubCategory = { id: catId, name: trimmed };
     setSubCategories((prev) => {
       const exists = prev.some((s) => s.id === catId);
@@ -5987,6 +6213,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur upsert subcategory Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('sub_categories');
     return true;
   }, [subCategories, supabaseUrl, supabaseKey]);
 
@@ -5998,6 +6225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Erreur delete subcategory Supabase:', err)
       );
     }
+    notifyRealtimeDataMutated('sub_categories');
     return true;
   }, [supabaseUrl, supabaseKey]);
 

@@ -1552,3 +1552,31 @@ GRANT EXECUTE ON FUNCTION public.get_email_secret() TO service_role;
 -- Suppression de la fonction utilitaire interne de purge RLS en fin de script
 DROP FUNCTION IF EXISTS public._tot_drop_all_policies_on_table(TEXT);
 
+-- -------------------------------------------------------------------------
+-- 12. PUBLICATION REALTIME PROTÉGÉE (SYNCHRONISATION TEMPS RÉEL MOBILE <-> BUREAU)
+-- -------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_tbl TEXT;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    FOREACH v_tbl IN ARRAY ARRAY[
+      'products', 'stock_levels', 'stock_movements', 'movements',
+      'material_orders', 'depots', 'departments', 'projects',
+      'sub_categories', 'users', 'roles', 'app_settings',
+      'license_config'
+    ] LOOP
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = v_tbl
+      ) AND NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = v_tbl
+      ) THEN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', v_tbl);
+      END IF;
+    END LOOP;
+  END IF;
+END $$;
+
+

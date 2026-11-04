@@ -407,3 +407,30 @@ CREATE INDEX IF NOT EXISTS idx_material_orders_cost ON public.material_orders (t
 
 CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON public.audit_logs (created_at DESC);
+
+-- =========================================================================
+-- 14. PUBLICATION REALTIME POUR SYNCHRONISATION TEMPS RÉEL (MOBILE <-> BUREAU)
+-- =========================================================================
+DO $$
+DECLARE
+  v_tbl TEXT;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    FOREACH v_tbl IN ARRAY ARRAY[
+      'products', 'stock_movements', 'movements',
+      'material_orders', 'depots', 'departments', 'projects',
+      'sub_categories', 'users', 'roles', 'app_settings'
+    ] LOOP
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = v_tbl
+      ) AND NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = v_tbl
+      ) THEN
+        EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', v_tbl);
+      END IF;
+    END LOOP;
+  END IF;
+END $$;
+

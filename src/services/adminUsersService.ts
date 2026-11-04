@@ -6,6 +6,7 @@ import {
   sanitizeUserForDirectory,
   normalizeSupabaseUrl,
   normalizeSupabaseKey,
+  notifyRealtimeDataMutated,
 } from './clientSupabase';
 
 export interface AdminCreateUserPayload {
@@ -148,6 +149,7 @@ export async function adminCreateUser(
   const res = await invokeAdminUsers(client, 'create', payload);
   if (res.success && res.user) {
     await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
+    notifyRealtimeDataMutated('users');
     return res;
   }
 
@@ -167,6 +169,7 @@ export async function adminCreateUser(
 
       if (profile) {
         const synced = await syncUserProfileAndDirectoryToSupabase(client, profile);
+        notifyRealtimeDataMutated('users');
         return {
           success: true,
           message: 'Utilisateur associé avec succès.',
@@ -232,6 +235,7 @@ export async function adminCreateUser(
     });
 
     const synced = await syncUserProfileAndDirectoryToSupabase(client, fallbackUser);
+    notifyRealtimeDataMutated('users');
     return {
       success: true,
       message: 'Profil utilisateur enregistré et synchronisé dans la base de données.',
@@ -250,6 +254,7 @@ export async function adminUpdateUser(
   const res = await invokeAdminUsers(client, 'update', payload);
   if (res.success && res.user) {
     await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
+    notifyRealtimeDataMutated('users');
     return res;
   }
 
@@ -276,6 +281,7 @@ export async function adminUpdateUser(
 
     if (!dbErr && updatedRow) {
       const synced = await syncUserProfileAndDirectoryToSupabase(client, updatedRow);
+      notifyRealtimeDataMutated('users');
       return {
         success: true,
         message: 'Profil utilisateur mis à jour avec succès.',
@@ -290,6 +296,7 @@ export async function adminUpdateUser(
         ...updateFields,
       });
       if (synced) {
+        notifyRealtimeDataMutated('users');
         return {
           success: true,
           message: 'Profil utilisateur synchronisé avec succès.',
@@ -314,6 +321,7 @@ export async function adminUpdateUser(
     is_blocked: false,
   };
   await syncUserProfileAndDirectoryToSupabase(client, fallbackUser).catch(() => {});
+  notifyRealtimeDataMutated('users');
   return {
     success: true,
     message: 'Modifications appliquées.',
@@ -329,6 +337,7 @@ export async function adminToggleBlockUser(
   const res = await invokeAdminUsers(client, 'block', { id, is_blocked });
   if (res.success) {
     if (res.user) await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
+    notifyRealtimeDataMutated('users');
     return res;
   }
 
@@ -341,9 +350,11 @@ export async function adminToggleBlockUser(
       .maybeSingle();
     if (!error) {
       if (updated) await syncUserProfileAndDirectoryToSupabase(client, updated).catch(() => {});
+      notifyRealtimeDataMutated('users');
       return { success: true, is_blocked: Boolean(is_blocked) };
     }
   } catch {}
+  notifyRealtimeDataMutated('users');
   return { success: true, is_blocked: Boolean(is_blocked) };
 }
 
@@ -354,6 +365,7 @@ export async function adminDeleteUser(
   const res = await invokeAdminUsers(client, 'delete', { id });
   if (res.success) {
     await removeUserFromDirectoryMirrorInSupabase(client, id).catch(() => {});
+    notifyRealtimeDataMutated('users');
     return res;
   }
 
@@ -363,10 +375,12 @@ export async function adminDeleteUser(
     } catch {}
     const { error } = await client.from('users').delete().eq('id', String(id));
     await removeUserFromDirectoryMirrorInSupabase(client, id).catch(() => {});
+    notifyRealtimeDataMutated('users');
     if (!error) {
       return { success: true };
     }
   } catch {}
+  notifyRealtimeDataMutated('users');
   return { success: true };
 }
 
@@ -383,7 +397,10 @@ export async function adminSetRole(
   role_id: number
 ): Promise<AdminUsersResponse> {
   const res = await invokeAdminUsers(client, 'setRole', { id, role_id });
-  if (res.success) return res;
+  if (res.success) {
+    notifyRealtimeDataMutated('users');
+    return res;
+  }
 
   try {
     const { data, error } = await client
@@ -393,9 +410,11 @@ export async function adminSetRole(
       .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
       .maybeSingle();
     if (!error && data) {
+      notifyRealtimeDataMutated('users');
       return { success: true, user: data as User };
     }
   } catch {}
+  notifyRealtimeDataMutated('users');
   return { success: true };
 }
 
@@ -404,13 +423,17 @@ export async function adminClearMustChangePin(
   userId: string | number
 ): Promise<AdminUsersResponse> {
   const res = await invokeAdminUsers(client, 'clearMustChangePin', { userId });
-  if (res.success) return res;
+  if (res.success) {
+    notifyRealtimeDataMutated('users');
+    return res;
+  }
 
   try {
     await client
       .from('users')
       .update({ must_change_pin: false, updated_at: new Date().toISOString() })
       .eq('id', String(userId));
+    notifyRealtimeDataMutated('users');
   } catch {}
   return { success: true };
 }
