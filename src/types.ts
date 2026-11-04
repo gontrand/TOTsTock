@@ -39,6 +39,8 @@ export interface StockMovement {
   order_number?: string | null; // N° de commande magasin si rattaché à une commande
   created_at: string;
   depot_name?: string | null;
+  dest_depot_name?: string | null;
+  dest_rack?: string | null;
   type?: MovementType | string;
   quantity?: number;
   reason?: string | null;

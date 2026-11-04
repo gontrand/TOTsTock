@@ -1,15 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import {
+  DESKTOP_MENU_COMMANDS,
+  DesktopMenuCommandId,
+  getDesktopSystemSettings,
   setDesktopMenuLocale,
+  setDesktopSystemSettings,
   subscribeDesktopMenuCommand,
-  subscribeDesktopNavigateRoute,
 } from '../services/desktopBridge';
 import { tr } from '../i18n/dutchTranslator';
 import { SUPPORTED_LANGUAGES } from '../i18n/translations';
 import { useApp } from '../context/AppContext';
 import { PLAN_LABELS, normalizeToCanonicalPlan } from '../types';
 import { APP_VERSION } from '../appVersion';
-import { matchDesktopShortcut } from '../services/desktopInventoryLogic';
+import {
+  buildInventoryCsvContent,
+  matchDesktopShortcut,
+} from '../services/desktopInventoryLogic';
 import { canUserAccessScannerMode } from '../services/orderPickingLogic';
 import {
   DesktopPageId,
@@ -77,6 +83,9 @@ interface DesktopShellProps {
   onOpenDesktopLabelModal?: () => void;
 }
 
+export const DESKTOP_SHELL_RECOGNIZED_COMMANDS: readonly DesktopMenuCommandId[] =
+  DESKTOP_MENU_COMMANDS;
+
 export const DesktopShell: React.FC<DesktopShellProps> = ({
   renderMovementsPage,
   renderOrdersPage,
@@ -98,6 +107,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     t,
     depots,
     products,
+    subCategories,
     orders,
     license,
     supabaseSyncStatus,
@@ -271,32 +281,83 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   }, [language]);
 
   useEffect(() => {
+    const triggerInventoryCsvExport = () => {
+      try {
+        const canViewPrices = userHasPermission('perm_prod_view_price');
+        const csvContent = buildInventoryCsvContent(products, subCategories, canViewPrices);
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute(
+          'download',
+          `tot_stock_inventaire_${new Date().toISOString().slice(0, 10)}.csv`
+        );
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch {
+        // Ignore in headless environment
+      }
+    };
+
     const execCmd = (cmd: string) => {
-      if (cmd === 'toggle-sidebar') toggleSidebar();
-      else if (cmd === 'open-shortcuts') setShortcutsHelpOpen(true);
-      else if (cmd === 'open-docs') handleNavigatePage('settings', 'documentation');
-      else if (cmd === 'open-about') handleNavigatePage('settings', 'about');
-      else if (cmd === 'print-labels') onOpenDesktopLabelModal?.();
-      else if (cmd === 'import-csv') onOpenCsvImportModal?.();
-      else if (cmd === 'new-movement') onOpenQuickMovementDrawer?.();
-      else if (cmd === 'new-product') {
+      if (cmd === 'new-product') {
         handleNavigatePage('inventory');
         setNewProductTrigger((n) => n + 1);
+      } else if (cmd === 'new-movement') {
+        onOpenQuickMovementDrawer?.();
       } else if (cmd === 'new-order') {
         handleNavigatePage('orders');
         setNewOrderTrigger((n) => n + 1);
+      } else if (cmd === 'import-csv') {
+        onOpenCsvImportModal?.();
+      } else if (cmd === 'export-csv') {
+        triggerInventoryCsvExport();
+      } else if (cmd === 'print-labels') {
+        onOpenDesktopLabelModal?.();
       } else if (cmd === 'focus-search') {
         handleNavigatePage('inventory');
         setSearchFocusTrigger((n) => n + 1);
       } else if (cmd === 'command-palette') {
         setCommandPaletteOpen(true);
-      } else if (cmd === 'nav-dashboard') handleNavigatePage('dashboard');
-      else if (cmd === 'nav-inventory') handleNavigatePage('inventory');
-      else if (cmd === 'nav-movements') handleNavigatePage('movements');
-      else if (cmd === 'nav-orders') handleNavigatePage('orders');
-      else if (cmd === 'nav-preparation') handleNavigatePage('preparation');
-      else if (cmd === 'nav-print-station') handleNavigatePage('print_station');
-      else if (cmd === 'nav-settings') handleNavigatePage('settings', 'profile');
+      } else if (cmd === 'refresh-data') {
+        syncFromSupabase();
+      } else if (cmd === 'toggle-sidebar') {
+        toggleSidebar();
+      } else if (cmd === 'toggle-print-pause') {
+        getDesktopSystemSettings()
+          .then((sys) => setDesktopSystemSettings({ printQueuePaused: !sys.printQueuePaused }))
+          .then((updated) => {
+            window.dispatchEvent(
+              new CustomEvent('tot-desktop-print-pause-changed', {
+                detail: { paused: updated.printQueuePaused },
+              })
+            );
+          })
+          .catch(() => {});
+      } else if (cmd === 'open-shortcuts') {
+        setShortcutsHelpOpen(true);
+      } else if (cmd === 'open-docs') {
+        handleNavigatePage('settings', 'documentation');
+      } else if (cmd === 'open-about') {
+        handleNavigatePage('settings', 'about');
+      } else if (cmd === 'nav-dashboard') {
+        handleNavigatePage('dashboard');
+      } else if (cmd === 'nav-inventory') {
+        handleNavigatePage('inventory');
+      } else if (cmd === 'nav-movements') {
+        handleNavigatePage('movements');
+      } else if (cmd === 'nav-orders') {
+        handleNavigatePage('orders');
+      } else if (cmd === 'nav-preparation') {
+        handleNavigatePage('preparation');
+      } else if (cmd === 'nav-print-station') {
+        handleNavigatePage('print_station');
+      } else if (cmd === 'nav-settings') {
+        handleNavigatePage('settings', 'profile');
+      }
     };
 
     const handleNativeMenuCommand = (ev: Event) => {
@@ -306,28 +367,21 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     };
 
     const unsubMenu = subscribeDesktopMenuCommand((cmd) => execCmd(cmd));
-    const unsubNav = subscribeDesktopNavigateRoute((route) => {
-      const r = route.replace(/^\/+/, '');
-      if (
-        r === 'dashboard' ||
-        r === 'inventory' ||
-        r === 'movements' ||
-        r === 'orders' ||
-        r === 'preparation' ||
-        r === 'print_station' ||
-        r === 'settings'
-      ) {
-        handleNavigatePage(r as DesktopPageId);
-      }
-    });
 
     window.addEventListener('tot-desktop-menu-command', handleNativeMenuCommand);
     return () => {
       window.removeEventListener('tot-desktop-menu-command', handleNativeMenuCommand);
       unsubMenu();
-      unsubNav();
     };
-  }, [onOpenDesktopLabelModal, onOpenCsvImportModal, onOpenQuickMovementDrawer]);
+  }, [
+    onOpenDesktopLabelModal,
+    onOpenCsvImportModal,
+    onOpenQuickMovementDrawer,
+    products,
+    subCategories,
+    syncFromSupabase,
+    userHasPermission,
+  ]);
 
   // Permissions (same as PlusMenuView)
   const canDashboard =
@@ -378,14 +432,14 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   return (
     <div
       id="desktop-workspace-root"
-      className="h-screen w-screen min-w-[1024px] min-h-[680px] flex overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 select-none"
+      className="h-screen w-full min-w-[1024px] min-h-[680px] flex overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 select-none"
     >
       {/* Left Collapsible Sidebar */}
       <aside
         aria-label={tr(language, 'Navigation principale', 'Main navigation', 'Hoofdnavigatie')}
         className={`${
           sidebarCollapsed ? 'w-16' : 'w-60'
-        } shrink-0 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col justify-between transition-all duration-150 no-print`}
+        } shrink-0 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col justify-between transition-[width] duration-150 no-print`}
       >
         {/* Top Brand + Primary Nav */}
         <div className="flex flex-col min-h-0 flex-1">

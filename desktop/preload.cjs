@@ -39,7 +39,11 @@ const desktopApi = Object.freeze({
   getSystemSettings: () => ipcRenderer.invoke('tot:get-system-settings'),
   setSystemSettings: (settings) => ipcRenderer.invoke('tot:set-system-settings', settings),
   showNotification: (payload) => ipcRenderer.invoke('tot:show-notification', payload),
-  openSecondaryWindow: (route) => ipcRenderer.invoke('tot:open-secondary-window', route),
+  openSecondaryWindow: (route) =>
+    ipcRenderer.invoke(
+      'tot:open-secondary-window',
+      typeof route === 'string' ? { route } : route
+    ),
   updateTrayStatus: (status) => ipcRenderer.invoke('tot:update-tray-status', status),
   setMenuLocale: (locale) => ipcRenderer.invoke('tot:set-menu-locale', locale),
   onMenuCommand: (callback) => {
@@ -56,22 +60,6 @@ const desktopApi = Object.freeze({
     ipcRenderer.on('tot:menu-command', listener);
     return () => {
       ipcRenderer.removeListener('tot:menu-command', listener);
-    };
-  },
-  onNavigateRoute: (callback) => {
-    if (typeof callback !== 'function') {
-      return () => {};
-    }
-    const listener = (_event, route) => {
-      try {
-        callback(route);
-      } catch {
-        // Ignorer
-      }
-    };
-    ipcRenderer.on('tot:navigate-route', listener);
-    return () => {
-      ipcRenderer.removeListener('tot:navigate-route', listener);
     };
   },
 });

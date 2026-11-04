@@ -10,7 +10,7 @@ export const MAX_ZPL_BYTES = 65_536; // 64 Ko
 export const ZPL_TCP_TIMEOUT_MS = 5_000; // 5 secondes
 export const ALLOWED_ZPL_PORTS = [9100, 9101, 9102];
 export const MAX_OPEN_WINDOWS = 3;
-export const ALLOWED_INTERNAL_ROUTES = [
+export const ALLOWED_INTERNAL_ROUTES = Object.freeze([
   'dashboard',
   'inventory',
   'movements',
@@ -18,10 +18,75 @@ export const ALLOWED_INTERNAL_ROUTES = [
   'preparation',
   'print_station',
   'settings',
-];
+]);
+export const DESKTOP_IPC_MENU_COMMAND_CHANNEL = 'tot:menu-command';
+export const ALLOWED_DESKTOP_COMMANDS = Object.freeze([
+  'new-product',
+  'new-movement',
+  'new-order',
+  'import-csv',
+  'export-csv',
+  'print-labels',
+  'focus-search',
+  'command-palette',
+  'refresh-data',
+  'toggle-sidebar',
+  'toggle-print-pause',
+  'open-shortcuts',
+  'open-docs',
+  'open-about',
+  'nav-dashboard',
+  'nav-inventory',
+  'nav-movements',
+  'nav-orders',
+  'nav-preparation',
+  'nav-print-station',
+  'nav-settings',
+]);
+export const ROUTE_TO_DESKTOP_COMMAND = Object.freeze({
+  dashboard: 'nav-dashboard',
+  inventory: 'nav-inventory',
+  movements: 'nav-movements',
+  orders: 'nav-orders',
+  preparation: 'nav-preparation',
+  print_station: 'nav-print-station',
+  settings: 'nav-settings',
+});
 export const APP_PROTOCOL_SCHEME = 'app';
 export const APP_PROTOCOL_HOST = 'tot';
 export const APP_PROTOCOL_ORIGIN = 'app://tot';
+
+/**
+ * Vérifie si une route interne fait partie de la liste canonique ALLOWED_INTERNAL_ROUTES.
+ */
+export function isAllowedInternalRoute(route) {
+  return typeof route === 'string' && ALLOWED_INTERNAL_ROUTES.includes(route);
+}
+
+/**
+ * Normalise une route interne vers une valeur autorisée de ALLOWED_INTERNAL_ROUTES.
+ */
+export function sanitizeInternalRoute(rawRoute, fallback = 'dashboard') {
+  const safeFallback = isAllowedInternalRoute(fallback) ? fallback : 'dashboard';
+  if (typeof rawRoute !== 'string') return safeFallback;
+  const cleaned = rawRoute.replace(/^\/+/, '').trim();
+  return isAllowedInternalRoute(cleaned) ? cleaned : safeFallback;
+}
+
+/**
+ * Vérifie si un identifiant de commande bureau fait partie de ALLOWED_DESKTOP_COMMANDS.
+ */
+export function isAllowedDesktopCommand(command) {
+  return typeof command === 'string' && ALLOWED_DESKTOP_COMMANDS.includes(command);
+}
+
+/**
+ * Convertit une route interne en commande de navigation canonique (`nav-*`).
+ */
+export function routeToDesktopCommand(rawRoute, fallback = 'dashboard') {
+  const safeRoute = sanitizeInternalRoute(rawRoute, fallback);
+  return ROUTE_TO_DESKTOP_COMMAND[safeRoute] || 'nav-dashboard';
+}
 
 /**
  * Vérifie si une URL de navigation interne est autorisée dans la fenêtre principale.
@@ -365,9 +430,9 @@ export function validatePrintLabelPayload(payload, availablePrinterNames = []) {
 }
 
 /**
- * Valide l'adresse réseau et le port d'une imprimante Zebra ZPL (protection anti-SSRF Lot 4.1).
- * Autorise uniquement RFC 1918 (10.x, 172.16-31.x, 192.168.x), link-local (169.254.x)
- * ou un nom d'hôte local simple (hors localhost), et uniquement les ports [9100, 9101, 9102].
+ * Valide l'adresse réseau et le port d'une imprimante Zebra ZPL (protection anti-SSRF v34).
+ * Autorise uniquement les adresses IPv4 privées RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+ * et uniquement les ports [9100, 9101, 9102]. Refuse 169.254.x.x, localhost, les IP publiques et tout nom d'hôte.
  */
 export function isValidZplPrinterTarget(host, port = 9100) {
   if (typeof host !== 'string' || !host.trim()) {
@@ -383,32 +448,27 @@ export function isValidZplPrinterTarget(host, port = 9100) {
   }
 
   const ipv4Match = cleanHost.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const octets = [
-      Number(ipv4Match[1]),
-      Number(ipv4Match[2]),
-      Number(ipv4Match[3]),
-      Number(ipv4Match[4]),
-    ];
-    if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) {
-      return { ok: false, error: 'INVALID_IPV4' };
-    }
-    const [a, b] = octets;
-    const isPrivate10 = a === 10;
-    const isPrivate172 = a === 172 && b >= 16 && b <= 31;
-    const isPrivate192 = a === 192 && b === 168;
-    const isLinkLocal = a === 169 && b === 254;
-    if (!isPrivate10 && !isPrivate172 && !isPrivate192 && !isLinkLocal) {
-      return { ok: false, error: 'PUBLIC_OR_LOOPBACK_IP_FORBIDDEN' };
-    }
-    return { ok: true, host: cleanHost, port: numPort };
+  if (!ipv4Match) {
+    return { ok: false, error: 'HOSTNAME_FORBIDDEN_RFC1918_IPV4_REQUIRED' };
   }
 
-  if (/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.local)?$/i.test(cleanHost)) {
-    return { ok: true, host: cleanHost, port: numPort };
+  const octets = [
+    Number(ipv4Match[1]),
+    Number(ipv4Match[2]),
+    Number(ipv4Match[3]),
+    Number(ipv4Match[4]),
+  ];
+  if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) {
+    return { ok: false, error: 'INVALID_IPV4' };
   }
-
-  return { ok: false, error: 'INVALID_HOSTNAME_FORMAT' };
+  const [a, b] = octets;
+  const isPrivate10 = a === 10;
+  const isPrivate172 = a === 172 && b >= 16 && b <= 31;
+  const isPrivate192 = a === 192 && b === 168;
+  if (!isPrivate10 && !isPrivate172 && !isPrivate192) {
+    return { ok: false, error: 'NON_RFC1918_IP_FORBIDDEN' };
+  }
+  return { ok: true, host: cleanHost, port: numPort };
 }
 
 /**

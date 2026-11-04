@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ExternalLink,
@@ -69,6 +69,18 @@ export const DesktopPrintStationPage: React.FC = () => {
   const [queue, setQueue] = useState<PrintJobRecord[]>([]);
   const [history, setHistory] = useState<PrintJobRecord[]>([]);
   const [selectedJob, setSelectedJob] = useState<PrintJobRecord | null>(null);
+  const queueRef = useRef<PrintJobRecord[]>(queue);
+  const historyRef = useRef<PrintJobRecord[]>(history);
+  const selectedJobRef = useRef<PrintJobRecord | null>(selectedJob);
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+  useEffect(() => {
+    selectedJobRef.current = selectedJob;
+  }, [selectedJob]);
   const [previewHtml, setPreviewHtml] = useState<string>('');
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -89,6 +101,19 @@ export const DesktopPrintStationPage: React.FC = () => {
     });
     getDesktopZplSettings().then(setZplConfig);
     getDesktopSystemSettings().then((sys) => setQueuePaused(sys.printQueuePaused));
+
+    const onPauseChanged = (ev: Event) => {
+      const custom = ev as CustomEvent<{ paused?: boolean }>;
+      if (typeof custom.detail?.paused === 'boolean') {
+        setQueuePaused(custom.detail.paused);
+      } else {
+        getDesktopSystemSettings().then((sys) => setQueuePaused(sys.printQueuePaused));
+      }
+    };
+    window.addEventListener('tot-desktop-print-pause-changed', onPauseChanged);
+    return () => {
+      window.removeEventListener('tot-desktop-print-pause-changed', onPauseChanged);
+    };
   }, [desktopMode]);
 
   const registerStation = useCallback(async () => {
@@ -156,8 +181,8 @@ export const DesktopPrintStationPage: React.FC = () => {
           });
           await rpcCompletePrintJob(job.id, zplRes.ok, zplRes.errorMessage || null);
           const next = applyJobCompletionToState(
-            queue,
-            history,
+            queueRef.current,
+            historyRef.current,
             job.id,
             zplRes.ok,
             zplRes.errorMessage
@@ -174,7 +199,13 @@ export const DesktopPrintStationPage: React.FC = () => {
         silent: silentPrint,
       });
       await rpcCompletePrintJob(job.id, res.ok, res.error || null);
-      const next = applyJobCompletionToState(queue, history, job.id, res.ok, res.error);
+      const next = applyJobCompletionToState(
+        queueRef.current,
+        historyRef.current,
+        job.id,
+        res.ok,
+        res.error
+      );
       setQueue(next.queue);
       setHistory(next.history);
     },
@@ -186,8 +217,6 @@ export const DesktopPrintStationPage: React.FC = () => {
       canViewPrices,
       selectedPrinterName,
       silentPrint,
-      queue,
-      history,
     ]
   );
 
@@ -202,10 +231,10 @@ export const DesktopPrintStationPage: React.FC = () => {
         playPrintStationNotificationChime();
         setQueue((prev) => {
           const merged = mergeClaimedPrintJobs(prev, claimed.jobs);
-          if (!selectedJob && merged.length > 0) {
+          if (!selectedJobRef.current && merged.length > 0) {
             setSelectedJob(merged[0]);
           }
-          return merged;
+          return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
         });
         if (autoMode) {
           for (const j of claimed.jobs) {
@@ -215,7 +244,10 @@ export const DesktopPrintStationPage: React.FC = () => {
       }
       const hist = await rpcListStationPrintJobs(stationId, 20);
       if (hist.jobs.length > 0) {
-        setHistory(hist.jobs.filter((j) => j.status !== 'PENDING' && j.status !== 'PRINTING'));
+        const nextHist = hist.jobs.filter((j) => j.status !== 'PENDING' && j.status !== 'PRINTING');
+        setHistory((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextHist) ? prev : nextHist
+        );
       }
     };
 
@@ -231,7 +263,7 @@ export const DesktopPrintStationPage: React.FC = () => {
     } else {
       await runClaim();
     }
-  }, [stationId, queuePaused, stationName, stationDepot, selectedJob, autoMode, executeJob]);
+  }, [stationId, queuePaused, stationName, stationDepot, autoMode, executeJob]);
 
   useEffect(() => {
     if (!stationId) return;

@@ -1781,19 +1781,33 @@ export function tr(language: Language, fr: string, en: string, nl?: string): str
   return translateTextToNl(en, fr);
 }
 
-const originalTextNodes = new WeakMap<Text, string>();
-const originalElementAttrs = new WeakMap<Element, Map<string, string>>();
+interface TranslatedEntry {
+  original: string;
+  translated: string;
+}
+
+const originalTextNodes = new WeakMap<Text, TranslatedEntry>();
+const originalElementAttrs = new WeakMap<Element, Map<string, TranslatedEntry>>();
 const TRANSLATABLE_ATTRS = ['placeholder', 'title', 'aria-label'] as const;
 
 /**
  * React hook that automatically translates any remaining untranslated DOM text nodes
  * and attributes (placeholder, title, aria-label) when language === 'nl', and restores
- * them when switching back to 'fr' or 'en'.
+ * them when switching back to 'fr' or 'en' without overwriting nodes already updated by React.
  */
+let hasEverTranslatedToNl = false;
+
 export function useDutchDomTranslator(language: Language): void {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     document.documentElement.lang = language;
+
+    if (language !== 'nl' && !hasEverTranslatedToNl) {
+      return;
+    }
+    if (language === 'nl') {
+      hasEverTranslatedToNl = true;
+    }
 
     let isApplying = false;
 
@@ -1807,20 +1821,33 @@ export function useDutchDomTranslator(language: Language): void {
       if (!currentVal.trim()) return;
 
       if (language === 'nl') {
-        if (!originalTextNodes.has(node)) {
-          originalTextNodes.set(node, currentVal);
+        const existing = originalTextNodes.get(node);
+        if (existing) {
+          if (currentVal === existing.translated) {
+            return;
+          }
+          if (currentVal === existing.original) {
+            node.nodeValue = existing.translated;
+            return;
+          }
+          // React updated this node with new content
+          originalTextNodes.delete(node);
         }
-        const sourceVal = originalTextNodes.get(node) || currentVal;
-        const translated = translateTextToNl(sourceVal);
+        const translated = translateTextToNl(currentVal);
         if (translated !== currentVal) {
+          originalTextNodes.set(node, { original: currentVal, translated });
           node.nodeValue = translated;
         }
       } else {
-        const orig = originalTextNodes.get(node);
-        if (orig !== undefined && orig !== currentVal) {
-          node.nodeValue = orig;
+        const existing = originalTextNodes.get(node);
+        if (existing) {
+          // Only restore if the DOM node still holds the Dutch translation we injected
+          // (if React already re-rendered it in French/English, keep React's new value)
+          if (currentVal === existing.translated) {
+            node.nodeValue = existing.original;
+          }
+          originalTextNodes.delete(node);
         }
-        originalTextNodes.delete(node);
       }
     };
 
@@ -1831,22 +1858,30 @@ export function useDutchDomTranslator(language: Language): void {
 
         let attrMap = originalElementAttrs.get(el);
         if (language === 'nl') {
-          if (!attrMap) {
-            attrMap = new Map<string, string>();
-            originalElementAttrs.set(el, attrMap);
+          const existing = attrMap?.get(attr);
+          if (existing) {
+            if (currentAttr === existing.translated) {
+              continue;
+            }
+            if (currentAttr === existing.original) {
+              el.setAttribute(attr, existing.translated);
+              continue;
+            }
+            attrMap?.delete(attr);
           }
-          if (!attrMap.has(attr)) {
-            attrMap.set(attr, currentAttr);
-          }
-          const sourceAttr = attrMap.get(attr) || currentAttr;
-          const translated = translateTextToNl(sourceAttr);
+          const translated = translateTextToNl(currentAttr);
           if (translated !== currentAttr) {
+            if (!attrMap) {
+              attrMap = new Map<string, TranslatedEntry>();
+              originalElementAttrs.set(el, attrMap);
+            }
+            attrMap.set(attr, { original: currentAttr, translated });
             el.setAttribute(attr, translated);
           }
         } else if (attrMap && attrMap.has(attr)) {
-          const orig = attrMap.get(attr)!;
-          if (orig !== currentAttr) {
-            el.setAttribute(attr, orig);
+          const existing = attrMap.get(attr)!;
+          if (currentAttr === existing.translated) {
+            el.setAttribute(attr, existing.original);
           }
           attrMap.delete(attr);
         }
@@ -1887,7 +1922,6 @@ export function useDutchDomTranslator(language: Language): void {
       try {
         for (const m of mutations) {
           if (m.type === 'characterData' && m.target.nodeType === Node.TEXT_NODE) {
-            originalTextNodes.set(m.target as Text, m.target.nodeValue || '');
             processTextNode(m.target as Text);
           } else if (m.type === 'childList') {
             m.addedNodes.forEach((added) => {
@@ -1928,3 +1962,4 @@ export function useDutchDomTranslator(language: Language): void {
     };
   }, [language]);
 }
+

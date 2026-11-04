@@ -250,10 +250,9 @@ export function generateBinRackZplLabel(
 export const ALLOWED_ZPL_PORTS = [9100, 9101, 9102] as const;
 
 /**
- * Valide l'adresse réseau et le port d'une imprimante Zebra ZPL (protection anti-SSRF) :
- * - Autorise uniquement les IPv4 privées RFC 1918 (`10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`),
- *   les IPv4 link-local (`169.254.x.x`), ou un nom d'hôte local simple (`^[a-zA-Z0-9-]+(\.local)?$`, hors `localhost`).
- * - Refuse `127.0.0.1`, `0.0.0.0`, `localhost`, toute IPv4 publique et les URL.
+ * Valide l'adresse réseau et le port d'une imprimante Zebra ZPL (protection anti-SSRF v34) :
+ * - Autorise uniquement les adresses IPv4 privées RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+ * - Refuse `169.254.x.x`, `127.0.0.1`, `0.0.0.0`, `localhost`, toute IPv4 publique et tout nom d'hôte.
  * - Autorise uniquement les ports `[9100, 9101, 9102]` (défaut `9100`).
  */
 export function validateZplPrinterAddress(
@@ -277,41 +276,36 @@ export function validateZplPrinterAddress(
     return { valid: false, error: 'Adresse localhost interdite' };
   }
 
-  // Vérifier si c'est une adresse IPv4
   const ipv4Match = cleanHost.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const octets = [
-      Number(ipv4Match[1]),
-      Number(ipv4Match[2]),
-      Number(ipv4Match[3]),
-      Number(ipv4Match[4]),
-    ];
-    if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) {
-      return { valid: false, error: 'Adresse IPv4 invalide' };
-    }
-    const [a, b] = octets;
-    const isPrivate10 = a === 10;
-    const isPrivate172 = a === 172 && b >= 16 && b <= 31;
-    const isPrivate192 = a === 192 && b === 168;
-    const isLinkLocal = a === 169 && b === 254;
-
-    if (!isPrivate10 && !isPrivate172 && !isPrivate192 && !isLinkLocal) {
-      return {
-        valid: false,
-        error: 'Seules les adresses IPv4 de réseau local privé (RFC 1918 / link-local) sont autorisées',
-      };
-    }
-
-    return { valid: true, host: cleanHost, port: numPort };
+  if (!ipv4Match) {
+    return {
+      valid: false,
+      error:
+        "Noms d'hôtes refusés (utilisez uniquement une adresse IPv4 privée RFC 1918, ex. 192.168.1.50)",
+    };
   }
 
-  // Sinon, vérifier s'il s'agit d'un nom d'hôte local simple (ex: zebra-atelier ou zebra-atelier.local)
-  if (/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.local)?$/i.test(cleanHost)) {
-    return { valid: true, host: cleanHost, port: numPort };
+  const octets = [
+    Number(ipv4Match[1]),
+    Number(ipv4Match[2]),
+    Number(ipv4Match[3]),
+    Number(ipv4Match[4]),
+  ];
+  if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) {
+    return { valid: false, error: 'Adresse IPv4 invalide' };
+  }
+  const [a, b] = octets;
+  const isPrivate10 = a === 10;
+  const isPrivate172 = a === 172 && b >= 16 && b <= 31;
+  const isPrivate192 = a === 192 && b === 168;
+
+  if (!isPrivate10 && !isPrivate172 && !isPrivate192) {
+    return {
+      valid: false,
+      error: 'Seules les adresses IPv4 privées RFC 1918 (10.x, 172.16-31.x, 192.168.x) sont autorisées',
+    };
   }
 
-  return {
-    valid: false,
-    error: "Format d'hôte invalide (utilisez une IP privée ex: 192.168.1.50 ou un nom d'hôte local)",
-  };
+  return { valid: true, host: cleanHost, port: numPort };
 }
+

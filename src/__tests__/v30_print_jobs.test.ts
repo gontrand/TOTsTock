@@ -18,6 +18,7 @@ import {
   PrintJobRecord,
 } from '../services/printStationService';
 import { translations } from '../i18n/translations';
+import { SQL_SCRIPT_08_PRINT_JOBS } from '../constants/supabaseScripts';
 import { runPrintJobsSqlTests } from '../../tests-sql/test_08_print_jobs.mjs';
 
 describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRendering, printStationService, i18n)', () => {
@@ -36,7 +37,7 @@ describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRe
     });
   });
 
-  it('exécute les 8 suites de tests SQL PostgreSQL (00..08 idempotent, upgrade 1.0.0->1.1.0, RLS/RPC, dépôts, claim, limites, anon, dedupe_key)', async () => {
+  it('exécute les 10 suites de tests SQL PostgreSQL (00..08 idempotent, upgrade 1.0.0->1.1.0, RLS/RPC, dépôts, claim, limites, anon, dedupe_key, purge RLS v37, conversion id bigint IDENTITY v39)', async () => {
     const passedSuites = await runPrintJobsSqlTests();
     expect(passedSuites).toEqual([
       '1a_fresh_install_and_idempotent_two_passes_ok',
@@ -48,6 +49,8 @@ describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRe
       '6_limits_30_pending_copies_1_100_payload_2048_enforced',
       '7_anon_zero_privileges_on_tables_and_functions',
       '8_dedupe_key_prevents_duplicate_pending_jobs',
+      '9_rls_purge_parasite_and_recursive_policies_and_diagnostic_ok',
+      '10_legacy_identity_bigint_id_conversion_and_idempotent_ok',
     ]);
   }, 45000);
 
@@ -271,5 +274,35 @@ describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRe
         expect(translations.nl).toHaveProperty(key);
       }
     });
+
+    it("Prompt v35 — SQL_SCRIPT_08_PRINT_JOBS n'est pas vide et contient print_jobs, et les clés i18n FR/EN/NL du bloc Script 08 existent", () => {
+      expect(typeof SQL_SCRIPT_08_PRINT_JOBS).toBe('string');
+      expect(SQL_SCRIPT_08_PRINT_JOBS.trim().length).toBeGreaterThan(0);
+      expect(SQL_SCRIPT_08_PRINT_JOBS).toContain('print_jobs');
+      expect(SQL_SCRIPT_08_PRINT_JOBS).toContain('print_stations');
+
+      const script08I18nKeys = [
+        'sql_script_08_title',
+        'sql_script_08_badge',
+        'sql_script_08_desc',
+        'sql_script_08_copy_btn',
+        'sql_script_08_copied_btn',
+        'diag_schema_1_0_0_upgrade_hint',
+      ] as const;
+
+      for (const key of script08I18nKeys) {
+        expect(translations.fr[key]?.trim().length).toBeGreaterThan(0);
+        expect(translations.en[key]?.trim().length).toBeGreaterThan(0);
+        expect(translations.nl[key]?.trim().length).toBeGreaterThan(0);
+      }
+
+      expect(translations.fr.sql_script_08_title).toContain('08_print_jobs.sql');
+      expect(translations.en.sql_script_08_title).toContain('08_print_jobs.sql');
+      expect(translations.nl.sql_script_08_title).toContain('08_print_jobs.sql');
+      expect(translations.fr.sql_script_08_desc).toContain('1.1.0');
+      expect(translations.fr.sql_script_08_desc).toContain('1.0.0');
+      expect(translations.fr.sql_script_08_desc).toContain('dist/install.sql');
+    });
   });
 });
+

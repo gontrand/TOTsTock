@@ -400,6 +400,9 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
 
     // Normalisation vers le code canonique ('free' | 'sta' | 'pro' | 'ent') après validation de la signature
     const { plan: canonicalPlan } = normalizePlan(rawPlanExact);
+    const canonicalLimits = plan_limits(canonicalPlan);
+    const effectiveMaxDepots =
+      maxDepots > 0 ? Math.min(maxDepots, canonicalLimits.max_depots) : canonicalLimits.max_depots;
 
     const { data: updatedConfig, error: writeErr } = await supabaseAdmin
       .from('license_config')
@@ -409,15 +412,16 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
           license_key: String(token.license_key).trim().toUpperCase(),
           plan_type: canonicalPlan,
           modules: normalizedModules,
-          max_depots: maxDepots,
+          max_depots: effectiveMaxDepots,
           organization_name: token.organization_name || 'Client',
           signed_token:
             token.raw_token ||
             JSON.stringify({
               ...token,
               kid: tokenKid,
-              plan: canonicalPlan,
+              plan: rawPlanExact,
               plan_type: canonicalPlan,
+              max_depots: effectiveMaxDepots,
               modules: normalizedModules,
             }),
           offline_until: token.offline_until || null,

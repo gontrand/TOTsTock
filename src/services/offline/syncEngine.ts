@@ -5,9 +5,18 @@ import {
   SyncOperation,
   setSyncMetadata,
   getSyncMetadata,
+  putToStore,
   putManyToStore,
+  getByIdFromStore,
 } from './indexedDb';
-import { isNetworkOrFetchError, upsertOrderToSupabase } from '../clientSupabase';
+import {
+  isNetworkOrFetchError,
+  upsertOrderToSupabase,
+  normalizeProductRecord,
+  normalizeMovementRecord,
+  normalizeOrderRecord,
+} from '../clientSupabase';
+import { Product, MaterialOrder } from '../../types';
 
 export interface SyncEngineResult {
   success: boolean;
@@ -16,13 +25,16 @@ export interface SyncEngineResult {
   failedCount: number;
   rejectedCount: number;
   conflicts: Array<{ operation_id: string; message: string; details?: any }>;
+  updatedProductQuantities?: Array<{ product_id: string; new_quantity: number; depot_quantity?: number }>;
+  updatedOrders?: Array<{ id: string; order_number: string }>;
 }
 
 let isSyncRunning = false;
 
 /**
  * Processes all pending operations in the sync_queue sequentially against the Supabase client.
- * Enforces server idempotency (operation_id) and explicit rejection handling.
+ * Enforces server idempotency (operation_id), TRANSFER/INVENTORY parameters, _OFF order reconciliation,
+ * and explicit rejection handling.
  */
 export async function processSyncQueue(client: SupabaseClient | null): Promise<SyncEngineResult> {
   if (!client) {
@@ -33,6 +45,8 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
       failedCount: 0,
       rejectedCount: 0,
       conflicts: [],
+      updatedProductQuantities: [],
+      updatedOrders: [],
     };
   }
 
@@ -44,6 +58,8 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
       failedCount: 0,
       rejectedCount: 0,
       conflicts: [],
+      updatedProductQuantities: [],
+      updatedOrders: [],
     };
   }
 
@@ -55,6 +71,8 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
     failedCount: 0,
     rejectedCount: 0,
     conflicts: [],
+    updatedProductQuantities: [],
+    updatedOrders: [],
   };
 
   try {
@@ -70,16 +88,19 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
         let rejectReason: string | undefined;
 
         if (op.action === 'RPC_STOCK_MOVEMENT') {
-          // Transactional server RPC
+          // Transactional server RPC (supports IN, OUT, TRANSFER, INVENTORY, RETURN, LOSS)
           const { data, error } = await client.rpc('process_stock_movement', {
             p_operation_id: op.operation_id,
-            p_product_id: op.payload.product_id,
+            p_product_id: String(op.payload.product_id),
             p_depot_name: op.payload.depot_name || null,
             p_type: op.payload.type,
             p_quantity: op.payload.quantity,
             p_reason: op.payload.reason || null,
             p_project_name: op.payload.project_name || null,
             p_department: op.payload.department || null,
+            p_dest_depot_name:
+              op.payload.dest_depot_name || op.payload.metadata?.dest_depot_name || null,
+            p_dest_rack: op.payload.dest_rack || op.payload.metadata?.dest_rack || null,
             p_metadata: op.payload.metadata || {},
           });
 
@@ -88,6 +109,13 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
               throw error; // trigger retry on network error
             }
             rejectReason = error.message;
+            if (error.code === '23514' || error.message?.includes('Stock insuffisant')) {
+              result.conflicts.push({
+                operation_id: op.operation_id,
+                message: error.message,
+                details: error,
+              });
+            }
           } else if (data && data.success === false) {
             rejectReason = data.message || 'Mouvement rejeté par le serveur.';
             const conflictMsg = rejectReason || 'Mouvement rejeté par le serveur.';
@@ -100,6 +128,23 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             }
           } else {
             opSuccess = true;
+            if (data && typeof data.new_quantity === 'number' && op.payload.product_id) {
+              const prodId = String(op.payload.product_id);
+              result.updatedProductQuantities?.push({
+                product_id: prodId,
+                new_quantity: data.new_quantity,
+                depot_quantity: data.depot_quantity,
+              });
+              try {
+                const existingProd = await getByIdFromStore<Product>('products', prodId);
+                if (existingProd) {
+                  await putToStore('products', {
+                    ...existingProd,
+                    quantity: data.new_quantity,
+                  });
+                }
+              } catch {}
+            }
           }
         } else if (op.action === 'RPC_ORDER_TRANSITION') {
           // Transactional order transition RPC
@@ -129,6 +174,18 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             }
             if (ordRes.success) {
               opSuccess = true;
+              const finalOrderNum = ordRes.orderNumber || op.payload.order_number;
+              if (finalOrderNum && op.payload.id) {
+                const updatedOrder: MaterialOrder = {
+                  ...op.payload,
+                  order_number: finalOrderNum,
+                };
+                await putToStore('material_orders', updatedOrder).catch(() => {});
+                result.updatedOrders?.push({
+                  id: String(op.payload.id),
+                  order_number: finalOrderNum,
+                });
+              }
             } else {
               rejectReason = ordRes.error;
             }
@@ -186,7 +243,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
 }
 
 /**
- * Performs incremental sync from Supabase into IndexedDB based on updated_at / timestamps.
+ * Performs incremental sync from Supabase into IndexedDB based on updated_at / created_at.
  */
 export async function performIncrementalSync(client: SupabaseClient | null): Promise<boolean> {
   if (!client) return false;
@@ -202,17 +259,17 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     }
     const { data: prods, error: prodErr } = await prodQuery;
     if (!prodErr && prods && prods.length > 0) {
-      await putManyToStore('products', prods);
+      await putManyToStore('products', prods.map(normalizeProductRecord));
     }
 
-    // 2. Stock movements since lastSync
+    // 2. Stock movements created since lastSync (uses created_at column)
     let movQuery = client.from('stock_movements').select('*');
     if (lastSync) {
-      movQuery = movQuery.gt('timestamp', lastSync);
+      movQuery = movQuery.gt('created_at', lastSync);
     }
     const { data: movs, error: movErr } = await movQuery;
     if (!movErr && movs && movs.length > 0) {
-      await putManyToStore('stock_movements', movs);
+      await putManyToStore('stock_movements', movs.map(normalizeMovementRecord));
     }
 
     // 3. Orders updated since lastSync
@@ -222,7 +279,7 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     }
     const { data: ords, error: ordErr } = await ordQuery;
     if (!ordErr && ords && ords.length > 0) {
-      await putManyToStore('material_orders', ords);
+      await putManyToStore('material_orders', ords.map(normalizeOrderRecord));
     }
 
     // Update metadata timestamp
@@ -233,3 +290,4 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     return false;
   }
 }
+

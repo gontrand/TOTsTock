@@ -8,6 +8,7 @@ import script04 from '../../supabase-client/04_mouvements_et_depots_vehicules.sq
 import script05 from '../../supabase-client/05_rpc_admin_users.sql?raw';
 import script06 from '../../supabase-client/06_install_additional_roles.sql?raw';
 import script07 from '../../supabase-client/07_app_compat.sql?raw';
+import script08 from '../../supabase-client/08_print_jobs.sql?raw';
 import schemaMaster from '../../supabase-client/schema_master_licenses.sql?raw';
 
 export const SQL_SCRIPT_01_AUTH_LINK = script01;
@@ -17,4 +18,6 @@ export const SQL_SCRIPT_04_DEPOTS_VEHICULES = script04;
 export const SQL_SCRIPT_05_RPC_ADMIN_USERS = script05;
 export const SQL_SCRIPT_06_INSTALL_ADDITIONAL_ROLES = script06;
 export const SQL_SCRIPT_07_APP_COMPAT = script07;
+export const SQL_SCRIPT_08_PRINT_JOBS = script08;
 export const SQL_MASTER_LICENSES_SCHEMA = schemaMaster;
+

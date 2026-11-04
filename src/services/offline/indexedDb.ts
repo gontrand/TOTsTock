@@ -38,9 +38,87 @@ export type StoreName =
   | 'sync_metadata';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
+const memoryStores = new Map<StoreName, Map<string, any>>();
+
+function getMemoryStore(storeName: StoreName): Map<string, any> {
+  if (!memoryStores.has(storeName)) {
+    memoryStores.set(storeName, new Map<string, any>());
+  }
+  return memoryStores.get(storeName)!;
+}
+
+function getKeyField(storeName: StoreName): string {
+  if (storeName === 'sync_queue') return 'operation_id';
+  if (storeName === 'sync_metadata') return 'key';
+  return 'id';
+}
+
+function createMemoryDbAdapter(): IDBPDatabase {
+  const makeObjectStore = (storeName: StoreName) => {
+    const map = getMemoryStore(storeName);
+    const keyField = getKeyField(storeName);
+    return {
+      get: async (key: string | number) => {
+        const val = map.get(String(key));
+        return val ? structuredClone(val) : undefined;
+      },
+      getAll: async () => Array.from(map.values()).map((v) => structuredClone(v)),
+      put: async (item: any) => {
+        const k = String(item?.[keyField] ?? '');
+        map.set(k, structuredClone(item));
+        return k;
+      },
+      delete: async (key: string | number) => {
+        map.delete(String(key));
+      },
+      clear: async () => {
+        map.clear();
+      },
+      index: (indexName: string) => ({
+        getAll: async (filterValue?: any) => {
+          const all = Array.from(map.values()).map((v) => structuredClone(v));
+          if (filterValue === undefined) return all;
+          const field =
+            indexName === 'by_status'
+              ? 'status'
+              : indexName === 'by_created_at'
+                ? 'created_at'
+                : indexName;
+          return all.filter((item) => item?.[field] === filterValue);
+        },
+      }),
+    };
+  };
+
+  return {
+    objectStoreNames: {
+      contains: (name: string) => ALL_STORE_NAMES.includes(name as StoreName),
+    },
+    getAll: async (storeName: StoreName) => makeObjectStore(storeName).getAll(),
+    get: async (storeName: StoreName, key: string | number) =>
+      makeObjectStore(storeName).get(key),
+    put: async (storeName: StoreName, item: any) => makeObjectStore(storeName).put(item),
+    delete: async (storeName: StoreName, key: string | number) =>
+      makeObjectStore(storeName).delete(key),
+    clear: async (storeName: StoreName) => makeObjectStore(storeName).clear(),
+    close: () => {},
+    transaction: (storeName: StoreName) => {
+      const store = makeObjectStore(storeName);
+      return {
+        store,
+        objectStore: () => store,
+        done: Promise.resolve(),
+      };
+    },
+  } as unknown as IDBPDatabase;
+}
 
 export function getDb(): Promise<IDBPDatabase> {
   if (!dbPromise) {
+    if (typeof indexedDB === 'undefined') {
+      dbPromise = Promise.resolve(createMemoryDbAdapter());
+      return dbPromise;
+    }
     dbPromise = openDB(DB_NAME, DB_VERSION, {
       upgrade(db) {
         // Business stores
@@ -221,7 +299,11 @@ export function generateOperationId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  return 'op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export async function enqueueSyncOperation(
@@ -453,3 +535,77 @@ export async function migrateFromLocalStorageToIndexedDb(): Promise<{
     return { migrated: false, counts };
   }
 }
+
+/**
+ * Remplace atomiquement le contenu d'un store IndexedDB pour garantir qu'il reste
+ * la source locale de référence (y compris après suppression d'un enregistrement).
+ */
+export async function replaceStoreContents<T>(storeName: StoreName, items: T[]): Promise<void> {
+  try {
+    const db = await getDb();
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    await store.clear();
+    for (const item of items || []) {
+      await store.put(item);
+    }
+    await tx.done;
+  } catch (err) {
+    console.warn(`[IndexedDB] Error replacing store ${storeName}:`, err);
+  }
+}
+
+export interface HydratedOfflineState {
+  products: Product[];
+  movements: StockMovement[];
+  orders: MaterialOrder[];
+  depots: Depot[];
+  users: User[];
+  roles: Role[];
+  departments: Department[];
+  projects: Project[];
+  subCategories: SubCategory[];
+}
+
+/**
+ * Charge l'intégralité des collections métier depuis IndexedDB (source locale de référence),
+ * après avoir exécuté la migration initiale depuis localStorage si nécessaire.
+ */
+export async function hydrateAllFromIndexedDb(): Promise<HydratedOfflineState> {
+  await migrateFromLocalStorageToIndexedDb();
+
+  const [
+    products,
+    movements,
+    orders,
+    depots,
+    users,
+    roles,
+    departments,
+    projects,
+    subCategories,
+  ] = await Promise.all([
+    getAllFromStore<Product>('products'),
+    getAllFromStore<StockMovement>('stock_movements'),
+    getAllFromStore<MaterialOrder>('material_orders'),
+    getAllFromStore<Depot>('depots'),
+    getAllFromStore<User>('users'),
+    getAllFromStore<Role>('roles'),
+    getAllFromStore<Department>('departments'),
+    getAllFromStore<Project>('projects'),
+    getAllFromStore<SubCategory>('sub_categories'),
+  ]);
+
+  return {
+    products,
+    movements,
+    orders,
+    depots,
+    users,
+    roles,
+    departments,
+    projects,
+    subCategories,
+  };
+}
+

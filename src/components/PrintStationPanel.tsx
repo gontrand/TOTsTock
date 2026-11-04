@@ -117,6 +117,10 @@ export const PrintStationPanel: React.FC = () => {
 
   const [waitingQueue, setWaitingQueue] = useState<PrintJobRecord[]>([]);
   const [historyJobs, setHistoryJobs] = useState<PrintJobRecord[]>([]);
+  const historyJobsRef = useRef<PrintJobRecord[]>(historyJobs);
+  useEffect(() => {
+    historyJobsRef.current = historyJobs;
+  }, [historyJobs]);
   const [isRegistering, setIsRegistering] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [activePrintingJobId, setActivePrintingJobId] = useState<string | null>(null);
@@ -221,7 +225,7 @@ export const PrintStationPanel: React.FC = () => {
         if (printRes.ok) {
           await rpcCompletePrintJob(job.id, true, null);
           setWaitingQueue((prevQ) => {
-            const next = applyJobCompletionToState(prevQ, historyJobs, job.id, true, null);
+            const next = applyJobCompletionToState(prevQ, historyJobsRef.current, job.id, true, null);
             setHistoryJobs(next.history);
             return next.queue;
           });
@@ -233,7 +237,7 @@ export const PrintStationPanel: React.FC = () => {
           const errMsg = printRes.error || 'Impression annulée ou en échec';
           await rpcCompletePrintJob(job.id, false, errMsg);
           setWaitingQueue((prevQ) => {
-            const next = applyJobCompletionToState(prevQ, historyJobs, job.id, false, errMsg);
+            const next = applyJobCompletionToState(prevQ, historyJobsRef.current, job.id, false, errMsg);
             setHistoryJobs(next.history);
             return next.queue;
           });
@@ -243,7 +247,7 @@ export const PrintStationPanel: React.FC = () => {
         setActivePrintingJobId(null);
       }
     },
-    [products, materialOrders, canViewPrices, language, historyJobs, t, selectedPrinter, silentPrint]
+    [products, materialOrders, canViewPrices, language, t, selectedPrinter, silentPrint]
   );
 
   // Claim new PENDING jobs and refresh station log
@@ -283,12 +287,15 @@ export const PrintStationPanel: React.FC = () => {
               playPrintStationNotificationChime();
               triggerTitleBlink(merged.length);
             }
-            return merged;
+            return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
           });
         }
 
         if (allRecent.length > 0) {
-          setHistoryJobs(allRecent.slice(0, 20));
+          const nextHist = allRecent.slice(0, 20);
+          setHistoryJobs((prev) =>
+            JSON.stringify(prev) === JSON.stringify(nextHist) ? prev : nextHist
+          );
         }
       } finally {
         setIsPolling(false);

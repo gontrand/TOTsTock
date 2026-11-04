@@ -17,18 +17,25 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ALLOWED_DESKTOP_COMMANDS,
+  ALLOWED_INTERNAL_ROUTES,
   APP_PROTOCOL_ORIGIN,
   APP_PROTOCOL_SCHEME,
   buildDesktopCsp,
   createNotificationRateLimiter,
+  DESKTOP_IPC_MENU_COMMAND_CHANNEL,
+  isAllowedDesktopCommand,
   isAllowedExternalUrl,
+  isAllowedInternalRoute,
   isAllowedIpcSender,
   isAllowedNavigationUrl,
   isAllowedPermissionRequest,
   MAX_OPEN_WINDOWS,
   PRINT_TIMEOUT_MS,
   resolveSafeProtocolPath,
+  routeToDesktopCommand,
   sanitizeDesktopSystemSettings,
+  sanitizeInternalRoute,
   sanitizeLogMessage,
   sanitizeNotificationPayload,
   sanitizePrintSettings,
@@ -292,6 +299,10 @@ function lockWebContentsNavigation(contents) {
 }
 
 function sendAppCommandToMain(command) {
+  if (!isAllowedDesktopCommand(command)) {
+    logError(`Commande bureau refusée car absente de ALLOWED_DESKTOP_COMMANDS : ${String(command)}`);
+    return false;
+  }
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow();
   }
@@ -303,8 +314,10 @@ function sendAppCommandToMain(command) {
       mainWindow.restore();
     }
     mainWindow.focus();
-    mainWindow.webContents.send('tot:app-command', command);
+    mainWindow.webContents.send(DESKTOP_IPC_MENU_COMMAND_CHANNEL, command);
+    return true;
   }
+  return false;
 }
 
 const MENU_TRANSLATIONS = {
@@ -313,6 +326,7 @@ const MENU_TRANSLATIONS = {
     newArticle: 'Nouvel article',
     newMovement: 'Nouveau mouvement',
     newOrder: 'Nouvelle commande',
+    importInventory: "Importer l'inventaire (CSV)…",
     exportInventory: "Exporter l'inventaire (CSV)",
     printLabels: 'Imprimer des étiquettes…',
     quit: 'Quitter TOT Stock',
@@ -324,6 +338,7 @@ const MENU_TRANSLATIONS = {
     paste: 'Coller',
     selectAll: 'Tout sélectionner',
     find: 'Rechercher',
+    commandPalette: 'Palette de commandes',
     view: 'Affichage',
     reload: 'Actualiser les données',
     zoomIn: 'Zoom avant',
@@ -331,6 +346,13 @@ const MENU_TRANSLATIONS = {
     zoomReset: 'Taille réelle (100 %)',
     fullscreen: 'Plein écran',
     toggleSidebar: 'Réduire / étendre la barre latérale',
+    navDashboard: 'Tableau de bord',
+    navInventory: 'Inventaire',
+    navMovements: 'Mouvements',
+    navOrders: 'Commandes',
+    navPreparation: 'Préparation',
+    navPrintStation: "Poste d'impression",
+    navSettings: 'Paramètres',
     window: 'Fenêtre',
     newWindow: 'Nouvelle fenêtre',
     openPrintStation: "Ouvrir le Poste d'impression",
@@ -349,6 +371,7 @@ const MENU_TRANSLATIONS = {
     newArticle: 'New item',
     newMovement: 'New movement',
     newOrder: 'New order',
+    importInventory: 'Import inventory (CSV)…',
     exportInventory: 'Export inventory (CSV)',
     printLabels: 'Print labels…',
     quit: 'Quit TOT Stock',
@@ -360,6 +383,7 @@ const MENU_TRANSLATIONS = {
     paste: 'Paste',
     selectAll: 'Select All',
     find: 'Find',
+    commandPalette: 'Command Palette',
     view: 'View',
     reload: 'Refresh data',
     zoomIn: 'Zoom In',
@@ -367,6 +391,13 @@ const MENU_TRANSLATIONS = {
     zoomReset: 'Actual Size (100%)',
     fullscreen: 'Full Screen',
     toggleSidebar: 'Toggle sidebar',
+    navDashboard: 'Dashboard',
+    navInventory: 'Inventory',
+    navMovements: 'Movements',
+    navOrders: 'Orders',
+    navPreparation: 'Picking',
+    navPrintStation: 'Print Station',
+    navSettings: 'Settings',
     window: 'Window',
     newWindow: 'New Window',
     openPrintStation: 'Open Print Station',
@@ -385,6 +416,7 @@ const MENU_TRANSLATIONS = {
     newArticle: 'Nieuw artikel',
     newMovement: 'Nieuwe mutatie',
     newOrder: 'Nieuwe bestelling',
+    importInventory: 'Voorraad importeren (CSV)…',
     exportInventory: 'Voorraad exporteren (CSV)',
     printLabels: 'Etiketten afdrukken…',
     quit: 'TOT Stock afsluiten',
@@ -396,6 +428,7 @@ const MENU_TRANSLATIONS = {
     paste: 'Plakken',
     selectAll: 'Alles selecteren',
     find: 'Zoeken',
+    commandPalette: 'Opdrachtenpalet',
     view: 'Weergave',
     reload: 'Gegevens vernieuwen',
     zoomIn: 'Inzoomen',
@@ -403,6 +436,13 @@ const MENU_TRANSLATIONS = {
     zoomReset: 'Werkelijke grootte (100%)',
     fullscreen: 'Volledig scherm',
     toggleSidebar: 'Zijbalk in-/uitklappen',
+    navDashboard: 'Dashboard',
+    navInventory: 'Voorraad',
+    navMovements: 'Mutaties',
+    navOrders: 'Bestellingen',
+    navPreparation: 'Orderpicken',
+    navPrintStation: 'Afdrukstation',
+    navSettings: 'Instellingen',
     window: 'Venster',
     newWindow: 'Nieuw venster',
     openPrintStation: 'Afdrukstation openen',
@@ -449,9 +489,14 @@ function buildLocalizedAppMenu(locale = 'fr') {
         },
         { type: 'separator' },
         {
+          label: L.importInventory,
+          accelerator: 'CmdOrCtrl+I',
+          click: () => sendAppCommandToMain('import-csv'),
+        },
+        {
           label: L.exportInventory,
           accelerator: 'CmdOrCtrl+E',
-          click: () => sendAppCommandToMain('export-inventory-csv'),
+          click: () => sendAppCommandToMain('export-csv'),
         },
         {
           label: L.printLabels,
@@ -485,6 +530,11 @@ function buildLocalizedAppMenu(locale = 'fr') {
           accelerator: 'CmdOrCtrl+F',
           click: () => sendAppCommandToMain('focus-search'),
         },
+        {
+          label: L.commandPalette,
+          accelerator: 'CmdOrCtrl+K',
+          click: () => sendAppCommandToMain('command-palette'),
+        },
       ],
     },
     {
@@ -494,6 +544,42 @@ function buildLocalizedAppMenu(locale = 'fr') {
           label: L.reload,
           accelerator: 'CmdOrCtrl+R',
           click: () => sendAppCommandToMain('refresh-data'),
+        },
+        { type: 'separator' },
+        {
+          label: L.navDashboard,
+          accelerator: 'Alt+1',
+          click: () => sendAppCommandToMain('nav-dashboard'),
+        },
+        {
+          label: L.navInventory,
+          accelerator: 'Alt+2',
+          click: () => sendAppCommandToMain('nav-inventory'),
+        },
+        {
+          label: L.navMovements,
+          accelerator: 'Alt+3',
+          click: () => sendAppCommandToMain('nav-movements'),
+        },
+        {
+          label: L.navOrders,
+          accelerator: 'Alt+4',
+          click: () => sendAppCommandToMain('nav-orders'),
+        },
+        {
+          label: L.navPreparation,
+          accelerator: 'Alt+5',
+          click: () => sendAppCommandToMain('nav-preparation'),
+        },
+        {
+          label: L.navPrintStation,
+          accelerator: 'Alt+6',
+          click: () => sendAppCommandToMain('nav-print-station'),
+        },
+        {
+          label: L.navSettings,
+          accelerator: 'Alt+7',
+          click: () => sendAppCommandToMain('nav-settings'),
         },
         { type: 'separator' },
         {
@@ -530,7 +616,7 @@ function buildLocalizedAppMenu(locale = 'fr') {
         },
         {
           label: L.openPrintStation,
-          click: () => sendAppCommandToMain('navigate:print-station'),
+          click: () => sendAppCommandToMain('nav-print-station'),
         },
         { type: 'separator' },
         { label: L.minimize, role: 'minimize' },
@@ -546,12 +632,12 @@ function buildLocalizedAppMenu(locale = 'fr') {
         },
         {
           label: L.docs,
-          click: () => sendAppCommandToMain('navigate:settings-docs'),
+          click: () => sendAppCommandToMain('open-docs'),
         },
         { type: 'separator' },
         {
           label: L.about,
-          click: () => sendAppCommandToMain('navigate:settings-about'),
+          click: () => sendAppCommandToMain('open-about'),
         },
       ],
     },
@@ -596,13 +682,19 @@ function updateTrayContextMenu() {
       },
     },
     {
+      label: L.openPrintStation,
+      click: () => {
+        sendAppCommandToMain('nav-print-station');
+      },
+    },
+    {
       label: L.trayPending(pendingCount),
       enabled: false,
     },
     {
       label: paused ? L.trayResume : L.trayPause,
       click: () => {
-        sendAppCommandToMain('toggle-print-station-pause');
+        sendAppCommandToMain('toggle-print-pause');
       },
     },
     { type: 'separator' },
@@ -681,9 +773,7 @@ function openSecondaryWindow(route = 'inventory') {
     };
   }
 
-  const safeRoute = ['dashboard', 'inventory', 'movements', 'orders', 'preparation', 'print-station', 'settings'].includes(route)
-    ? route
-    : 'inventory';
+  const safeRoute = sanitizeInternalRoute(route, 'inventory');
 
   const childWin = new BrowserWindow({
     width: 1280,
@@ -1166,7 +1256,7 @@ function registerIpcHandlers() {
           silent: false,
         });
         notif.on('click', () => {
-          sendAppCommandToMain(`navigate:${route}`);
+          sendAppCommandToMain(routeToDesktopCommand(route));
         });
         notif.show();
       }
@@ -1181,14 +1271,18 @@ function registerIpcHandlers() {
     if (!assertAuthorizedSender(event)) {
       return { ok: false, errorMessage: 'Origine IPC non autorisée.' };
     }
-    const route = typeof rawPayload?.route === 'string' ? rawPayload.route : 'inventory';
+    const rawRoute = typeof rawPayload === 'string' ? rawPayload : rawPayload?.route;
+    const route = sanitizeInternalRoute(rawRoute, 'inventory');
     return openSecondaryWindow(route);
   });
 
   ipcMain.handle('tot:update-tray-status', async (event, rawStatus) => {
     if (!assertAuthorizedSender(event)) return { ok: false };
     currentTrayStatus = {
-      pendingCount: Math.max(0, Number(rawStatus?.pendingCount) || 0),
+      pendingCount: Math.max(
+        0,
+        Number(rawStatus?.pendingJobsCount ?? rawStatus?.pendingCount) || 0
+      ),
       paused: Boolean(rawStatus?.paused),
       stationName: typeof rawStatus?.stationName === 'string' ? rawStatus.stationName.slice(0, 80) : '',
     };

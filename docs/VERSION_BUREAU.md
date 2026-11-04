@@ -30,17 +30,21 @@ Dès que la fenêtre fait au moins **1024 px** de large, TOT Stock bascule autom
 
 ---
 
-## 2. Installation sur Windows, macOS et Linux
+## 2. Provenance et installation sur Windows, macOS et Linux
 
-Téléchargez le fichier correspondant à votre système depuis l'écran **Paramètres → À propos & Installeurs** ou depuis les publications GitHub (*Releases*) :
+> **Origine exclusive des installateurs :** Les installateurs de bureau (`Windows .exe`, `macOS .dmg`, `Linux .AppImage` / `.deb`) sont construits **exclusivement par `electron-builder` via GitHub Actions** (`.github/workflows/desktop-build.yml`) et publiés sur la page des versions (*Releases*) du projet. L'application web ne génère jamais d'exécutable ou de paquet à la volée dans le navigateur.
+>
+> L'administrateur peut renseigner la variable de build `VITE_DESKTOP_INSTALLER_URL` (ou `VITE_DESKTOP_WIN_URL`, `VITE_DESKTOP_MAC_URL`, `VITE_DESKTOP_LINUX_URL`) pour faire pointer le bouton **« Télécharger l'installateur »** de l'interface vers la page des versions publiées.
+
+Téléchargez l'installateur correspondant à votre système depuis la page des versions (*Releases*) du projet GitHub (ou via le bouton **« Télécharger l'installateur »** dans **Paramètres → À propos & Installeurs** lorsque l'adresse est configurée) :
 
 ### Windows (64 bits — `.exe`)
-1. Téléchargez **`TOT-Stock-5.5.0-win-x64.exe`**.
-2. Double-cliquez sur le fichier pour lancer l'assistant d'installation.
+1. Téléchargez **`TOT-Stock-5.5.0-win-x64.exe`** depuis la publication GitHub Actions.
+2. Double-cliquez sur le fichier pour lancer l'assistant d'installation NSIS.
 3. Choisissez le dossier d'installation (par défaut dans votre dossier utilisateur, **sans besoin des droits administrateur**).
 
 ### macOS (Intel et Apple Silicon M1/M2/M3/M4 — `.dmg`)
-1. Téléchargez **`TOT-Stock-5.5.0-mac-universal.dmg`**.
+1. Téléchargez **`TOT-Stock-5.5.0-mac-universal.dmg`** depuis la publication GitHub Actions.
 2. Ouvrez l'image disque `.dmg` et glissez l'icône **TOT Stock** dans le dossier **Applications**.
 
 ### Linux (64 bits — `.AppImage` ou `.deb`)

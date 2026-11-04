@@ -1596,87 +1596,100 @@ export async function pushMovementToSupabase(
   client: SupabaseClient,
   movement: StockMovement,
   newProductQty?: number,
-  currentUserId?: string | number,
+  _currentUserId?: string | number,
   operationId?: string,
   destDepotName?: string,
   destRack?: string
-): Promise<{ success: boolean; newQty?: number; error?: string; conflict?: boolean; depotQty?: number }> {
+): Promise<{
+  success: boolean;
+  newQty?: number;
+  error?: string;
+  conflict?: boolean;
+  depotQty?: number;
+  destDepotQty?: number;
+  isNetworkError?: boolean;
+}> {
   const opId =
     operationId ||
     (typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : 'op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7));
 
+  const effectiveType = String(movement.type || movement.movement_type || 'OUT').toUpperCase();
+  const effectiveQty =
+    effectiveType === 'INVENTORY' && newProductQty !== undefined
+      ? Number(newProductQty)
+      : Number(movement.quantity ?? movement.quantity_changed ?? 0);
+
+  const effectiveDestDepot =
+    destDepotName ||
+    movement.dest_depot_name ||
+    (movement.metadata?.dest_depot_name as string) ||
+    null;
+  const effectiveDestRack =
+    destRack ||
+    (movement as any).dest_rack ||
+    (movement.metadata?.dest_rack as string) ||
+    null;
+
   try {
-    // 1. Priorité N°7 : RPC transactionnelle côté serveur (process_stock_movement)
+    // Exécution exclusivement via la RPC transactionnelle côté serveur (process_stock_movement)
+    // ZÉRO écriture directe de secours sur movements / stock_movements / products
     const { data: rpcData, error: rpcErr } = await client.rpc('process_stock_movement', {
       p_operation_id: opId,
       p_product_id: String(movement.product_id),
       p_depot_name: movement.depot_name || null,
-      p_type: movement.type || movement.movement_type,
-      p_quantity: movement.quantity ?? movement.quantity_changed,
+      p_type: effectiveType,
+      p_quantity: effectiveQty,
       p_reason: movement.reason || (movement.site_number ? `Chantier: ${movement.site_number}` : null),
       p_project_name: movement.project_name || movement.site_number || null,
       p_department: movement.department || movement.department_name || null,
-      p_dest_depot_name: destDepotName || (movement.metadata?.dest_depot_name as string) || null,
-      p_dest_rack: destRack || (movement.metadata?.dest_rack as string) || null,
-      p_metadata: { id: movement.id, product_ref: movement.product_ref, ...(movement.metadata || {}) },
+      p_dest_depot_name: effectiveDestDepot,
+      p_dest_rack: effectiveDestRack,
+      p_metadata: {
+        id: movement.id,
+        product_ref: movement.product_ref,
+        ...(movement.order_number ? { order_number: movement.order_number } : {}),
+        ...(movement.metadata || {}),
+      },
     });
 
-    if (!rpcErr && rpcData) {
-      if (rpcData.success === false) {
-        return {
-          success: false,
-          error: rpcData.message,
-          conflict: rpcData.error_code === 'REJECTED_STOCK_CONFLICT',
-        };
-      }
+    if (rpcErr) {
       return {
-        success: true,
-        newQty: rpcData.new_quantity,
-        depotQty: rpcData.depot_quantity,
+        success: false,
+        error: formatPostgresErrorMessage(rpcErr),
+        conflict: rpcErr.code === '23514' || rpcErr.message?.includes('Stock insuffisant'),
+        isNetworkError: isNetworkOrFetchError(rpcErr),
       };
     }
 
-    // Si la RPC a levé une exception de sécurité ou de validation (ex: 42501, 23514, P0002), ne pas tenter de contourner
-    if (rpcErr && rpcErr.code !== '42883' && !rpcErr.message?.toLowerCase().includes('does not exist')) {
-      return { success: false, error: formatPostgresErrorMessage(rpcErr) };
+    if (rpcData && rpcData.success === false) {
+      return {
+        success: false,
+        error: rpcData.message || 'Mouvement rejeté par le serveur.',
+        conflict: rpcData.error_code === 'REJECTED_STOCK_CONFLICT',
+      };
     }
 
-    // 2. Fallback de compatibilité ascendante si la RPC n'est pas encore déployée (42883)
-    const movTable = (await findWorkingTable(client, ['movements', 'stock_movements', 'tot_movements'])) || 'movements';
-    
-    // Strict RLS requirement: user_id must match authenticated user
-    const payload = { ...movement };
-    if (!payload.user_id && currentUserId !== undefined && currentUserId !== null) {
-      payload.user_id = currentUserId;
-    }
-
-    const { error: movErr } = await client.from(movTable).insert([payload]);
-    if (movErr) {
-      console.error('Erreur écriture mouvement Supabase:', formatPostgresErrorMessage(movErr));
-      return { success: false, error: formatPostgresErrorMessage(movErr) };
-    }
-
-    if (newProductQty !== undefined && payload.product_id) {
-      const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
-      const { error: qtyErr } = await client
-        .from(prodTable)
-        .update({ quantity: newProductQty })
-        .eq('id', payload.product_id);
-      if (qtyErr) {
-        console.warn('Erreur mise à jour quantité produit Supabase:', formatPostgresErrorMessage(qtyErr));
-      }
-    }
-    return { success: true, newQty: newProductQty };
+    return {
+      success: true,
+      newQty: rpcData?.new_quantity ?? newProductQty,
+      depotQty: rpcData?.depot_quantity,
+      destDepotQty: rpcData?.dest_depot_quantity,
+    };
   } catch (err: any) {
     console.error('Exception enregistrement mouvement Supabase:', err);
-    return { success: false, error: err?.message || 'Exception mouvement' };
+    return {
+      success: false,
+      error: err?.message || 'Exception mouvement',
+      isNetworkError: isNetworkOrFetchError(err),
+    };
   }
 }
 
 /**
  * Priorité N°8 : Transition d'état contrôlée des commandes côté serveur
+ * ZÉRO écriture directe de secours sur material_orders.
  */
 export async function transitionOrderStatusSupabase(
   client: SupabaseClient | null,
@@ -1685,8 +1698,8 @@ export async function transitionOrderStatusSupabase(
   comment?: string,
   preparerId?: string,
   operationId?: string
-): Promise<{ success: boolean; error?: string }> {
-  if (!client) return { success: false, error: 'Supabase non connecté.' };
+): Promise<{ success: boolean; error?: string; isNetworkError?: boolean }> {
+  if (!client) return { success: false, error: 'Supabase non connecté.', isNetworkError: true };
   const opId =
     operationId ||
     (typeof crypto !== 'undefined' && crypto.randomUUID
@@ -1694,7 +1707,6 @@ export async function transitionOrderStatusSupabase(
       : 'ord-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7));
 
   try {
-    // 1. Essai via RPC serveur transition_order_status
     const { data: rpcData, error: rpcErr } = await client.rpc('transition_order_status', {
       p_operation_id: opId,
       p_order_id: orderId,
@@ -1703,36 +1715,25 @@ export async function transitionOrderStatusSupabase(
       p_preparer_id: preparerId || null,
     });
 
-    if (!rpcErr && rpcData) {
-      if (rpcData.success === false) {
-        return { success: false, error: rpcData.message };
-      }
-      return { success: true };
+    if (rpcErr) {
+      return {
+        success: false,
+        error: formatPostgresErrorMessage(rpcErr),
+        isNetworkError: isNetworkOrFetchError(rpcErr),
+      };
     }
 
-    // Si la RPC a levé une exception de sécurité ou de machine d'état (ex: 42501, 22023, P0002), ne pas tenter de contourner
-    if (rpcErr && rpcErr.code !== '42883' && !rpcErr.message?.toLowerCase().includes('does not exist')) {
-      return { success: false, error: formatPostgresErrorMessage(rpcErr) };
+    if (rpcData && rpcData.success === false) {
+      return { success: false, error: rpcData.message };
     }
 
-    // 2. Fallback direct update uniquement si la RPC n'existe pas encore sur la base
-    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
-    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
-    const { error: updErr } = await client
-      .from(orderTable)
-      .update({
-        status: targetStatus,
-        preparer_id: preparerId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updErr) {
-      return { success: false, error: formatPostgresErrorMessage(updErr) };
-    }
     return { success: true };
   } catch (err: any) {
-    return { success: false, error: err?.message };
+    return {
+      success: false,
+      error: err?.message,
+      isNetworkError: isNetworkOrFetchError(err),
+    };
   }
 }
 

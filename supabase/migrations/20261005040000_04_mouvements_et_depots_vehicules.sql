@@ -108,8 +108,13 @@ AS $$
 DECLARE
   v_current_count INT;
   v_max_depots INT := 1;
+  v_token_max_depots INT := NULL;
   v_plan_type TEXT := 'free';
+  v_signed_token TEXT := NULL;
+  v_token_json JSONB := NULL;
+  v_sig TEXT := NULL;
   v_limits JSONB;
+  v_plan_max_depots INT := 1;
 BEGIN
   -- Si le dépôt inséré/modifié est inactif, il ne consomme pas de place dans le quota
   IF NEW.is_active = false THEN
@@ -117,27 +122,53 @@ BEGIN
   END IF;
 
   BEGIN
-    SELECT max_depots, LOWER(COALESCE(plan_type, 'free'))
-    INTO v_max_depots, v_plan_type
+    SELECT max_depots, LOWER(COALESCE(plan_type, 'free')), signed_token
+    INTO v_max_depots, v_plan_type, v_signed_token
     FROM public.license_config
     LIMIT 1;
   EXCEPTION WHEN OTHERS THEN
-    BEGIN
-      SELECT max_depots, 'free'
-      INTO v_max_depots, v_plan_type
-      FROM public.license_config
-      LIMIT 1;
-    EXCEPTION WHEN OTHERS THEN
-      v_max_depots := NULL;
-      v_plan_type := 'free';
-    END;
+    v_max_depots := 1;
+    v_plan_type := 'free';
+    v_signed_token := NULL;
   END;
+
+  -- Les quotas appliqués sont strictement ceux de la licence signée (signed_token).
+  -- Toute licence non gratuite dépourvue de jeton signé retombe sur le forfait 'free'.
+  IF v_signed_token IS NOT NULL AND TRIM(v_signed_token) <> '' THEN
+    BEGIN
+      IF LEFT(TRIM(v_signed_token), 1) = '{' THEN
+        v_token_json := TRIM(v_signed_token)::jsonb;
+        v_sig := COALESCE(v_token_json->>'signature', '');
+      ELSIF POSITION('.' IN TRIM(v_signed_token)) > 1 THEN
+        v_token_json := convert_from(decode(split_part(TRIM(v_signed_token), '.', 1), 'base64'), 'UTF8')::jsonb;
+        v_sig := split_part(TRIM(v_signed_token), '.', 2);
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      v_token_json := NULL;
+      v_sig := NULL;
+    END;
+  END IF;
+
+  IF v_token_json IS NOT NULL AND LENGTH(TRIM(COALESCE(v_sig, ''))) >= 8 THEN
+    v_plan_type := LOWER(COALESCE(v_token_json->>'plan', v_token_json->>'plan_type', 'free'));
+    BEGIN
+      v_token_max_depots := NULLIF((v_token_json->>'max_depots')::int, 0);
+    EXCEPTION WHEN OTHERS THEN
+      v_token_max_depots := NULL;
+    END;
+  ELSE
+    v_plan_type := 'free';
+    v_token_max_depots := 1;
+  END IF;
 
   v_limits := public.plan_limits(v_plan_type);
   v_plan_type := COALESCE(v_limits->>'plan', 'free');
+  v_plan_max_depots := COALESCE((v_limits->>'max_depots')::int, 1);
 
-  IF v_max_depots IS NULL OR v_max_depots <= 0 THEN
-    v_max_depots := COALESCE((v_limits->>'max_depots')::int, 1);
+  IF v_token_max_depots IS NOT NULL AND v_token_max_depots > 0 THEN
+    v_max_depots := LEAST(v_token_max_depots, v_plan_max_depots);
+  ELSE
+    v_max_depots := v_plan_max_depots;
   END IF;
 
   IF v_max_depots >= 99999 THEN
@@ -152,7 +183,8 @@ BEGIN
 
   IF v_current_count >= v_max_depots THEN
     RAISE EXCEPTION 'QUOTA_EXCEEDED: Votre licence TOT Stock (%) est limitée à % magasin(s)/dépôt(s) actif(s) maximum. Veuillez mettre à niveau votre forfait.',
-      UPPER(COALESCE(v_plan_type, 'GRATUIT')), v_max_depots;
+      UPPER(COALESCE(v_plan_type, 'GRATUIT')), v_max_depots
+      USING ERRCODE = '23514';
   END IF;
 
   RETURN NEW;
@@ -180,6 +212,9 @@ CREATE TABLE IF NOT EXISTS public.stock_levels (
   CONSTRAINT uq_product_depot UNIQUE (product_id, depot_name)
 );
 ALTER TABLE public.stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+ALTER TABLE public.stock_levels
+  ADD COLUMN IF NOT EXISTS min_alert NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS rack_location TEXT DEFAULT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_stock_levels_product ON public.stock_levels(product_id);
 CREATE INDEX IF NOT EXISTS idx_stock_levels_depot ON public.stock_levels(depot_name);
@@ -336,18 +371,30 @@ BEGIN
 END;
 $$;
 
--- RLS SELECT et INSERT sur public.movements & public.stock_movements (garantit la présence des policies SELECT et INSERT)
-DO $$ BEGIN
+-- RLS SELECT et INSERT sur public.movements & public.stock_movements (purge de toute règle existante avant recréation)
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
     ALTER TABLE public.movements ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Authenticated read movements" ON public.movements;
+    REVOKE ALL ON TABLE public.movements FROM anon, public;
+    GRANT SELECT, INSERT ON TABLE public.movements TO authenticated;
+
+    FOR r IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'movements'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.movements', r.policyname);
+    END LOOP;
+
     CREATE POLICY "Authenticated read movements"
       ON public.movements
       FOR SELECT
       TO authenticated
       USING (public.can_view_movement(user_id::text, department_name::text, depot_name::text, site_number::text));
 
-    DROP POLICY IF EXISTS "Authenticated insert movements" ON public.movements;
     CREATE POLICY "Authenticated insert movements"
       ON public.movements
       FOR INSERT
@@ -357,14 +404,23 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
     ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Authenticated read stock_movements" ON public.stock_movements;
+    REVOKE ALL ON TABLE public.stock_movements FROM anon, public;
+    GRANT SELECT, INSERT ON TABLE public.stock_movements TO authenticated;
+
+    FOR r IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'stock_movements'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.stock_movements', r.policyname);
+    END LOOP;
+
     CREATE POLICY "Authenticated read stock_movements"
       ON public.stock_movements
       FOR SELECT
       TO authenticated
       USING (public.can_view_movement(user_id::text, department_name::text, depot_name::text, site_number::text));
 
-    DROP POLICY IF EXISTS "Authenticated insert stock_movements" ON public.stock_movements;
     CREATE POLICY "Authenticated insert stock_movements"
       ON public.stock_movements
       FOR INSERT
@@ -383,8 +439,21 @@ END $$;
 --   et les rôles 0 et 1.
 -- -------------------------------------------------------------------------
 ALTER TABLE public.stock_levels ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Authenticated read stock_levels" ON public.stock_levels;
-DROP POLICY IF EXISTS "Admin write stock_levels" ON public.stock_levels;
+REVOKE ALL ON TABLE public.stock_levels FROM anon, public;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stock_levels TO authenticated;
+
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'stock_levels'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stock_levels', r.policyname);
+  END LOOP;
+END $$;
 
 CREATE POLICY "Authenticated read stock_levels"
   ON public.stock_levels
@@ -477,11 +546,15 @@ DECLARE
 
   v_source_depot TEXT;
   v_dest_depot TEXT;
+  v_prod_store_name TEXT;
+  v_prod_initial_qty NUMERIC;
   v_current_depot_stock NUMERIC;
   v_new_depot_stock NUMERIC;
   v_dest_depot_stock NUMERIC;
   v_new_dest_stock NUMERIC;
   v_total_product_stock NUMERIC;
+  v_recorded_qty NUMERIC;
+  v_effective_dir TEXT;
 
   v_mov_type TEXT;
   v_mov_id TEXT;
@@ -544,16 +617,26 @@ BEGIN
     IF NOT (
       public.is_administrator()
       OR public.current_user_has_perm('perm_menu_inventory_audit')
+      OR public.current_user_has_perm('perm_inventory_validate')
     ) THEN
-      RAISE EXCEPTION 'Permission denied: inventory audit rights required (perm_menu_inventory_audit)' USING ERRCODE = '42501';
+      RAISE EXCEPTION 'Permission denied: inventory audit rights required (perm_menu_inventory_audit or perm_inventory_validate)' USING ERRCODE = '42501';
     END IF;
   ELSE
     RAISE EXCEPTION 'Unknown movement type: %', p_type USING ERRCODE = '22023';
   END IF;
 
-  -- 4. Normalisation des dépôts
+  -- 4. Normalisation et validation des dépôts
   v_source_depot := COALESCE(NULLIF(TRIM(p_depot_name), ''), 'Dépôt Principal');
   v_dest_depot := NULLIF(TRIM(p_dest_depot_name), '');
+
+  IF v_mov_type = 'TRANSFER' THEN
+    IF v_dest_depot IS NULL THEN
+      RAISE EXCEPTION 'Un transfert inter-dépôts requiert un dépôt de destination (p_dest_depot_name).' USING ERRCODE = '22023';
+    END IF;
+    IF LOWER(v_dest_depot) = LOWER(v_source_depot) THEN
+      RAISE EXCEPTION 'Le dépôt de destination ("%") doit être distinct du dépôt source ("%").', v_dest_depot, v_source_depot USING ERRCODE = '22023';
+    END IF;
+  END IF;
 
   -- Vérification des droits d'accès aux dépôts (source ET destination) sauf administrateurs (rôles 0 et 1)
   IF NOT public.is_administrator() THEN
@@ -573,8 +656,8 @@ BEGIN
   END IF;
 
   -- 5. Verrouillage FOR UPDATE de l'article dans public.products
-  SELECT reference, unit_price
-  INTO v_product_ref, v_unit_price
+  SELECT reference, unit_price, COALESCE(quantity, 0), COALESCE(NULLIF(TRIM(store_name), ''), 'Dépôt Principal')
+  INTO v_product_ref, v_unit_price, v_prod_initial_qty, v_prod_store_name
   FROM public.products
   WHERE id::text = p_product_id::text
   FOR UPDATE;
@@ -587,7 +670,13 @@ BEGIN
     RAISE EXCEPTION 'La quantité du mouvement est invalide.' USING ERRCODE = '22023';
   END IF;
 
-  -- 6. Verrouillage FOR UPDATE du niveau de stock dans public.stock_levels (dépôt source)
+  -- 6. Initialisation paresseuse et verrouillage FOR UPDATE du niveau de stock dans public.stock_levels (dépôt source)
+  IF NOT EXISTS (SELECT 1 FROM public.stock_levels WHERE product_id = p_product_id) THEN
+    INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
+    VALUES (p_product_id, v_prod_store_name, v_prod_initial_qty, now())
+    ON CONFLICT (product_id, depot_name) DO NOTHING;
+  END IF;
+
   INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
   VALUES (p_product_id, v_source_depot, 0, now())
   ON CONFLICT (product_id, depot_name) DO NOTHING;
@@ -647,12 +736,31 @@ BEGIN
 
   UPDATE public.products
   SET quantity = v_total_product_stock,
+      store_name = CASE
+        WHEN v_mov_type = 'TRANSFER' AND v_dest_depot IS NOT NULL AND v_new_depot_stock = 0 THEN v_dest_depot
+        ELSE store_name
+      END,
+      shelf_name = CASE
+        WHEN v_mov_type = 'TRANSFER' AND p_dest_rack IS NOT NULL AND v_new_depot_stock = 0 THEN p_dest_rack
+        ELSE shelf_name
+      END,
       updated_at = now()
   WHERE id::text = p_product_id::text;
 
-  -- 10. Insertion dans public.movements avec depot_name et dest_depot_name
-  v_mov_id := 'MOV-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || substr(p_operation_id::text, 1, 6);
-  v_total_cost := ROUND(p_quantity * COALESCE(v_unit_price, 0), 2);
+  -- 10. Insertion dans public.movements, public.stock_movements et public.audit_logs
+  IF v_mov_type = 'INVENTORY' THEN
+    v_recorded_qty := ABS(v_new_depot_stock - v_current_depot_stock);
+    v_effective_dir := CASE WHEN v_new_depot_stock >= v_current_depot_stock THEN 'IN' ELSE 'OUT' END;
+  ELSIF v_mov_type IN ('OUT', 'TRANSFER', 'LOSS') THEN
+    v_recorded_qty := p_quantity;
+    v_effective_dir := 'OUT';
+  ELSE
+    v_recorded_qty := p_quantity;
+    v_effective_dir := 'IN';
+  END IF;
+
+  v_mov_id := 'MOV-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text;
+  v_total_cost := ROUND(v_recorded_qty * COALESCE(v_unit_price, 0), 2);
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
     INSERT INTO public.movements (
@@ -662,8 +770,8 @@ BEGIN
     ) VALUES (
       v_mov_id, p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
       v_caller_id, v_caller_name,
-      CASE WHEN v_mov_type IN ('OUT', 'TRANSFER', 'LOSS') THEN 'OUT' ELSE 'IN' END,
-      p_quantity, COALESCE(p_project_name, p_reason), p_department, v_total_cost,
+      v_effective_dir,
+      v_recorded_qty, COALESCE(p_project_name, p_reason), p_department, v_total_cost,
       (p_metadata->>'order_number'),
       v_source_depot, v_dest_depot, now()
     );
@@ -678,10 +786,45 @@ BEGIN
     ) VALUES (
       p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
       v_caller_id, v_caller_name,
-      CASE WHEN v_mov_type IN ('OUT', 'TRANSFER', 'LOSS') THEN 'OUT' ELSE 'IN' END,
-      p_quantity::integer, COALESCE(p_reason, 'Mouvement de stock'),
+      v_effective_dir,
+      ROUND(v_recorded_qty)::integer, COALESCE(p_reason, 'Mouvement de stock'),
       p_project_name, p_department, v_total_cost, (p_metadata->>'order_number'),
       v_source_depot, v_dest_depot, now()
+    );
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'audit_logs') THEN
+    INSERT INTO public.audit_logs (
+      id, type, category, user_id, user_name, user_trigram,
+      product_id, product_ref, quantity_changed, site_number, depot_name,
+      title, description, badge_text, meta, created_at
+    ) VALUES (
+      'AUD-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text,
+      'STOCK_' || v_mov_type,
+      'MOVEMENTS',
+      v_caller_id,
+      v_caller_name,
+      v_caller_trigram,
+      p_product_id,
+      COALESCE(v_product_ref, (p_metadata->>'product_ref')),
+      v_recorded_qty,
+      p_project_name,
+      v_source_depot,
+      format('Mouvement %s (%s)', v_mov_type, v_recorded_qty),
+      format('Stock "%s" (%s) modifié de %s à %s par %s (%s)', COALESCE(v_product_ref, p_product_id), v_source_depot, v_current_depot_stock, v_new_depot_stock, v_caller_name, COALESCE(p_reason, 'Opération directe')),
+      format('%s %s', CASE WHEN v_effective_dir = 'OUT' THEN '-' ELSE '+' END, v_recorded_qty),
+      jsonb_build_object(
+        'operation_id', p_operation_id,
+        'movement_type', v_mov_type,
+        'old_stock', v_current_depot_stock,
+        'new_stock', v_new_depot_stock,
+        'dest_new_stock', v_new_dest_stock,
+        'total_product_stock', v_total_product_stock,
+        'reason', p_reason,
+        'dest_depot', v_dest_depot,
+        'dest_rack', p_dest_rack
+      ),
+      now()
     );
   END IF;
 
@@ -693,16 +836,19 @@ BEGIN
     'product_id', p_product_id,
     'depot_name', v_source_depot,
     'dest_depot_name', v_dest_depot,
+    'old_quantity', v_current_depot_stock,
     'depot_quantity', v_new_depot_stock,
+    'dest_depot_quantity', v_new_dest_stock,
     'new_quantity', v_total_product_stock,
-    'quantity_changed', p_quantity,
+    'quantity_changed', v_recorded_qty,
+    'type', v_mov_type,
     'movement_type', v_mov_type,
     'total_cost', v_total_cost,
     'timestamp', now()
   );
 
-  INSERT INTO public.processed_operations (operation_id, user_id, action_type, result, created_at)
-  VALUES (p_operation_id, v_caller_id, 'STOCK_MOVE_V4', v_result, now())
+  INSERT INTO public.processed_operations (operation_id, user_id, entity, action, action_type, result, created_at)
+  VALUES (p_operation_id, v_caller_id, 'product_stock', v_mov_type, 'STOCK_MOVE_V4', v_result, now())
   ON CONFLICT (operation_id) DO NOTHING;
 
   RETURN v_result;

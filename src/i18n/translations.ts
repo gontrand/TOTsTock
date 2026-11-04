@@ -830,6 +830,15 @@ export const translations = {
     desktop_import_csv_btn: 'Importer CSV',
     desktop_zpl_printer_label: "Imprimante d'étiquettes (ZPL)",
     desktop_zpl_test_btn: 'Imprimer une étiquette de test',
+    // v35 — Script 08 dans l'assistant d'installation & Diagnostic
+    sql_script_08_title: "🖨️ Script 08 : Impression d'étiquettes à distance (08_print_jobs.sql)",
+    sql_script_08_badge: 'Facultatif • Schéma 1.1.0',
+    sql_script_08_desc:
+      "Ce script est facultatif (nécessaire seulement pour le Poste d'impression) : il fait passer le schéma à 1.1.0, et sans lui l'application fonctionne et affiche seulement le bandeau d'information « schéma 1.0.0 toléré ». Ordre d'exécution : pour une installation neuve, utiliser dist/install.sql (ou les scripts dans l'ordre 01 → 08 puis 07 si l'on rejoue tout) ; pour une base existante déjà en 1.0.0, exécuter seulement le script 08.",
+    sql_script_08_copy_btn: 'Copier le script 08_print_jobs.sql',
+    sql_script_08_copied_btn: 'Script 08 Copié !',
+    diag_schema_1_0_0_upgrade_hint:
+      "Pour passer le schéma de 1.0.0 à 1.1.0 (Poste d'impression à distance), exécutez uniquement le script 08 (08_print_jobs.sql) dans l'Éditeur SQL Supabase.",
   },
   en: {
     // Navigation
@@ -1649,6 +1658,15 @@ export const translations = {
     desktop_import_csv_btn: 'Import CSV',
     desktop_zpl_printer_label: 'Label Printer (ZPL)',
     desktop_zpl_test_btn: 'Print test label',
+    // v35 — Script 08 in Installation Assistant & Diagnostic
+    sql_script_08_title: '🖨️ Script 08: Remote Label Printing (08_print_jobs.sql)',
+    sql_script_08_badge: 'Optional • Schema 1.1.0',
+    sql_script_08_desc:
+      'This script is optional (required only for the Print Station): it upgrades the schema to 1.1.0, and without it the application works and only displays the "schema 1.0.0 tolerated" informational banner. Execution order: for a fresh installation, use dist/install.sql (or run scripts in order 01 → 08 then 07 if replaying everything); for an existing database already at 1.0.0, run only script 08.',
+    sql_script_08_copy_btn: 'Copy 08_print_jobs.sql',
+    sql_script_08_copied_btn: 'Script 08 Copied!',
+    diag_schema_1_0_0_upgrade_hint:
+      'To upgrade the schema from 1.0.0 to 1.1.0 (Remote Print Station), run only script 08 (08_print_jobs.sql) in the Supabase SQL Editor.',
   },
   nl: {
     // Navigation
@@ -2468,6 +2486,15 @@ export const translations = {
     desktop_import_csv_btn: 'CSV importeren',
     desktop_zpl_printer_label: 'Etikettenprinter (ZPL)',
     desktop_zpl_test_btn: 'Testetiket afdrukken',
+    // v35 — Script 08 in Installatie-assistent & Diagnose
+    sql_script_08_title: '🖨️ Script 08: Etiketten op afstand afdrukken (08_print_jobs.sql)',
+    sql_script_08_badge: 'Optioneel • Schema 1.1.0',
+    sql_script_08_desc:
+      'Dit script is optioneel (alleen nodig voor het Afdrukstation): het werkt het schema bij naar 1.1.0, en zonder dit script werkt de applicatie en toont alleen de informatiebanner "schema 1.0.0 getolereerd". Uitvoeringsvolgorde: gebruik voor een nieuwe installatie dist/install.sql (of de scripts in de volgorde 01 → 08 en daarna 07 als u alles opnieuw uitvoert); voer voor een bestaande database op 1.0.0 alleen script 08 uit.',
+    sql_script_08_copy_btn: 'Script 08_print_jobs.sql kopiëren',
+    sql_script_08_copied_btn: 'Script 08 Gekopieerd!',
+    diag_schema_1_0_0_upgrade_hint:
+      'Om het schema bij te werken van 1.0.0 naar 1.1.0 (Afdrukstation op afstand), voert u alleen script 08 (08_print_jobs.sql) uit in de Supabase SQL Editor.',
   },
 } as const;
 

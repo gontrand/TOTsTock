@@ -96,6 +96,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     updateOrderCartQty,
     submitMaterialOrder,
     markOrderCollected,
+    canApproveOrder,
     approveOrder,
     rejectOrder,
     cancelOrder,
@@ -135,8 +136,9 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     userHasPermission('perm_orders_create') || userHasPermission('perm_menu_material_orders');
   const canManageOrders =
     userHasPermission('perm_orders_manage') || userHasPermission('perm_menu_order_prep');
+  const hasApproveOrderPerm = userHasPermission('perm_order_approve');
   const canViewAllOrders =
-    canManageOrders || userHasPermission('perm_orders_view_all');
+    canManageOrders || userHasPermission('perm_orders_view_all') || hasApproveOrderPerm;
 
   const closedDepotNames = useMemo(() => buildClosedDepotNamesSet(depots), [depots]);
 
@@ -146,6 +148,9 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
       depotFilter: selectedDepotFilter,
       searchQuery: localSearch || externalSearchQuery,
       canViewAllOrders,
+      departments,
+      projects,
+      hasApproveOrderPerm,
     });
   }, [
     orders,
@@ -155,6 +160,9 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     localSearch,
     externalSearchQuery,
     canViewAllOrders,
+    departments,
+    projects,
+    hasApproveOrderPerm,
   ]);
 
   const selectedOrder: MaterialOrder | null = useMemo(() => {
@@ -167,13 +175,27 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
 
   const canApproveSelected = useMemo(
     () =>
-      canUserApproveOrRejectOrder(
-        selectedOrder,
-        currentUser,
-        departments,
-        canManageOrders
+      Boolean(
+        selectedOrder &&
+          selectedOrder.status === 'WAITING_APPROVAL' &&
+          (canApproveOrder(selectedOrder) ||
+            canUserApproveOrRejectOrder(
+              selectedOrder,
+              currentUser,
+              departments,
+              canManageOrders || hasApproveOrderPerm,
+              projects
+            ))
       ),
-    [selectedOrder, currentUser, departments, canManageOrders]
+    [
+      selectedOrder,
+      canApproveOrder,
+      currentUser,
+      departments,
+      canManageOrders,
+      hasApproveOrderPerm,
+      projects,
+    ]
   );
 
   // Catalog products filtered by selected depot for new order creation

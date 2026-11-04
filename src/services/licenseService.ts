@@ -46,14 +46,41 @@ export function normalizeLicenseModules(
 
 /**
  * Attaches a non-enumerable getter for max_references computed strictly via plan_limits(plan)
- * so technical ceilings are NEVER serialized or stored per client.
+ * and derives quotas strictly from signed_token when present so technical ceilings are NEVER
+ * inflated or tampered with in localStorage.
  */
 function withComputedPlanLimits(lic: LicenseInfo): LicenseInfo {
-  const rawPlan = String(lic.plan || lic.plan_type || 'free').trim().toLowerCase();
-  const canonicalPlan = normalizeToCanonicalPlan(rawPlan, lic.license_key);
+  let rawTokenObj: any = lic.signed_token;
+  if (typeof rawTokenObj === 'string') {
+    try {
+      rawTokenObj = JSON.parse(rawTokenObj);
+    } catch {
+      rawTokenObj = undefined;
+    }
+  }
+  const normalizedToken =
+    rawTokenObj && typeof rawTokenObj === 'object'
+      ? convertLegacyLicenseToken(rawTokenObj)
+      : undefined;
+
+  const hasSignedToken = Boolean(normalizedToken && normalizedToken.signature);
+  const effectiveRawPlan = hasSignedToken
+    ? String(normalizedToken!.plan || normalizedToken!.plan_type || 'free').trim().toLowerCase()
+    : String(lic.plan || lic.plan_type || 'free').trim().toLowerCase();
+  const effectiveKey = hasSignedToken
+    ? normalizedToken!.license_key || lic.license_key
+    : lic.license_key;
+
+  const canonicalPlan = normalizeToCanonicalPlan(effectiveRawPlan, effectiveKey);
   const limits = plan_limits(canonicalPlan);
-  const modules = normalizeLicenseModules(lic.modules, false, canonicalPlan);
-  const maxDepots = Number(lic.max_depots) > 0 ? Number(lic.max_depots) : limits.max_depots;
+  const rawModulesSource = hasSignedToken ? normalizedToken!.modules : lic.modules;
+  const modules = normalizeLicenseModules(rawModulesSource, false, canonicalPlan);
+
+  const rawMaxDepots = hasSignedToken
+    ? Number(normalizedToken!.max_depots)
+    : Number(lic.max_depots);
+  const maxDepots =
+    rawMaxDepots > 0 ? Math.min(rawMaxDepots, limits.max_depots) : limits.max_depots;
 
   const clean: LicenseInfo = {
     ...lic,
@@ -61,7 +88,7 @@ function withComputedPlanLimits(lic: LicenseInfo): LicenseInfo {
     plan_type: canonicalPlan,
     modules,
     max_depots: maxDepots,
-    ...(lic.signed_token ? { signed_token: lic.signed_token } : {}),
+    ...(normalizedToken ? { signed_token: normalizedToken } : {}),
   };
 
   // Ne jamais stocker max_references ni max_tools par client
@@ -70,13 +97,192 @@ function withComputedPlanLimits(lic: LicenseInfo): LicenseInfo {
 
   Object.defineProperty(clean, 'max_references', {
     get() {
-      return plan_limits(this.plan || this.plan_type).max_references;
+      const tokenPlan =
+        this.signed_token && this.signed_token.signature
+          ? this.signed_token.plan || this.signed_token.plan_type
+          : this.plan || this.plan_type;
+      return plan_limits(tokenPlan).max_references;
     },
     enumerable: false,
     configurable: true,
   });
 
   return clean;
+}
+
+/**
+ * Calcule de manière synchrone les quotas effectifs strictement issus du jeton signé (`signed_token`).
+ * Si une licence payante (`plan_type !== 'free'`) ne possède pas de `signed_token` signé,
+ * les quotas appliqués retombent immédiatement sur ceux du forfait Gratuit (`plan_limits('free')`).
+ */
+export function enforceSignedLicenseQuotasSync(lic?: LicenseInfo | null): {
+  plan: CanonicalLicensePlan;
+  max_references: number;
+  max_depots: number;
+  modules: LicenseModule[];
+  isSignedValidStructure: boolean;
+} {
+  const freeLimits = plan_limits('free');
+  if (!lic) {
+    return {
+      plan: 'free',
+      max_references: freeLimits.max_references,
+      max_depots: freeLimits.max_depots,
+      modules: freeLimits.default_modules,
+      isSignedValidStructure: true,
+    };
+  }
+
+  const claimedPlan = normalizeToCanonicalPlan(lic.plan || lic.plan_type || 'free', lic.license_key);
+  const isFreeClaim =
+    claimedPlan === 'free' ||
+    !lic.license_key ||
+    String(lic.license_key).trim().toUpperCase().startsWith('TOT-STOCK-FREE');
+
+  let rawTokenObj: any = lic.signed_token;
+  if (typeof rawTokenObj === 'string') {
+    try {
+      rawTokenObj = JSON.parse(rawTokenObj);
+    } catch {
+      rawTokenObj = undefined;
+    }
+  }
+  const normalizedToken =
+    rawTokenObj && typeof rawTokenObj === 'object'
+      ? convertLegacyLicenseToken(rawTokenObj)
+      : undefined;
+
+  if (!normalizedToken || !normalizedToken.signature) {
+    return {
+      plan: 'free',
+      max_references: freeLimits.max_references,
+      max_depots: freeLimits.max_depots,
+      modules: freeLimits.default_modules,
+      isSignedValidStructure: isFreeClaim,
+    };
+  }
+
+  const tokenPlan = normalizeToCanonicalPlan(
+    normalizedToken.plan || normalizedToken.plan_type || 'free',
+    normalizedToken.license_key
+  );
+  const tokenLimits = plan_limits(tokenPlan);
+  const tokenModules = normalizeLicenseModules(normalizedToken.modules, false, tokenPlan);
+  const rawTokenDepots = Number(normalizedToken.max_depots);
+  const tokenMaxDepots =
+    rawTokenDepots > 0 ? Math.min(rawTokenDepots, tokenLimits.max_depots) : tokenLimits.max_depots;
+
+  return {
+    plan: tokenPlan,
+    max_references: tokenLimits.max_references,
+    max_depots: tokenMaxDepots,
+    modules: tokenModules,
+    isSignedValidStructure: true,
+  };
+}
+
+/**
+ * Vérifie cryptographiquement la signature Ed25519 du `signed_token` de la licence
+ * et garantit que tous les quotas appliqués proviennent exclusivement de la licence signée.
+ * En cas d'absence de jeton signé ou de falsification sur une licence non gratuite,
+ * rétrograde automatiquement vers la licence gratuite.
+ */
+export async function verifyAndApplySignedLicenseQuotas(
+  lic?: LicenseInfo | null,
+  expectedSupabaseUrl?: string
+): Promise<{
+  valid: boolean;
+  license: LicenseInfo;
+  quotas: {
+    plan: CanonicalLicensePlan;
+    max_references: number;
+    max_depots: number;
+    modules: LicenseModule[];
+  };
+  downgraded: boolean;
+  reason?: string;
+}> {
+  const freeLimits = plan_limits('free');
+  const freeQuotas = {
+    plan: 'free' as CanonicalLicensePlan,
+    max_references: freeLimits.max_references,
+    max_depots: freeLimits.max_depots,
+    modules: freeLimits.default_modules,
+  };
+
+  if (!lic) {
+    const def = createDefaultFreeLicense();
+    return { valid: true, license: def, quotas: freeQuotas, downgraded: false };
+  }
+
+  const claimedPlan = normalizeToCanonicalPlan(lic.plan || lic.plan_type || 'free', lic.license_key);
+  const isFreeClaim =
+    claimedPlan === 'free' ||
+    !lic.license_key ||
+    String(lic.license_key).trim().toUpperCase().startsWith('TOT-STOCK-FREE');
+
+  if (isFreeClaim && !lic.signed_token) {
+    const def = createDefaultFreeLicense(lic.organization_name || 'Organisation Locale');
+    return { valid: true, license: def, quotas: freeQuotas, downgraded: false };
+  }
+
+  if (!lic.signed_token) {
+    const downgradedLic = createDefaultFreeLicense(lic.organization_name || 'Organisation Locale');
+    return {
+      valid: false,
+      license: downgradedLic,
+      quotas: freeQuotas,
+      downgraded: true,
+      reason: 'Aucun jeton cryptographique signé (signed_token) présent pour cette licence.',
+    };
+  }
+
+  const verification = await verifySignedLicenseToken(lic.signed_token, expectedSupabaseUrl);
+  if (!verification.valid || !verification.token) {
+    const downgradedLic = createDefaultFreeLicense(lic.organization_name || 'Organisation Locale');
+    return {
+      valid: false,
+      license: downgradedLic,
+      quotas: freeQuotas,
+      downgraded: true,
+      reason: verification.reason || 'Signature Ed25519 du jeton de licence invalide.',
+    };
+  }
+
+  const verifiedToken = verification.token;
+  const tokenPlan = normalizeToCanonicalPlan(verifiedToken.plan, verifiedToken.license_key);
+  const tokenLimits = plan_limits(tokenPlan);
+  const tokenModules = normalizeLicenseModules(verifiedToken.modules, false, tokenPlan);
+  const tokenMaxDepots =
+    Number(verifiedToken.max_depots) > 0
+      ? Math.min(Number(verifiedToken.max_depots), tokenLimits.max_depots)
+      : tokenLimits.max_depots;
+
+  const certifiedLicense = withComputedPlanLimits({
+    ...lic,
+    license_key: verifiedToken.license_key || lic.license_key,
+    organization_name: verifiedToken.organization_name || lic.organization_name,
+    plan: tokenPlan,
+    plan_type: tokenPlan,
+    modules: tokenModules,
+    max_depots: tokenMaxDepots,
+    expires_at: verifiedToken.expires_at ?? lic.expires_at ?? null,
+    offline_until: verifiedToken.offline_until || lic.offline_until,
+    signed_token: verifiedToken,
+    status: lic.is_active === false ? 'inactive' : 'valid',
+  });
+
+  return {
+    valid: true,
+    license: certifiedLicense,
+    quotas: {
+      plan: tokenPlan,
+      max_references: tokenLimits.max_references,
+      max_depots: tokenMaxDepots,
+      modules: tokenModules,
+    },
+    downgraded: false,
+  };
 }
 
 /**
@@ -266,18 +472,43 @@ export async function verifyLicenseKey(
 
       if (edgeData.success && edgeData.license) {
         const licRow = edgeData.license;
-        const canonicalPlan = normalizePlanType(licRow.plan || licRow.plan_type, licRow.license_key || cleanKey);
-        const limits = plan_limits(canonicalPlan);
-        const modules = normalizeLicenseModules(licRow.modules, false, canonicalPlan);
-        const maxDepots = Number(licRow.max_depots) || limits.max_depots;
-        const signedToken = edgeData.signed_token
+        let signedToken = edgeData.signed_token
           ? convertLegacyLicenseToken(edgeData.signed_token)
           : undefined;
 
+        if (edgeData.signed_token) {
+          const tokenCheck = await verifySignedLicenseToken(edgeData.signed_token, cleanUrl);
+          if (!tokenCheck.valid || !tokenCheck.token) {
+            return {
+              success: false,
+              message:
+                tokenCheck.reason ||
+                'Jeton de licence signé invalide ou émis pour un autre projet Supabase.',
+            };
+          }
+          signedToken = tokenCheck.token;
+        }
+
+        const canonicalPlan = signedToken
+          ? normalizePlanType(signedToken.plan, signedToken.license_key || cleanKey)
+          : normalizePlanType(licRow.plan || licRow.plan_type, licRow.license_key || cleanKey);
+        const limits = plan_limits(canonicalPlan);
+        const modules = normalizeLicenseModules(
+          signedToken ? signedToken.modules : licRow.modules,
+          false,
+          canonicalPlan
+        );
+        const rawMaxDepots = signedToken
+          ? Number(signedToken.max_depots)
+          : Number(licRow.max_depots);
+        const maxDepots =
+          rawMaxDepots > 0 ? Math.min(rawMaxDepots, limits.max_depots) : limits.max_depots;
+
         const verifiedLicense = withComputedPlanLimits({
           id: licRow.id,
-          license_key: licRow.license_key || cleanKey,
-          organization_name: licRow.organization_name || 'Entreprise Partenaire',
+          license_key: signedToken?.license_key || licRow.license_key || cleanKey,
+          organization_name:
+            signedToken?.organization_name || licRow.organization_name || 'Entreprise Partenaire',
           client_supabase_url: licRow.client_supabase_url || cleanUrl,
           contact_email: licRow.contact_email,
           billing_cycle: licRow.billing_cycle,
@@ -286,7 +517,7 @@ export async function verifyLicenseKey(
           modules,
           max_depots: maxDepots,
           is_active: licRow.is_active !== false,
-          expires_at: licRow.expires_at || null,
+          expires_at: signedToken?.expires_at || licRow.expires_at || null,
           created_at: licRow.created_at,
           last_verified_at: new Date().toISOString(),
           signed_token: signedToken,
@@ -336,7 +567,22 @@ export async function verifyLicenseKey(
       const canonicalPlan = normalizePlanType(rawPlan, rpcRow.license_key || cleanKey);
       const limits = plan_limits(canonicalPlan);
       const modules = normalizeLicenseModules(rpcRow.modules, false, canonicalPlan);
-      const maxDepots = Math.max(Number(rpcRow.max_depots) || 0, limits.max_depots);
+      const maxDepots = Math.min(Math.max(Number(rpcRow.max_depots) || 0, 1), limits.max_depots);
+
+      let preservedSignedToken =
+        current.signed_token &&
+        String(current.license_key || '').trim().toUpperCase() === cleanKey
+          ? convertLegacyLicenseToken(current.signed_token)
+          : undefined;
+
+      if (preservedSignedToken) {
+        const tokenCheck = await verifySignedLicenseToken(preservedSignedToken, cleanUrl);
+        if (!tokenCheck.valid || !tokenCheck.token) {
+          preservedSignedToken = undefined;
+        } else {
+          preservedSignedToken = tokenCheck.token;
+        }
+      }
 
       const verifiedLicense = withComputedPlanLimits({
         id: rpcRow.id,
@@ -354,6 +600,12 @@ export async function verifyLicenseKey(
         created_at: rpcRow.created_at,
         last_verified_at: new Date().toISOString(),
         status: 'valid',
+        ...(preservedSignedToken
+          ? {
+              signed_token: preservedSignedToken,
+              offline_until: preservedSignedToken.offline_until,
+            }
+          : {}),
       });
 
       saveLicenseLocally(verifiedLicense);
@@ -902,7 +1154,28 @@ export async function recoverCompanyLicenseFromServerAndClientDb(
         if (candidateKey && !candidateKey.startsWith('TOT-STOCK-FREE')) {
           const verRes = await verifyLicenseKey(candidateKey, cleanUrl);
           if (verRes.success && verRes.license) {
-            return verRes.license;
+            let finalLic = verRes.license;
+            if (!finalLic.signed_token && parsedInfo?.signed_token) {
+              const tokenCheck = await verifyToken(parsedInfo.signed_token, cleanUrl);
+              if (tokenCheck.valid && tokenCheck.token) {
+                finalLic = withComputedPlanLimits({
+                  ...finalLic,
+                  signed_token: tokenCheck.token,
+                  offline_until: tokenCheck.token.offline_until,
+                });
+              }
+            }
+            if (
+              (!finalLic.organization_name || finalLic.organization_name === 'Entreprise Partenaire') &&
+              (parsedInfo?.organization_name || nameRow?.value)
+            ) {
+              finalLic = withComputedPlanLimits({
+                ...finalLic,
+                organization_name: parsedInfo?.organization_name || nameRow?.value,
+              });
+            }
+            saveLicenseLocally(finalLic);
+            return finalLic;
           }
 
           if (parsedInfo?.signed_token) {
@@ -950,8 +1223,29 @@ export async function recoverCompanyLicenseFromServerAndClientDb(
         if (cfgKey && !cfgKey.startsWith('TOT-STOCK-FREE')) {
           const verRes = await verifyLicenseKey(cfgKey, cleanUrl);
           if (verRes.success && verRes.license) {
-            syncLicenseToClientDatabase(verRes.license, client).catch(() => {});
-            return verRes.license;
+            let finalLic = verRes.license;
+            if (!finalLic.signed_token && cfgRow.signed_token) {
+              const tokenCheck = await verifyToken(cfgRow.signed_token, cleanUrl);
+              if (tokenCheck.valid && tokenCheck.token) {
+                finalLic = withComputedPlanLimits({
+                  ...finalLic,
+                  signed_token: tokenCheck.token,
+                  offline_until: tokenCheck.token.offline_until,
+                });
+              }
+            }
+            if (
+              (!finalLic.organization_name || finalLic.organization_name === 'Entreprise Partenaire') &&
+              cfgRow.organization_name
+            ) {
+              finalLic = withComputedPlanLimits({
+                ...finalLic,
+                organization_name: cfgRow.organization_name,
+              });
+            }
+            saveLicenseLocally(finalLic);
+            syncLicenseToClientDatabase(finalLic, client).catch(() => {});
+            return finalLic;
           }
 
           if (cfgRow.signed_token && !offlineFallbackLicense) {
@@ -1373,47 +1667,6 @@ export async function syncLicenseToClientDatabase(
         }
       } catch {}
     }
-
-    try {
-      const nowIso = new Date().toISOString();
-      const { data: existingLicRows } = await client.from('license_config').select('*').limit(1);
-      const sampleRow = Array.isArray(existingLicRows) && existingLicRows.length > 0 ? existingLicRows[0] : null;
-
-      if (sampleRow && typeof sampleRow.id === 'string') {
-        await client
-          .from('license_config')
-          .upsert(
-            [
-              {
-                id: sampleRow.id,
-                license_key: license.license_key || 'TOT-STOCK-FREE-COMMUNITY',
-                plan_type: canonicalPlan,
-                modules,
-                max_depots: pDepots,
-                organization_name: license.organization_name || 'Entreprise Partenaire',
-                updated_at: nowIso,
-              },
-            ],
-            { onConflict: 'id' }
-          );
-      } else {
-        await client
-          .from('license_config')
-          .upsert(
-            [
-              {
-                id: 1,
-                plan: canonicalPlan,
-                max_depots: pDepots,
-                organization_name: license.organization_name || 'Entreprise Partenaire',
-                is_valid: license.is_active !== false,
-                updated_at: nowIso,
-              },
-            ],
-            { onConflict: 'id' }
-          );
-      }
-    } catch {}
 
     return {
       success: true,

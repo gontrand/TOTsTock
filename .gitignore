@@ -18,6 +18,7 @@ coverage/
 *.dmg
 *.AppImage
 *.deb
+*.zip
 android/keystore/
 
 

@@ -199,11 +199,24 @@ $$;
 REVOKE ALL ON FUNCTION public.is_dept_manager_or_deputy() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.is_dept_manager_or_deputy() TO authenticated;
 
--- RLS sur public.projects
-DO $$ BEGIN
+-- RLS sur public.projects (purge de toute règle existante avant recréation)
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'projects') THEN
     ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Authenticated read projects" ON public.projects;
+    REVOKE ALL ON TABLE public.projects FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.projects TO authenticated;
+
+    FOR r IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'projects'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.projects', r.policyname);
+    END LOOP;
+
     CREATE POLICY "Authenticated read projects" ON public.projects
       FOR SELECT TO authenticated
       USING (
@@ -223,18 +236,30 @@ DO $$ BEGIN
             )
         )
       );
+
+    CREATE POLICY "Admin write projects" ON public.projects
+      FOR ALL TO authenticated
+      USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_proj_edit'))
+      WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_proj_edit'));
   END IF;
 END $$;
 
--- RLS sur public.users (Sécurité V18 : lecture réservée à authenticated, aucune écriture directe client)
-DO $$ BEGIN
+-- RLS sur public.users (Sécurité V18 + v37 : purge totale de toutes les règles existantes quel que soit leur nom,
+-- lecture réservée à authenticated, aucune écriture directe client)
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN
     ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon users" ON public.users;
-    DROP POLICY IF EXISTS "Authenticated read users" ON public.users;
-    DROP POLICY IF EXISTS "Login directory read users" ON public.users;
-    DROP POLICY IF EXISTS "Authenticated update own auth_link" ON public.users;
-    DROP POLICY IF EXISTS "Users insert and update own or admin" ON public.users;
+
+    FOR r IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'users'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.users', r.policyname);
+    END LOOP;
 
     REVOKE ALL ON TABLE public.users FROM anon, authenticated, public;
     GRANT SELECT (

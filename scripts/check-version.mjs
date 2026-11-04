@@ -163,6 +163,17 @@ for (const ext of ['.exe', '.dmg', '.appimage', '.deb']) {
   }
 }
 
+// Contrôle d'absence de fichiers *.zip hors node_modules (interdiction des zips imbriqués dans le projet)
+const zipIgnoredDirs = new Set(['node_modules', '.git', '.gradle']);
+const foundZips = findFilesByExt(rootDir, '.zip', zipIgnoredDirs);
+if (foundZips.length > 0) {
+  const relPaths = foundZips.map((p) => path.relative(rootDir, p)).join(', ');
+  console.error(
+    `[check:version] ERREUR ARCHIVE ZIP IMBRIQUÉE : Fichier(s) *.zip interdit(s) détecté(s) hors node_modules : ${relPaths}`
+  );
+  process.exit(1);
+}
+
 // Contrôle d'absence de clé privée dans tout fichier *.pem du dépôt
 const allPemFiles = findFilesByExt(
   rootDir,
@@ -181,7 +192,7 @@ for (const pemFile of allPemFiles) {
 }
 
 console.log(
-  `[check:version] OK : package.json, desktop/package.json, APP_VERSION et android/app/build.gradle sont alignés sur v${appVersion} (versionCode=${gradleVersionCode} >= ${expectedMinVersionCode}, schema=${expectedSchemaVersion}, minSchema=${minSchemaVersion}, 0 APK embarqué, 0 clé privée .pem).`
+  `[check:version] OK : package.json, desktop/package.json, APP_VERSION et android/app/build.gradle sont alignés sur v${appVersion} (versionCode=${gradleVersionCode} >= ${expectedMinVersionCode}, schema=${expectedSchemaVersion}, minSchema=${minSchemaVersion}, 0 APK embarqué, 0 zip imbriqué, 0 clé privée .pem).`
 );
 
 

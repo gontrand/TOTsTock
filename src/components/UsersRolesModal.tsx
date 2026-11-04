@@ -68,14 +68,24 @@ export const UsersRolesModal: React.FC = () => {
     usersRolesModal.tab || 'users'
   );
 
+  const wasModalOpenRef = React.useRef(false);
+
   useEffect(() => {
     if (usersRolesModal.open && usersRolesModal.tab) {
       setActiveTab(usersRolesModal.tab);
     }
-    if (usersRolesModal.open && isSupabaseConnected) {
-      syncFromSupabase().catch(() => {});
+  }, [usersRolesModal.open, usersRolesModal.tab]);
+
+  useEffect(() => {
+    if (usersRolesModal.open && !wasModalOpenRef.current) {
+      wasModalOpenRef.current = true;
+      if (isSupabaseConnected) {
+        syncFromSupabase().catch(() => {});
+      }
+    } else if (!usersRolesModal.open) {
+      wasModalOpenRef.current = false;
     }
-  }, [usersRolesModal.open, usersRolesModal.tab, isSupabaseConnected, syncFromSupabase]);
+  }, [usersRolesModal.open, isSupabaseConnected, syncFromSupabase]);
 
   // Keyboard shortcut: close on Escape
   useEffect(() => {

@@ -62,7 +62,8 @@ bash scripts/build-apk.sh
 Consultez [`supabase-client/INSTALL.md`](./supabase-client/INSTALL.md) pour les 3 méthodes d'installation :
 1. **Méthode A (recommandée)** : `npm run install:tot` (ou `npm run install:tot -- --update` pour une mise à jour).
 2. **Méthode B** : CLI Supabase (`npx supabase db push` et `npx supabase functions deploy`).
-3. **Méthode C** : Interface web Supabase avec `dist/install.sql` et `dist/functions/*.single.ts`.
+3. **Méthode C** : Interface web Supabase avec `dist/install.sql` et `dist/functions/*.single.ts` (ou copie individuelle des scripts `01_auth_link.sql` à `08_print_jobs.sql` depuis l'assistant d'installation intégré : `01` → `08` puis `07` pour tout rejouer, ou seulement `08_print_jobs.sql` sur une base déjà en `1.0.0` pour passer le schéma à `1.1.0` et activer le Poste d'impression).
+
 
 ## Formules de licence (`plan_limits`)
 

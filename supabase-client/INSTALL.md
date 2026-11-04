@@ -137,7 +137,7 @@ Exécutez dans le **SQL Editor** (ou depuis l'écran *Plus > Diagnostic d'instal
 SELECT * FROM public.diagnostic_installation();
 ```
 
-Les 9 contrôles retournés doivent être à **`OK`** (ou `ATTENTION` uniquement si vous n'avez pas encore lié de licence commerciale) :
+Les 10 contrôles retournés doivent être à **`OK`** (ou `ATTENTION` uniquement si vous n'avez pas encore lié de licence commerciale) :
 1. `tables_rls` : 16/16 tables attendues présentes avec RLS activé (dont `print_stations` et `print_jobs`).
 2. `anon_privileges` : aucun privilège accordé à `anon` sur `users`, `license_config`, `movements`, `products`, `print_stations`, `print_jobs`.
 3. `super_admin_linked` : au moins un Super Administrateur (`role_id = 0`) lié à `auth.users`.
@@ -147,6 +147,7 @@ Les 9 contrôles retournés doivent être à **`OK`** (ou `ATTENTION` uniquement
 7. `sensitive_functions` : toutes les fonctions sensibles (dont les RPC d'impression à distance) sont interdites à `anon`.
 8. `edge_functions_deployed` : les 3 fonctions (`admin-users`, `sync-license`, `send-report-email`) sont déployées.
 9. `print_jobs_module` : tables `print_stations` & `print_jobs` et les 7 fonctions RPC d'impression à distance présentes.
+10. `permissive_rls_policies` : aucune règle RLS permissive (`public` / `anon` avec `USING (true)` ou `WITH CHECK (true)`) ne subsiste sur les tables du schéma `public` (hors lecture seule `SELECT` explicitement publique sur `app_compat`).
 
 ---
 
@@ -182,6 +183,8 @@ Lors d'une ré-exécution manuelle ou corrective des scripts SQL, **il faut touj
 7. `08_print_jobs.sql` (postes et file d'impression d'étiquettes à distance)
 8. `07_app_compat.sql` (table `app_compat`, `diagnostic_installation()` et durcissement final des fonctions `SECURITY DEFINER`)
 
+> **Purge intégrale des règles RLS anciennes** : Les scripts `02_rls_hardening.sql`, `03_rpc_stock_and_orders.sql`, `04_mouvements_et_depots_vehicules.sql`, `05_rpc_admin_users.sql`, `07_app_compat.sql` et `08_print_jobs.sql` interrogent `pg_policies` et suppriment **toutes** les règles RLS existantes sur chaque table protégée (quel que soit leur nom historique ou personnalisé) avant de recréer immédiatement les règles attendues dans le même script. **Après rejeu, aucune règle ancienne ne subsiste** (ni règle ouverte `USING (true)` héritée d'une installation initiale, ni règle récursive sur `public.users`).
+>
 > **Attention** : Ne rejouez **jamais** `02_rls_hardening.sql` seul sur une base en exploitation sans rejouer immédiatement la suite derrière. Tant `07_app_compat.sql` que `08_print_jobs.sql` exécutent en fin de script le bloc de révocation automatique `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC, anon` sur toutes les fonctions `SECURITY DEFINER`, ce qui garantit que `anon` n'a aucun droit qu'il s'agisse d'une installation complète (`08` puis `07`) ou d'une mise à niveau incrémentale (`07` puis `08`).
 
 ---

@@ -85,11 +85,23 @@ ALTER TABLE public.app_compat
   ADD COLUMN IF NOT EXISTS message TEXT,
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
--- Activation du RLS
+-- -- Activation du RLS et purge de toute règle existante sur public.app_compat
 ALTER TABLE public.app_compat ENABLE ROW LEVEL SECURITY;
 
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'app_compat'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.app_compat', r.policyname);
+  END LOOP;
+END $$;
+
 -- Lecture publique (permet le check avant le login)
-DROP POLICY IF EXISTS "Lecture de la compatibilité" ON public.app_compat;
 CREATE POLICY "Lecture de la compatibilité" ON public.app_compat
   FOR SELECT TO anon, authenticated
   USING (true);
@@ -98,7 +110,6 @@ GRANT SELECT ON TABLE public.app_compat TO anon, authenticated;
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.app_compat FROM anon, PUBLIC;
 
 -- Modification réservée aux administrateurs actifs (via is_active_admin())
-DROP POLICY IF EXISTS "Modification compatibilité admin" ON public.app_compat;
 CREATE POLICY "Modification compatibilité admin" ON public.app_compat
   FOR ALL TO authenticated
   USING (public.is_active_admin())
@@ -132,7 +143,7 @@ SET schema_version = '1.1.0',
     latest_version = COALESCE(public.app_compat.latest_version, '5.5.0');
 
 -- =========================================================================
--- 3. DIAGNOSTIC D'INSTALLATION (Point 7)
+-- 3. DIAGNOSTIC D'INSTALLATION (Point 7 & v37)
 -- Fonction SQL public.diagnostic_installation() (SECURITY DEFINER, SET search_path = public)
 -- Réservée aux rôles 0 (Super Admin), 1 (Administrateur) et 5 (Admin IT).
 -- Retourne une ligne par contrôle avec statut OK / ATTENTION / ERREUR, sans données personnelles.
@@ -157,11 +168,15 @@ DECLARE
     'app_settings', 'audit_logs', 'license_config', 'app_compat',
     'print_stations', 'print_jobs'
   ];
+  v_explicit_public_select_tables TEXT[] := ARRAY['app_compat'];
   v_tbl TEXT;
   v_missing_tables TEXT[] := ARRAY[]::TEXT[];
   v_no_rls_tables TEXT[] := ARRAY[]::TEXT[];
   v_rls_enabled BOOLEAN;
   v_anon_leaks TEXT[] := ARRAY[]::TEXT[];
+  v_pol RECORD;
+  v_permissive_policies TEXT[] := ARRAY[]::TEXT[];
+  v_permissive_tables TEXT[] := ARRAY[]::TEXT[];
   v_super_admin_count INT := 0;
   v_plain_pin_count INT := 0;
   v_has_pin_col BOOLEAN := false;
@@ -285,6 +300,60 @@ BEGIN
       'Révocation des droits anon (users, license_config, movements, products, print_stations, print_jobs)'::TEXT,
       'OK'::TEXT,
       'Aucun privilège accordé à anon sur les tables sensibles'::TEXT;
+  END IF;
+
+  -- -----------------------------------------------------------------------
+  -- Contrôle 2b (v37) : Règles RLS permissives (public / anon USING (true) ou WITH CHECK (true))
+  -- Hors tables explicitement publiques en lecture listées en clair : v_explicit_public_select_tables = ARRAY['app_compat']
+  -- -----------------------------------------------------------------------
+  FOR v_pol IN
+    SELECT
+      p.tablename,
+      p.policyname,
+      p.cmd,
+      p.roles::text[] AS role_names
+    FROM pg_policies p
+    WHERE p.schemaname = 'public'
+      AND ('public' = ANY(p.roles::text[]) OR 'anon' = ANY(p.roles::text[]))
+      AND (
+        regexp_replace(LOWER(COALESCE(p.qual, '')), '[\s()]', '', 'g') = 'true'
+        OR regexp_replace(LOWER(COALESCE(p.with_check, '')), '[\s()]', '', 'g') = 'true'
+      )
+      AND NOT (
+        p.tablename = ANY(v_explicit_public_select_tables)
+        AND p.cmd = 'SELECT'
+        AND COALESCE(p.with_check, '') = ''
+      )
+    ORDER BY p.tablename ASC, p.policyname ASC
+  LOOP
+    v_permissive_policies := array_append(
+      v_permissive_policies,
+      format('%s."%s" (%s)', v_pol.tablename, v_pol.policyname, v_pol.cmd)
+    );
+    IF NOT (v_pol.tablename = ANY(v_permissive_tables)) THEN
+      v_permissive_tables := array_append(v_permissive_tables, v_pol.tablename);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_permissive_policies, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'permissive_rls_policies'::TEXT,
+      'Règles RLS permissives (public / anon USING true)'::TEXT,
+      'ERREUR'::TEXT,
+      format(
+        'Table(s) exposée(s) [%s] via : %s — ré-exécutez 02_rls_hardening.sql et 05_rpc_admin_users.sql',
+        array_to_string(v_permissive_tables, ', '),
+        array_to_string(v_permissive_policies, ', ')
+      )::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'permissive_rls_policies'::TEXT,
+      'Règles RLS permissives (public / anon USING true)'::TEXT,
+      'OK'::TEXT,
+      format(
+        'Aucune règle RLS permissive (public/anon USING true) hors lecture publique explicite (%s)',
+        array_to_string(v_explicit_public_select_tables, ', ')
+      )::TEXT;
   END IF;
 
   -- -----------------------------------------------------------------------
@@ -533,12 +602,15 @@ DECLARE
   r RECORD;
 BEGIN
   FOR r IN
-    SELECT p.oid::regprocedure AS sig
+    SELECT p.oid::regprocedure AS sig, p.proname
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public' AND p.prosecdef
   LOOP
     EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon', r.sig);
+    IF r.proname NOT IN ('get_email_secret', 'sync_verified_license_token') THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role', r.sig);
+    END IF;
   END LOOP;
 END $$;
 

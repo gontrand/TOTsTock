@@ -7,9 +7,10 @@ import { buildApkDownloadUrl, fetchApkSha256 } from '../utils/apkDownload';
 import {
   DesktopTargetOs,
   detectClientDesktopOs,
-  buildDesktopInstallerPackage,
+  getConfiguredBinaryInstallerUrl,
 } from '../utils/desktopInstallerDownload';
-import { X, Zap, Smartphone, Monitor, ShieldCheck, Mail, Download, Share, Database, RefreshCw, CheckCircle2, AlertTriangle, Copy, Check } from 'lucide-react';
+import { openExternalUrl } from '../services/desktopBridge';
+import { X, Zap, Smartphone, Monitor, ShieldCheck, Mail, Download, Share, Database, RefreshCw, CheckCircle2, AlertTriangle, Copy, Check, BookOpen } from 'lucide-react';
 
 export const AppInfoModal: React.FC = () => {
   const {
@@ -30,49 +31,9 @@ export const AppInfoModal: React.FC = () => {
   const [apkSha256, setApkSha256] = useState<string | null>(null);
   const [copiedSha, setCopiedSha] = useState(false);
   const [detectedOs] = useState<DesktopTargetOs>(() => detectClientDesktopOs());
-  const [downloadedDesktopOs, setDownloadedDesktopOs] = useState<{
-    os: DesktopTargetOs;
-    fileName: string;
-  } | null>(null);
-  const [copiedLinuxCmd, setCopiedLinuxCmd] = useState(false);
-  const [desktopDownloadLinks, setDesktopDownloadLinks] = useState<
-    Record<DesktopTargetOs, { href: string; fileName: string }> | null
-  >(null);
 
   const apkDownloadUrl = buildApkDownloadUrl(appCompat.updateUrl, APP_VERSION);
-
-  React.useEffect(() => {
-    if (!appInfoModalOpen) {
-      setDesktopDownloadLinks(null);
-      return;
-    }
-    const createdBlobUrls: string[] = [];
-    const buildEntry = (os: DesktopTargetOs) => {
-      const pkg = buildDesktopInstallerPackage(os, {
-        updateUrl: appCompat.updateUrl,
-        version: APP_VERSION,
-      });
-      if (pkg.directUrl) {
-        return { href: pkg.directUrl, fileName: pkg.fileName };
-      }
-      const blob = new Blob([new Uint8Array(pkg.bytes)], {
-        type: 'application/octet-stream',
-      });
-      const url = URL.createObjectURL(blob);
-      createdBlobUrls.push(url);
-      return { href: url, fileName: pkg.fileName };
-    };
-
-    setDesktopDownloadLinks({
-      linux: buildEntry('linux'),
-      windows: buildEntry('windows'),
-      mac: buildEntry('mac'),
-    });
-
-    return () => {
-      createdBlobUrls.forEach((u) => URL.revokeObjectURL(u));
-    };
-  }, [appInfoModalOpen, appCompat.updateUrl]);
+  const desktopInstallerUrl = getConfiguredBinaryInstallerUrl(detectedOs, appCompat.updateUrl);
 
   React.useEffect(() => {
     if (appInfoModalOpen) {
@@ -293,7 +254,7 @@ export const AppInfoModal: React.FC = () => {
               )}
             </div>
           )}
-          {/* Téléchargement direct Version Bureau (Windows / Linux / macOS) */}
+          {/* Version Bureau (Windows / Linux / macOS) */}
           <div className="p-3 rounded-2xl bg-orange-50/80 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800/70 text-[11px] space-y-2">
             <div className="flex items-center justify-between gap-2">
               <div className="font-extrabold text-orange-800 dark:text-orange-300 flex items-center gap-1.5">
@@ -301,128 +262,86 @@ export const AppInfoModal: React.FC = () => {
                 <span>
                   {tr(
                     language,
-                    `Installer la Version Bureau (v${APP_VERSION})`,
-                    `Install Desktop Version (v${APP_VERSION})`,
-                    `Desktopversie installeren (v${APP_VERSION})`
+                    `Version Bureau (v${APP_VERSION})`,
+                    `Desktop Version (v${APP_VERSION})`,
+                    `Desktopversie (v${APP_VERSION})`
                   )}
                 </span>
               </div>
             </div>
-            <p className="text-[10.5px] text-slate-600 dark:text-slate-300 leading-snug">
-              {tr(
-                language,
-                "Téléchargez l'installateur correspondant à votre ordinateur (active la fenêtre dédiée et l'impression silencieuse d'étiquettes) :",
-                'Download the installer for your computer (enables dedicated window & silent label printing):',
-                'Download het installatiebestand voor uw computer (activeert venster en stil afdrukken):'
-              )}
-            </p>
 
             <div className="grid grid-cols-3 gap-1.5 pt-0.5">
               {(
                 [
                   { os: 'linux' as DesktopTargetOs, label: 'Linux (.deb)', icon: '🐧' },
                   { os: 'windows' as DesktopTargetOs, label: 'Windows (.exe)', icon: '🪟' },
-                  { os: 'mac' as DesktopTargetOs, label: 'macOS (.app)', icon: '🍎' },
+                  { os: 'mac' as DesktopTargetOs, label: 'macOS (.dmg)', icon: '🍎' },
                 ] as const
               ).map((item) => {
                 const isCurrentOs = detectedOs === item.os;
-                const entry = desktopDownloadLinks?.[item.os];
                 return (
-                  <a
+                  <div
                     key={item.os}
-                    href={entry?.href || '#'}
-                    download={entry?.fileName || `TOT-Stock-${APP_VERSION}`}
-                    onClick={(e) => {
-                      if (!entry?.href) {
-                        e.preventDefault();
-                        return;
-                      }
-                      setDownloadedDesktopOs({ os: item.os, fileName: entry.fileName });
-                    }}
-                    className={`py-2 px-1.5 rounded-xl font-extrabold text-[10.5px] flex flex-col items-center justify-center gap-0.5 transition cursor-pointer active:scale-95 border no-underline ${
+                    className={`py-1.5 px-1.5 rounded-xl font-bold text-[10px] flex flex-col items-center justify-center gap-0.5 border ${
                       isCurrentOs
-                        ? 'bg-orange-600 hover:bg-orange-700 text-white border-orange-600 shadow-sm'
-                        : 'bg-white dark:bg-slate-900 hover:bg-orange-100/60 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 border-orange-200 dark:border-slate-700'
+                        ? 'bg-orange-600 text-white border-orange-600 shadow-2xs'
+                        : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-orange-200 dark:border-slate-700'
                     }`}
                   >
                     <span className="text-sm leading-none">{item.icon}</span>
-                    <span className="flex items-center gap-1">
-                      <Download className="w-3 h-3 shrink-0" />
-                      <span>{item.label}</span>
-                    </span>
+                    <span>{item.label}</span>
                     {isCurrentOs && (
                       <span className="text-[9px] font-bold opacity-90">
-                        {tr(language, 'Recommandé', 'Recommended', 'Aanbevolen')}
+                        {tr(language, 'Détecté', 'Detected', 'Gedetecteerd')}
                       </span>
                     )}
-                  </a>
+                  </div>
                 );
               })}
             </div>
 
-            {downloadedDesktopOs && (
-              <div className="mt-1.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-orange-200 dark:border-slate-700 text-[10px] space-y-1.5">
-                <div className="font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">
+            {desktopInstallerUrl ? (
+              <button
+                type="button"
+                onClick={() => {
+                  openExternalUrl(desktopInstallerUrl);
+                }}
+                className="w-full py-2 px-3 rounded-xl bg-orange-600 hover:bg-orange-700 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+              >
+                <Download className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {tr(
+                    language,
+                    "Télécharger l'installateur",
+                    'Download installer',
+                    'Installatieprogramma downloaden'
+                  )}
+                </span>
+              </button>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-orange-200 dark:border-slate-700 text-[10.5px] text-slate-600 dark:text-slate-300 space-y-1">
+                <p className="font-semibold text-slate-800 dark:text-slate-100">
+                  {tr(
+                    language,
+                    "Les installateurs sont publiés par l'administrateur sur la page des versions du projet.",
+                    'Installers are published by the administrator on the project releases page.',
+                    'Installatiebestanden worden door de beheerder gepubliceerd op de releasepagina van het project.'
+                  )}
+                </p>
+                <p className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
+                  <BookOpen className="w-3 h-3 text-orange-600 shrink-0" />
+                  <span>
                     {tr(
                       language,
-                      `Téléchargé : ${downloadedDesktopOs.fileName}`,
-                      `Downloaded: ${downloadedDesktopOs.fileName}`,
-                      `Gedownload: ${downloadedDesktopOs.fileName}`
-                    )}
+                      'Guide d’installation et de publication :',
+                      'Installation and release guide:',
+                      'Installatie- en publicatiehandleiding:'
+                    )}{' '}
+                    <code className="font-mono font-bold text-orange-700 dark:text-orange-400">
+                      docs/VERSION_BUREAU.md
+                    </code>
                   </span>
-                </div>
-                {downloadedDesktopOs.os === 'linux' && (
-                  <div className="space-y-1">
-                    <span className="text-slate-600 dark:text-slate-300 block">
-                      {tr(
-                        language,
-                        'Double-cliquez sur le paquet .deb ou installez-le dans votre terminal :',
-                        'Double-click the .deb package or install it in your terminal:',
-                        'Dubbelklik op het .deb-pakket of installeer het in uw terminal:'
-                      )}
-                    </span>
-                    <div className="flex items-center justify-between gap-1.5 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-lg">
-                      <code className="font-mono text-[9.5px] text-slate-800 dark:text-slate-200 break-all">
-                        {`sudo apt install ~/Téléchargements/${downloadedDesktopOs.fileName}`}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const cmd = `sudo apt install ~/Téléchargements/${downloadedDesktopOs.fileName} 2>/dev/null || sudo apt install ~/Downloads/${downloadedDesktopOs.fileName}`;
-                          navigator.clipboard?.writeText(cmd);
-                          setCopiedLinuxCmd(true);
-                          setTimeout(() => setCopiedLinuxCmd(false), 2000);
-                        }}
-                        className="px-2 py-1 rounded bg-orange-600 hover:bg-orange-700 text-white font-bold text-[9.5px] flex items-center gap-1 shrink-0 cursor-pointer"
-                      >
-                        {copiedLinuxCmd ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedLinuxCmd ? 'OK' : tr(language, 'Copier', 'Copy', 'Kopiëren')}</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {downloadedDesktopOs.os === 'windows' && (
-                  <span className="text-slate-600 dark:text-slate-300 block">
-                    {tr(
-                      language,
-                      'Double-cliquez sur le fichier .exe téléchargé (si SmartScreen apparaît : « Informations complémentaires → Exécuter quand même ») pour créer le raccourci TOT Stock et lancer l’application.',
-                      'Double-click the downloaded .exe file (if SmartScreen appears: "More info → Run anyway") to create the TOT Stock shortcut and launch the app.',
-                      'Dubbelklik op het gedownloade .exe-bestand om de snelkoppeling op uw bureaublad te maken en de app te starten.'
-                    )}
-                  </span>
-                )}
-                {downloadedDesktopOs.os === 'mac' && (
-                  <span className="text-slate-600 dark:text-slate-300 block">
-                    {tr(
-                      language,
-                      'Décompressez le fichier téléchargé et glissez « TOT Stock.app » dans vos Applications (puis clic droit → Ouvrir au premier lancement).',
-                      'Unzip the downloaded file and drag "TOT Stock.app" to Applications (then right-click → Open on first launch).',
-                      'Pak het gedownloade bestand uit en sleep "TOT Stock.app" naar Programma’s.'
-                    )}
-                  </span>
-                )}
+                </p>
               </div>
             )}
           </div>

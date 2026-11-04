@@ -40,12 +40,22 @@ import {
   validateCsvProductImport,
 } from '../services/csvProductImport';
 import {
+  ALLOWED_DESKTOP_COMMANDS,
+  ALLOWED_INTERNAL_ROUTES,
   createNotificationRateLimiter,
+  DESKTOP_IPC_MENU_COMMAND_CHANNEL,
+  isAllowedDesktopCommand,
+  isAllowedInternalRoute,
   isAllowedIpcSender,
   isValidZplPrinterTarget,
+  ROUTE_TO_DESKTOP_COMMAND,
+  routeToDesktopCommand,
+  sanitizeInternalRoute,
   sanitizeNotificationPayload,
   validateZplPrintPayload,
 } from '../../desktop/security.mjs';
+import { DESKTOP_SHELL_RECOGNIZED_COMMANDS } from '../desktop/DesktopShell';
+import { DESKTOP_INTERNAL_ROUTES, DESKTOP_MENU_COMMANDS } from '../services/desktopBridge';
 import type {
   Department,
   MaterialOrder,
@@ -391,19 +401,28 @@ describe('Prompt v33 — Lot 4 : Génération ZPL II, Import CSV et Sécurité I
     expect(binZpl).toContain('RACK-A01');
   });
 
-  it('bloque toute adresse IP publique ou localhost (anti-SSRF) pour l’impression TCP ZPL', () => {
+  it('bloque toute adresse IP publique, link-local (169.254.x.x), localhost ou nom d’hôte (anti-SSRF strict RFC 1918) pour l’impression TCP ZPL', () => {
     expect(validateZplPrinterAddress('192.168.1.50', 9100).valid).toBe(true);
     expect(validateZplPrinterAddress('10.0.4.12', 9101).valid).toBe(true);
     expect(validateZplPrinterAddress('172.20.0.10', 9102).valid).toBe(true);
 
-    // Interdits : localhost, boucle locale, IP publiques, ports hors 9100..9102
+    // Interdits : localhost, boucle locale, link-local 169.254.x.x, noms d'hôtes, IP publiques, ports hors 9100..9102
     expect(validateZplPrinterAddress('127.0.0.1', 9100).valid).toBe(false);
     expect(validateZplPrinterAddress('localhost', 9100).valid).toBe(false);
+    expect(validateZplPrinterAddress('169.254.10.20', 9100).valid).toBe(false);
+    expect(validateZplPrinterAddress('monserveur', 9100).valid).toBe(false);
+    expect(validateZplPrinterAddress('zebra-atelier.local', 9100).valid).toBe(false);
     expect(validateZplPrinterAddress('8.8.8.8', 9100).valid).toBe(false);
     expect(validateZplPrinterAddress('172.32.0.1', 9100).valid).toBe(false);
     expect(validateZplPrinterAddress('192.168.1.50', 80).valid).toBe(false);
 
     expect(isValidZplPrinterTarget('192.168.1.200', 9100).ok).toBe(true);
+    expect(isValidZplPrinterTarget('10.12.0.5', 9101).ok).toBe(true);
+    expect(isValidZplPrinterTarget('172.16.0.10', 9102).ok).toBe(true);
+    expect(isValidZplPrinterTarget('169.254.1.1', 9100).ok).toBe(false);
+    expect(isValidZplPrinterTarget('monserveur', 9100).ok).toBe(false);
+    expect(isValidZplPrinterTarget('imprimante.local', 9100).ok).toBe(false);
+    expect(isValidZplPrinterTarget('localhost', 9100).ok).toBe(false);
     expect(isValidZplPrinterTarget('1.1.1.1', 9100).ok).toBe(false);
 
     const validPayload = validateZplPrintPayload(
@@ -411,6 +430,12 @@ describe('Prompt v33 — Lot 4 : Génération ZPL II, Import CSV et Sécurité I
       []
     );
     expect(validPayload.ok).toBe(true);
+
+    const invalidHostnamePayload = validateZplPrintPayload(
+      { transport: 'tcp', host: 'monserveur', port: 9100, zpl: '^XA^FDTest^FS^XZ' },
+      []
+    );
+    expect(invalidHostnamePayload.ok).toBe(false);
 
     const invalidPayload = validateZplPrintPayload(
       { transport: 'tcp', host: '192.168.1.200', port: 9100, zpl: 'NOT_ZPL' },
@@ -510,6 +535,89 @@ describe('Prompt v33 — Lot 4 : Génération ZPL II, Import CSV et Sécurité I
     expect(isAllowedIpcSender('https://evil.example.com')).toBe(false);
   });
 
+  it('vérifie la cohérence des canaux IPC, routes et commandes entre main.mjs, preload.cjs, security.mjs et DesktopShell.tsx (v34)', () => {
+    expect(DESKTOP_IPC_MENU_COMMAND_CHANNEL).toBe('tot:menu-command');
+    expect(Array.from(ALLOWED_INTERNAL_ROUTES)).toEqual(Array.from(DESKTOP_INTERNAL_ROUTES));
+    expect(Array.from(ALLOWED_DESKTOP_COMMANDS)).toEqual(Array.from(DESKTOP_MENU_COMMANDS));
+    expect(Array.from(ALLOWED_DESKTOP_COMMANDS)).toEqual(
+      Array.from(DESKTOP_SHELL_RECOGNIZED_COMMANDS)
+    );
+
+    // Validation des routes internes (print_station avec tiret bas uniquement)
+    expect(isAllowedInternalRoute('print_station')).toBe(true);
+    expect(isAllowedInternalRoute('print-station')).toBe(false);
+    expect(sanitizeInternalRoute('print_station', 'inventory')).toBe('print_station');
+    expect(sanitizeInternalRoute('print-station', 'inventory')).toBe('inventory');
+
+    // Validation des commandes
+    for (const cmd of ALLOWED_DESKTOP_COMMANDS) {
+      expect(isAllowedDesktopCommand(cmd)).toBe(true);
+    }
+    expect(isAllowedDesktopCommand('navigate:print-station')).toBe(false);
+    expect(isAllowedDesktopCommand('export-inventory-csv')).toBe(false);
+    expect(isAllowedDesktopCommand('toggle-print-station-pause')).toBe(false);
+
+    // Chaque route interne correspond à une commande nav-* valide
+    for (const route of ALLOWED_INTERNAL_ROUTES) {
+      const navCmd = routeToDesktopCommand(route);
+      expect(navCmd).toBe((ROUTE_TO_DESKTOP_COMMAND as Record<string, string>)[route]);
+      expect(isAllowedDesktopCommand(navCmd)).toBe(true);
+    }
+
+    // Lecture statique de desktop/main.mjs, desktop/preload.cjs et src/desktop/DesktopShell.tsx
+    const mainMjsPath = path.resolve(__dirname, '..', '..', 'desktop', 'main.mjs');
+    const preloadCjsPath = path.resolve(__dirname, '..', '..', 'desktop', 'preload.cjs');
+    const desktopShellPath = path.resolve(__dirname, '..', 'desktop', 'DesktopShell.tsx');
+
+    const mainSource = fs.readFileSync(mainMjsPath, 'utf8');
+    const preloadSource = fs.readFileSync(preloadCjsPath, 'utf8');
+    const shellSource = fs.readFileSync(desktopShellPath, 'utf8');
+
+    // Aucun canal orphelin tot:app-command ou tot:navigate-route
+    expect(mainSource).not.toContain('tot:app-command');
+    expect(mainSource).not.toContain('tot:navigate-route');
+    expect(preloadSource).not.toContain('tot:app-command');
+    expect(preloadSource).not.toContain('tot:navigate-route');
+    expect(preloadSource).toContain("ipcRenderer.on('tot:menu-command'");
+
+    // Extraction des commandes émises par main.mjs (menu + tray via sendAppCommandToMain('...') + notifications via routeToDesktopCommand)
+    const directSendMatches = Array.from(
+      mainSource.matchAll(/sendAppCommandToMain\(\s*['"]([^'"]+)['"]\s*\)/g),
+      (m) => m[1]
+    );
+    expect(directSendMatches.length).toBeGreaterThan(0);
+
+    const emittedByMainSet = new Set<string>(directSendMatches);
+    if (mainSource.includes('sendAppCommandToMain(routeToDesktopCommand(')) {
+      for (const route of ALLOWED_INTERNAL_ROUTES) {
+        emittedByMainSet.add(routeToDesktopCommand(route));
+      }
+    }
+
+    // Extraction des commandes traitées dans DesktopShell.tsx (branches cmd === '...')
+    const handledInShellMatches = Array.from(
+      shellSource.matchAll(/cmd\s*===\s*['"]([^'"]+)['"]/g),
+      (m) => m[1]
+    );
+    const handledByShellSet = new Set<string>(handledInShellMatches);
+
+    // 1. Chaque commande émise par main.mjs (menu, tray, notification) existe dans la liste reconnue par DesktopShell
+    for (const cmd of emittedByMainSet) {
+      expect(DESKTOP_SHELL_RECOGNIZED_COMMANDS).toContain(cmd);
+      expect(handledByShellSet.has(cmd)).toBe(true);
+    }
+
+    // 2. Inversement, chaque commande reconnue par DesktopShell existe dans les commandes émises par main.mjs
+    for (const cmd of DESKTOP_SHELL_RECOGNIZED_COMMANDS) {
+      expect(emittedByMainSet.has(cmd)).toBe(true);
+      expect(handledByShellSet.has(cmd)).toBe(true);
+    }
+    for (const cmd of handledByShellSet) {
+      expect(emittedByMainSet.has(cmd)).toBe(true);
+      expect(ALLOWED_DESKTOP_COMMANDS).toContain(cmd);
+    }
+  });
+
   it('garantit qu’aucun fichier de src/desktop/ n’importe une modale mobile (*Modal.tsx) de src/components/', () => {
     const desktopDir = path.resolve(__dirname, '..', 'desktop');
     const collectTsFiles = (dir: string): string[] => {
@@ -542,4 +650,117 @@ describe('Prompt v33 — Lot 4 : Génération ZPL II, Import CSV et Sécurité I
 
     expect(forbiddenImports).toEqual([]);
   });
+
+  it('autorise un Responsable de département (BIM, role_id = 8, perm_order_approve ou departments.manager_id) à voir et valider les commandes WAITING_APPROVAL de son département, de ses chantiers et ses propres commandes', () => {
+    const bimManager: User = {
+      id: 'usr-bim',
+      name: 'BIM Manager',
+      trigram: 'BIM',
+      role_id: 8,
+      department: 'BIM',
+      is_blocked: false,
+      allowed_depots: ['Dépôt Secondaire'],
+    };
+    const workerBim: User = {
+      id: 'usr-tech',
+      name: 'Technicien BIM',
+      trigram: 'TBM',
+      role_id: 3,
+      department: 'BIM',
+      is_blocked: false,
+    };
+    const departments: Department[] = [
+      {
+        id: 10,
+        name: 'BIM',
+        manager_id: 'usr-bim',
+        require_order_approval: true,
+        order_approval_threshold: 300,
+      },
+    ];
+    const projects = [
+      {
+        id: 100,
+        department_id: 10,
+        project_number: 'CH-BIM-01',
+        project_name: 'Maquette Numérique Tour A',
+      },
+    ];
+
+    const teamOrder: MaterialOrder = {
+      id: 'ord-team',
+      order_number: 'CH-BIM-01-CMD-001',
+      site_number: 'CH-BIM-01',
+      requester_id: 'usr-tech',
+      requester_name: 'Technicien BIM',
+      requester_department: 'BIM',
+      depot_name: 'Dépôt Central',
+      status: 'WAITING_APPROVAL',
+      total_cost: 650,
+      created_at: new Date().toISOString(),
+      items: [],
+    };
+
+    const projectOnlyOrder: MaterialOrder = {
+      id: 'ord-proj',
+      order_number: 'CH-BIM-01-CMD-002',
+      site_number: 'CH-BIM-01',
+      requester_id: 'usr-other',
+      requester_name: 'Opérateur Externe',
+      requester_department: '',
+      depot_name: 'Dépôt Central',
+      status: 'WAITING_APPROVAL',
+      total_cost: 800,
+      created_at: new Date().toISOString(),
+      items: [],
+    };
+
+    const bimOwnOrder: MaterialOrder = {
+      id: 'ord-self',
+      order_number: 'CH-BIM-01-CMD-003',
+      site_number: 'CH-BIM-01',
+      requester_id: 'usr-bim',
+      requester_name: 'BIM Manager',
+      requester_department: 'BIM',
+      depot_name: 'Dépôt Central',
+      status: 'WAITING_APPROVAL',
+      total_cost: 1200,
+      created_at: new Date().toISOString(),
+      items: [],
+    };
+
+    // BIM peut valider la commande de son équipe, la commande rattachée à son chantier, et sa propre commande
+    expect(
+      canUserApproveOrRejectOrder(teamOrder, bimManager, departments, false, projects)
+    ).toBe(true);
+    expect(
+      canUserApproveOrRejectOrder(projectOnlyOrder, bimManager, departments, false, projects)
+    ).toBe(true);
+    expect(
+      canUserApproveOrRejectOrder(bimOwnOrder, bimManager, departments, false, projects)
+    ).toBe(true);
+
+    // Un simple technicien ne peut pas valider sa propre commande ni celle du service
+    expect(
+      canUserApproveOrRejectOrder(teamOrder, workerBim, departments, false, projects)
+    ).toBe(false);
+
+    // BIM voit bien les 3 commandes WAITING_APPROVAL dans la liste filtrée Bureau même si elles sont sur Dépôt Central
+    const visibleForBim = filterOrdersByStatusAndSearch(
+      [teamOrder, projectOnlyOrder, bimOwnOrder],
+      bimManager,
+      {
+        statusFilter: 'WAITING_APPROVAL',
+        canViewAllOrders: false,
+        departments,
+        projects,
+      }
+    );
+    expect(visibleForBim.map((o) => o.id).sort()).toEqual([
+      'ord-proj',
+      'ord-self',
+      'ord-team',
+    ]);
+  });
 });
+

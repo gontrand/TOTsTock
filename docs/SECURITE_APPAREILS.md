@@ -31,6 +31,9 @@ Dans le menu **Mon Profil**, l'utilisateur dispose du bouton **« Se déconnecte
 3. Vide et supprime la base `IndexedDB` locale (`tot_stock_offline_db`).
 4. Recharge l'application.
 
+### 1.5 Durcissement RLS côté serveur et purge des règles anciennes
+Lors de l'installation ou de la mise à jour des scripts SQL (`02_rls_hardening.sql`, `05_rpc_admin_users.sql`, `07_app_compat.sql`, `08_print_jobs.sql` ou `dist/install.sql`), toutes les politiques RLS existantes (`pg_policies`) sur chaque table protégée sont intégralement purgées avant la recréation des politiques attendues. **Après rejeu des scripts, aucune règle ancienne ne subsiste** (ni règle ouverte `USING (true)` pour `public`/`anon`, ni règle récursive sur `public.users`). Le contrôle `permissive_rls_policies` de `public.diagnostic_installation()` vérifie l'absence de toute règle permissive résiduelle.
+
 ---
 
 ## 2. Liste exacte des clés `localStorage` et bases `IndexedDB` effacées

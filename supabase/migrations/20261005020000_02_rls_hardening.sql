@@ -343,7 +343,15 @@ CREATE TABLE IF NOT EXISTS public.stock_levels (
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
-ALTER TABLE public.stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'stock_levels' AND column_name = 'id' AND data_type = 'text'
+  ) THEN
+    ALTER TABLE public.stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+  END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_levels_product_depot ON public.stock_levels (product_id, depot_name);
 CREATE INDEX IF NOT EXISTS idx_stock_levels_depot ON public.stock_levels (depot_name);
 
@@ -616,6 +624,13 @@ BEGIN
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.current_user_id() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.current_user_role() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.current_user_has_perm(TEXT) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.is_super_admin() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.is_administrator() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.can_view_movement(TEXT, TEXT, TEXT, TEXT) TO authenticated, service_role;
+
 -- -------------------------------------------------------------------------
 -- 2. RÉVOCATION DE L'ANCIENNE RPC DE SYNCHRONISATION DE LICENCE
 -- -------------------------------------------------------------------------
@@ -634,20 +649,44 @@ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
+-- 2.1 FONCTION INTERNE DE PURGE TOTALE DES RÈGLES RLS PAR TABLE (v37)
+-- Supprime toutes les politiques existantes d'une table du schéma public,
+-- quel que soit leur nom (élimine les règles permissives ou récursives héritées).
+-- Non exposée (REVOKE ALL) et supprimée en fin de script.
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._tot_drop_all_policies_on_table(p_table_name TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = p_table_name
+  ) THEN
+    FOR r IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = p_table_name
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', r.policyname, p_table_name);
+    END LOOP;
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public._tot_drop_all_policies_on_table(TEXT) FROM PUBLIC, anon, authenticated;
+
+-- -------------------------------------------------------------------------
 -- 3. DURCISSEMENT TABLE : public.users (Sécurité V18)
 -- (Révocation totale pour anon, GRANT SELECT ciblé sur les colonnes sûres
 -- (JAMAIS pin ni pin_hash) uniquement pour authenticated. Aucune écriture client directe,
 -- aucun annuaire anonyme.)
 -- -------------------------------------------------------------------------
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon users" ON public.users;
-DROP POLICY IF EXISTS "Users write self" ON public.users;
-DROP POLICY IF EXISTS "Users insert self" ON public.users;
-DROP POLICY IF EXISTS "Users update self" ON public.users;
-DROP POLICY IF EXISTS "Users delete self" ON public.users;
-DROP POLICY IF EXISTS "Authenticated read users" ON public.users;
-DROP POLICY IF EXISTS "Login directory read users" ON public.users;
-DROP POLICY IF EXISTS "Users insert and update own or admin" ON public.users;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('users'); END $$;
 
 -- Révocation de tout privilège direct et ré-attribution granulaire des colonnes sécurisées à authenticated uniquement
 REVOKE ALL ON TABLE public.users FROM anon, authenticated, public;
@@ -709,11 +748,7 @@ BEGIN
 END $$;
 
 ALTER TABLE public.license_config ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon license_config" ON public.license_config;
-DROP POLICY IF EXISTS "Allow authenticated write license_config" ON public.license_config;
-DROP POLICY IF EXISTS "Authenticated read license_config" ON public.license_config;
-DROP POLICY IF EXISTS "Anon read license_config" ON public.license_config;
-DROP POLICY IF EXISTS "Authenticated write license_config" ON public.license_config;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('license_config'); END $$;
 
 REVOKE ALL ON TABLE public.license_config FROM anon, public;
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.license_config FROM authenticated;
@@ -752,10 +787,10 @@ ON CONFLICT (key) DO NOTHING;
 
 -- RLS & Policies pour app_settings
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon app_settings" ON public.app_settings;
-DROP POLICY IF EXISTS "Anon public settings" ON public.app_settings;
-DROP POLICY IF EXISTS "Authenticated read app_settings" ON public.app_settings;
-DROP POLICY IF EXISTS "Admin write app_settings" ON public.app_settings;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('app_settings'); END $$;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.app_settings FROM anon, public;
+GRANT SELECT ON TABLE public.app_settings TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON TABLE public.app_settings TO authenticated;
 
 CREATE POLICY "Anon public settings"
   ON public.app_settings
@@ -791,10 +826,10 @@ CREATE POLICY "Admin write app_settings"
 
 -- RLS & Policies pour company_settings
 ALTER TABLE public.company_settings ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon company_settings" ON public.company_settings;
-DROP POLICY IF EXISTS "Anon public company_settings" ON public.company_settings;
-DROP POLICY IF EXISTS "Authenticated read company_settings" ON public.company_settings;
-DROP POLICY IF EXISTS "Admin write company_settings" ON public.company_settings;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('company_settings'); END $$;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.company_settings FROM anon, public;
+GRANT SELECT ON TABLE public.company_settings TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON TABLE public.company_settings TO authenticated;
 
 CREATE POLICY "Anon public company_settings"
   ON public.company_settings
@@ -857,9 +892,8 @@ CREATE TRIGGER trg_sync_company_to_app
 -- -------------------------------------------------------------------------
 ALTER TABLE public.movements ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.movements FROM anon, public;
-DROP POLICY IF EXISTS "Allow anon movements" ON public.movements;
-DROP POLICY IF EXISTS "Authenticated read movements" ON public.movements;
-DROP POLICY IF EXISTS "Authenticated insert movements" ON public.movements;
+GRANT SELECT, INSERT ON TABLE public.movements TO authenticated;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('movements'); END $$;
 
 CREATE POLICY "Authenticated read movements"
   ON public.movements
@@ -875,9 +909,8 @@ CREATE POLICY "Authenticated insert movements"
 
 ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.stock_movements FROM anon, public;
-DROP POLICY IF EXISTS "Allow anon stock_movements" ON public.stock_movements;
-DROP POLICY IF EXISTS "Authenticated read stock_movements" ON public.stock_movements;
-DROP POLICY IF EXISTS "Authenticated insert stock_movements" ON public.stock_movements;
+GRANT SELECT, INSERT ON TABLE public.stock_movements TO authenticated;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('stock_movements'); END $$;
 
 CREATE POLICY "Authenticated read stock_movements"
   ON public.stock_movements
@@ -899,10 +932,8 @@ CREATE POLICY "Authenticated insert stock_movements"
 -- -------------------------------------------------------------------------
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.products FROM anon, public;
-DROP POLICY IF EXISTS "Allow anon products" ON public.products;
-DROP POLICY IF EXISTS "Authenticated read products" ON public.products;
-DROP POLICY IF EXISTS "Admin write products" ON public.products;
-DROP POLICY IF EXISTS "Operator quantity update products" ON public.products;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.products TO authenticated;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('products'); END $$;
 
 CREATE POLICY "Authenticated read products"
   ON public.products
@@ -969,19 +1000,101 @@ AS $$
 $$;
 
 -- -------------------------------------------------------------------------
--- 8. DURCISSEMENT TABLE : public.material_orders
+-- 8. DURCISSEMENT TABLE : public.material_orders (& material_order_items si présente)
 -- (Suppression de toute policy USING (true), policy ciblée pour le demandeur,
 -- préparateur affecté, délégué de retrait, approbateurs du département et perm_menu_order_prep.
 -- Trigger BEFORE UPDATE imposant la machine à états de transition_order_status,
 -- interdisant l'auto-approbation sauf rôle 0, gelant les commandes terminées,
 -- et limitant les colonnes modifiables par le simple demandeur.)
 -- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.current_user_is_dept_or_proj_manager_for_order(
+  p_requester_department TEXT,
+  p_site_number TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_cid TEXT := public.current_user_id();
+  v_crole INT := public.current_user_role();
+  v_u_dept TEXT;
+  v_req_dept TEXT := LOWER(TRIM(COALESCE(p_requester_department, '')));
+  v_site TEXT := UPPER(TRIM(COALESCE(p_site_number, '')));
+BEGIN
+  IF v_cid IS NULL THEN
+    RETURN false;
+  END IF;
+
+  -- 1. Chef de chantier / projet ou suppléant du chantier de la commande
+  IF v_site <> '' AND EXISTS (
+    SELECT 1 FROM public.projects p
+    WHERE (UPPER(TRIM(p.project_number)) = v_site OR v_site LIKE '%' || UPPER(TRIM(p.project_number)) || '%')
+      AND (
+        p.manager_id::text = v_cid
+        OR (p.deputy_manager_ids IS NOT NULL AND v_cid = ANY(ARRAY(SELECT unnest(p.deputy_manager_ids)::text)))
+      )
+  ) THEN
+    RETURN true;
+  END IF;
+
+  -- 2. Chef de département ou suppléant (du département du demandeur ou du département du chantier)
+  IF EXISTS (
+    SELECT 1 FROM public.departments d
+    WHERE (
+      d.manager_id::text = v_cid
+      OR (d.deputy_manager_ids IS NOT NULL AND v_cid = ANY(ARRAY(SELECT unnest(d.deputy_manager_ids)::text)))
+    )
+    AND (
+      (v_req_dept <> '' AND (LOWER(TRIM(d.name::text)) = v_req_dept OR LOWER(TRIM(d.id::text)) = v_req_dept))
+      OR (
+        v_site <> '' AND EXISTS (
+          SELECT 1 FROM public.projects p
+          WHERE p.department_id = d.id
+            AND (UPPER(TRIM(p.project_number)) = v_site OR v_site LIKE '%' || UPPER(TRIM(p.project_number)) || '%')
+        )
+      )
+    )
+  ) THEN
+    RETURN true;
+  END IF;
+
+  -- 3. Rôle 8 (Responsable de Département) pour les commandes de son département ou de ses chantiers
+  IF v_crole = 8 THEN
+    SELECT LOWER(TRIM(COALESCE(u.department, ''))) INTO v_u_dept
+    FROM public.users u
+    WHERE u.id::text = v_cid
+    LIMIT 1;
+
+    IF v_u_dept IS NOT NULL AND v_u_dept <> '' THEN
+      IF v_req_dept <> '' AND v_req_dept = v_u_dept THEN
+        RETURN true;
+      END IF;
+      IF v_site <> '' AND EXISTS (
+        SELECT 1
+        FROM public.projects p
+        JOIN public.departments d ON d.id = p.department_id
+        WHERE LOWER(TRIM(d.name::text)) = v_u_dept
+          AND (UPPER(TRIM(p.project_number)) = v_site OR v_site LIKE '%' || UPPER(TRIM(p.project_number)) || '%')
+      ) THEN
+        RETURN true;
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.current_user_is_dept_or_proj_manager_for_order(TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.current_user_is_dept_or_proj_manager_for_order(TEXT, TEXT) TO authenticated;
+
 ALTER TABLE public.material_orders ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Allow anon material_orders" ON public.material_orders;
-DROP POLICY IF EXISTS "Authenticated read material_orders" ON public.material_orders;
-DROP POLICY IF EXISTS "Authenticated insert material_orders" ON public.material_orders;
-DROP POLICY IF EXISTS "Authenticated update material_orders" ON public.material_orders;
-DROP POLICY IF EXISTS "Allow delete material_orders" ON public.material_orders;
+REVOKE ALL ON TABLE public.material_orders FROM anon, public;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.material_orders TO authenticated;
+DO $$ BEGIN PERFORM public._tot_drop_all_policies_on_table('material_orders'); END $$;
 
 CREATE POLICY "Authenticated read material_orders"
   ON public.material_orders
@@ -995,6 +1108,7 @@ CREATE POLICY "Authenticated read material_orders"
     OR public.current_user_has_perm('perm_order_approve')
     OR public.current_user_has_perm('perm_orders_manage')
     OR public.current_user_has_perm('perm_menu_order_prep')
+    OR public.current_user_is_dept_or_proj_manager_for_order(requester_department, site_number)
   );
 
 CREATE POLICY "Authenticated insert material_orders"
@@ -1022,6 +1136,7 @@ CREATE POLICY "Authenticated update material_orders"
     OR public.current_user_has_perm('perm_order_mark_ready')
     OR public.current_user_has_perm('perm_order_mark_collected')
     OR public.current_user_has_perm('perm_order_cancel')
+    OR public.current_user_is_dept_or_proj_manager_for_order(requester_department, site_number)
   )
   WITH CHECK (
     public.current_user_role() IN (0, 1, 2, 6, 7, 8)
@@ -1035,10 +1150,34 @@ CREATE POLICY "Authenticated update material_orders"
     OR public.current_user_has_perm('perm_order_mark_ready')
     OR public.current_user_has_perm('perm_order_mark_collected')
     OR public.current_user_has_perm('perm_order_cancel')
+    OR public.current_user_is_dept_or_proj_manager_for_order(requester_department, site_number)
   );
 
--- Trigger BEFORE UPDATE : machine à états, interdiction d'auto-approbation,
--- gel des commandes terminées, restriction des colonnes modifiables par le demandeur.
+-- Durcissement de public.material_order_items si la table existe sur une base héritée
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'material_order_items') THEN
+    ALTER TABLE public.material_order_items ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON TABLE public.material_order_items FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.material_order_items TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('material_order_items');
+
+    CREATE POLICY "Authenticated read material_order_items"
+      ON public.material_order_items
+      FOR SELECT
+      TO authenticated
+      USING (public.current_user_id() IS NOT NULL);
+
+    CREATE POLICY "Authenticated write material_order_items"
+      ON public.material_order_items
+      FOR ALL
+      TO authenticated
+      USING (public.current_user_id() IS NOT NULL)
+      WITH CHECK (public.current_user_id() IS NOT NULL);
+  END IF;
+END $$;
+
+-- Trigger BEFORE UPDATE : machine à états, validation par responsable de département,
+-- gel des commandes terminées, restriction des colonnes modifiables par le simple demandeur.
 DROP FUNCTION IF EXISTS public.check_material_orders_update() CASCADE;
 CREATE OR REPLACE FUNCTION public.check_material_orders_update()
 RETURNS TRIGGER
@@ -1072,24 +1211,11 @@ BEGIN
   END IF;
 
   -- Vérifier si l'appelant est approbateur (rôle admin/manager, permission perm_order_approve, chef de département ou chef de chantier)
-  IF v_crole IN (0, 1, 2, 6, 7, 8) OR public.current_user_has_perm('perm_order_approve') OR public.current_user_has_perm('perm_orders_manage') THEN
+  IF v_crole IN (0, 1, 2, 6, 7, 8)
+     OR public.current_user_has_perm('perm_order_approve')
+     OR public.current_user_has_perm('perm_orders_manage')
+     OR public.current_user_is_dept_or_proj_manager_for_order(OLD.requester_department, OLD.site_number) THEN
     v_is_approver := true;
-  ELSE
-    SELECT EXISTS (
-      SELECT 1 FROM public.departments d
-      WHERE (d.name::text = OLD.requester_department::text OR d.id::text = OLD.requester_department::text)
-        AND (
-          d.manager_id::text = v_cid::text 
-          OR (d.deputy_manager_ids IS NOT NULL AND v_cid::text = ANY(ARRAY(SELECT unnest(d.deputy_manager_ids)::text)))
-        )
-    ) OR EXISTS (
-      SELECT 1 FROM public.projects p
-      WHERE (UPPER(p.project_number) = UPPER(OLD.site_number) OR UPPER(OLD.site_number) LIKE '%' || UPPER(p.project_number) || '%')
-        AND (
-          p.manager_id::text = v_cid::text
-          OR (p.deputy_manager_ids IS NOT NULL AND v_cid::text = ANY(ARRAY(SELECT unnest(p.deputy_manager_ids)::text)))
-        )
-    ) INTO v_is_approver;
   END IF;
 
   v_is_prep := (
@@ -1102,9 +1228,9 @@ BEGIN
 
   -- 4. Contrôle des transitions de statut (transition_order_status)
   IF NEW.status IS DISTINCT FROM OLD.status THEN
-    -- Interdiction d'auto-approbation (sauf rôle 0)
+    -- Validation par approbateur (un simple opérateur ne peut pas s'auto-approuver, mais un Responsable de département ou Admin le peut)
     IF OLD.status = 'WAITING_APPROVAL' AND NEW.status IN ('PENDING', 'REJECTED') THEN
-      IF OLD.requester_id::text = v_cid::text AND v_crole != 0 THEN
+      IF OLD.requester_id::text = v_cid::text AND NOT (v_crole = 0 OR v_is_approver) THEN
         RAISE EXCEPTION 'Interdiction d''auto-approbation : Vous ne pouvez pas valider votre propre commande.'
           USING ERRCODE = '42501';
       END IF;
@@ -1197,11 +1323,11 @@ CREATE TRIGGER trg_check_material_orders_update
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'roles') THEN
     ALTER TABLE public.roles ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon roles" ON public.roles;
-    DROP POLICY IF EXISTS "Authenticated read roles" ON public.roles;
+    REVOKE ALL ON TABLE public.roles FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.roles TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('roles');
     CREATE POLICY "Authenticated read roles" ON public.roles FOR SELECT TO authenticated
       USING (public.current_user_id() IS NOT NULL);
-    DROP POLICY IF EXISTS "Admin write roles" ON public.roles;
     CREATE POLICY "Admin write roles" ON public.roles FOR ALL TO authenticated
       USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_roles'))
       WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_roles'));
@@ -1209,11 +1335,11 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'departments') THEN
     ALTER TABLE public.departments ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon departments" ON public.departments;
-    DROP POLICY IF EXISTS "Authenticated read departments" ON public.departments;
+    REVOKE ALL ON TABLE public.departments FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.departments TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('departments');
     CREATE POLICY "Authenticated read departments" ON public.departments FOR SELECT TO authenticated
       USING (public.current_user_id() IS NOT NULL);
-    DROP POLICY IF EXISTS "Admin write departments" ON public.departments;
     CREATE POLICY "Admin write departments" ON public.departments FOR ALL TO authenticated
       USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_dep_edit'))
       WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_dep_edit'));
@@ -1221,11 +1347,11 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'projects') THEN
     ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon projects" ON public.projects;
-    DROP POLICY IF EXISTS "Authenticated read projects" ON public.projects;
+    REVOKE ALL ON TABLE public.projects FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.projects TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('projects');
     CREATE POLICY "Authenticated read projects" ON public.projects FOR SELECT TO authenticated
       USING (public.current_user_id() IS NOT NULL);
-    DROP POLICY IF EXISTS "Admin write projects" ON public.projects;
     CREATE POLICY "Admin write projects" ON public.projects FOR ALL TO authenticated
       USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_proj_edit'))
       WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_depproj_menu') OR public.current_user_has_perm('perm_proj_edit'));
@@ -1233,11 +1359,11 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'sub_categories') THEN
     ALTER TABLE public.sub_categories ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon sub_categories" ON public.sub_categories;
-    DROP POLICY IF EXISTS "Authenticated read sub_categories" ON public.sub_categories;
+    REVOKE ALL ON TABLE public.sub_categories FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.sub_categories TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('sub_categories');
     CREATE POLICY "Authenticated read sub_categories" ON public.sub_categories FOR SELECT TO authenticated
       USING (public.current_user_id() IS NOT NULL);
-    DROP POLICY IF EXISTS "Admin write sub_categories" ON public.sub_categories;
     CREATE POLICY "Admin write sub_categories" ON public.sub_categories FOR ALL TO authenticated
       USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_categories') OR public.current_user_has_perm('perm_prod_edit'))
       WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_categories') OR public.current_user_has_perm('perm_prod_edit'));
@@ -1245,11 +1371,11 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'depots') THEN
     ALTER TABLE public.depots ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon depots" ON public.depots;
-    DROP POLICY IF EXISTS "Authenticated read depots" ON public.depots;
+    REVOKE ALL ON TABLE public.depots FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.depots TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('depots');
     CREATE POLICY "Authenticated read depots" ON public.depots FOR SELECT TO authenticated
       USING (public.current_user_id() IS NOT NULL);
-    DROP POLICY IF EXISTS "Admin write depots" ON public.depots;
     CREATE POLICY "Admin write depots" ON public.depots FOR ALL TO authenticated
       USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_depots') OR public.current_user_has_perm('perm_depot_create'))
       WITH CHECK (public.current_user_role() = 0 OR public.current_user_has_perm('perm_manage_depots') OR public.current_user_has_perm('perm_depot_create'));
@@ -1257,9 +1383,9 @@ DO $$ BEGIN
 
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_levels') THEN
     ALTER TABLE public.stock_levels ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon stock_levels" ON public.stock_levels;
-    DROP POLICY IF EXISTS "Authenticated read stock_levels" ON public.stock_levels;
-    DROP POLICY IF EXISTS "Admin write stock_levels" ON public.stock_levels;
+    REVOKE ALL ON TABLE public.stock_levels FROM anon, public;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stock_levels TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('stock_levels');
     CREATE POLICY "Authenticated read stock_levels" ON public.stock_levels
       FOR SELECT TO authenticated
       USING (
@@ -1294,16 +1420,16 @@ DO $$ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
--- 10. DURCISSEMENT TABLE : public.audit_logs
+-- 10. DURCISSEMENT TABLE : public.audit_logs (& public.login_logs si présente)
 -- (Lecture réservée à perm_menu_inventory_audit, perm_view_all_login_logs ou rôle 0.
 -- Insertion seulement avec user_id = public.current_user_id() ou par RPCs)
 -- -------------------------------------------------------------------------
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'audit_logs') THEN
     ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
-    DROP POLICY IF EXISTS "Allow anon audit_logs" ON public.audit_logs;
-    DROP POLICY IF EXISTS "Authenticated read audit_logs" ON public.audit_logs;
-    DROP POLICY IF EXISTS "Authenticated insert audit_logs" ON public.audit_logs;
+    REVOKE ALL ON TABLE public.audit_logs FROM anon, public;
+    GRANT SELECT, INSERT ON TABLE public.audit_logs TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('audit_logs');
 
     CREATE POLICY "Authenticated read audit_logs"
       ON public.audit_logs
@@ -1317,6 +1443,32 @@ DO $$ BEGIN
 
     CREATE POLICY "Authenticated insert audit_logs"
       ON public.audit_logs
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        user_id::text = public.current_user_id()
+        OR user_id::text = auth.uid()::text
+        OR auth.uid() IS NULL
+      );
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'login_logs') THEN
+    ALTER TABLE public.login_logs ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON TABLE public.login_logs FROM anon, public;
+    GRANT SELECT, INSERT ON TABLE public.login_logs TO authenticated;
+    PERFORM public._tot_drop_all_policies_on_table('login_logs');
+
+    CREATE POLICY "Authenticated read login_logs"
+      ON public.login_logs
+      FOR SELECT
+      TO authenticated
+      USING (
+        public.current_user_role() = 0
+        OR public.current_user_has_perm('perm_view_all_login_logs')
+      );
+
+    CREATE POLICY "Authenticated insert login_logs"
+      ON public.login_logs
       FOR INSERT
       TO authenticated
       WITH CHECK (
@@ -1401,3 +1553,7 @@ $$;
 
 REVOKE ALL ON FUNCTION public.get_email_secret() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.get_email_secret() TO service_role;
+
+-- Suppression de la fonction utilitaire interne de purge RLS en fin de script
+DROP FUNCTION IF EXISTS public._tot_drop_all_policies_on_table(TEXT);
+

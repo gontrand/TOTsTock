@@ -5,6 +5,7 @@ import {
   MovementType,
   OrderStatus,
   Product,
+  Project,
   StockMovement,
   User,
 } from '../types';
@@ -246,6 +247,9 @@ export function filterOrdersByStatusAndSearch(
     depotFilter?: string;
     searchQuery?: string;
     canViewAllOrders?: boolean;
+    departments?: Department[];
+    projects?: Project[];
+    hasApproveOrderPerm?: boolean;
   } = {}
 ): MaterialOrder[] {
   if (!Array.isArray(orders)) return [];
@@ -253,18 +257,72 @@ export function filterOrdersByStatusAndSearch(
   const depotFilter = (options.depotFilter || 'ALL').trim();
   const q = (options.searchQuery || '').trim().toLowerCase();
   const canViewAll = options.canViewAllOrders ?? true;
+  const departments = options.departments || [];
+  const projects = options.projects || [];
+  const hasApproveOrderPerm = Boolean(options.hasApproveOrderPerm);
 
   const isAdmin =
     currentUser &&
     (Number(currentUser.id) === 0 ||
       Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1);
+      Number(currentUser.role_id) === 1 ||
+      Number(currentUser.role_id) === 2);
 
   return orders
     .filter((order) => {
+      const canApproveThisOrder = canUserApproveOrRejectOrder(
+        order,
+        currentUser,
+        departments,
+        hasApproveOrderPerm,
+        projects
+      );
+
+      // Si l'utilisateur peut approuver cette commande (ex: Responsable de département pour WAITING_APPROVAL),
+      // elle doit toujours être visible même s'il n'a pas d'accès explicite au dépôt magasin
+      const isDeptOrProjectOrderForManager = (() => {
+        if (!currentUser) return false;
+        if (canApproveThisOrder) return true;
+        const userIdStr = String(currentUser.id);
+        const userDeptStr = (currentUser.department || '').trim().toLowerCase();
+        const reqDeptStr = (order.requester_department || '').trim().toLowerCase();
+        const cleanSite = (order.site_number || '').trim().toUpperCase();
+        const cleanSiteName = (order.site_name || '').trim().toLowerCase();
+        const proj = projects.find(
+          (p) =>
+            p.project_number.toUpperCase() === cleanSite ||
+            (cleanSite && cleanSite.includes(p.project_number.toUpperCase())) ||
+            (p.project_name && cleanSiteName && p.project_name.toLowerCase().trim() === cleanSiteName)
+        );
+        if (proj) {
+          if (String(proj.manager_id) === userIdStr) return true;
+          if (proj.deputy_manager_ids?.some((id) => String(id) === userIdStr)) return true;
+        }
+        for (const d of departments) {
+          const isManager = String(d.manager_id) === userIdStr;
+          const isDeputy = d.deputy_manager_ids?.some((id) => String(id) === userIdStr);
+          if (isManager || isDeputy) {
+            if (proj && proj.department_id === d.id) return true;
+            if (reqDeptStr && (d.name.toLowerCase().trim() === reqDeptStr || String(d.id) === reqDeptStr)) {
+              return true;
+            }
+          }
+        }
+        if (Number(currentUser.role_id) === 8 && userDeptStr) {
+          if (reqDeptStr && reqDeptStr === userDeptStr) return true;
+          if (proj) {
+            const projDept = departments.find((d) => d.id === proj.department_id);
+            if (projDept && projDept.name.toLowerCase().trim() === userDeptStr) return true;
+          }
+        }
+        return false;
+      })();
+
       if (
         currentUser &&
         !isAdmin &&
+        !canApproveThisOrder &&
+        !isDeptOrProjectOrderForManager &&
         order.depot_name &&
         !isUserAllowedForDepot(currentUser, order.depot_name)
       ) {
@@ -275,6 +333,8 @@ export function filterOrdersByStatusAndSearch(
         currentUser &&
         !isAdmin &&
         !canViewAll &&
+        !canApproveThisOrder &&
+        !isDeptOrProjectOrderForManager &&
         String(order.requester_id) !== String(currentUser.id) &&
         String(order.pickup_delegate_id || '') !== String(currentUser.id)
       ) {
@@ -324,37 +384,80 @@ export function filterOrdersByStatusAndSearch(
 
 /**
  * Vérifie si l'utilisateur courant peut approuver ou refuser une commande en attente d'approbation.
+ * Un Responsable de département (role_id = 8, perm_order_approve ou departments.manager_id / deputy_manager_ids)
+ * peut valider toutes les commandes WAITING_APPROVAL de son département et de ses chantiers, y compris ses propres commandes.
  */
 export function canUserApproveOrRejectOrder(
   order: MaterialOrder | null | undefined,
   currentUser: User | null | undefined,
   departments: Department[],
-  hasManageOrdersPerm: boolean
+  hasManageOrdersPerm: boolean,
+  projects: Project[] = []
 ): boolean {
   if (!order || !currentUser || order.status !== 'WAITING_APPROVAL') return false;
   if (
     Number(currentUser.id) === 0 ||
     Number(currentUser.role_id) === 0 ||
     Number(currentUser.role_id) === 1 ||
+    Number(currentUser.role_id) === 2 ||
     hasManageOrdersPerm
   ) {
     return true;
   }
 
+  const userIdStr = String(currentUser.id);
   const reqDept = (order.requester_department || '').trim().toLowerCase();
-  if (!reqDept) return false;
-  const dept = (departments || []).find((d) => (d.name || '').trim().toLowerCase() === reqDept);
-  if (!dept) return false;
+  const userDept = (currentUser.department || '').trim().toLowerCase();
 
-  if (dept.manager_id !== undefined && String(dept.manager_id) === String(currentUser.id)) {
-    return true;
+  // 1. Chef de Chantier / Chef de Projet ou Suppléant rattaché au chantier de la commande
+  const cleanSite = (order.site_number || '').trim().toUpperCase();
+  const cleanSiteName = (order.site_name || '').trim().toLowerCase();
+  const proj = (projects || []).find(
+    (p) =>
+      p.project_number.toUpperCase() === cleanSite ||
+      (cleanSite && cleanSite.includes(p.project_number.toUpperCase())) ||
+      (p.project_name && cleanSiteName && p.project_name.toLowerCase().trim() === cleanSiteName)
+  );
+  if (proj) {
+    if (proj.manager_id !== undefined && String(proj.manager_id) === userIdStr) return true;
+    if (
+      Array.isArray(proj.deputy_manager_ids) &&
+      proj.deputy_manager_ids.some((id) => String(id) === userIdStr)
+    ) {
+      return true;
+    }
   }
-  if (
-    Array.isArray(dept.deputy_manager_ids) &&
-    dept.deputy_manager_ids.some((id) => String(id) === String(currentUser.id))
-  ) {
-    return true;
+
+  // 2. Chef de Département ou Suppléant (du département du chantier ou du département du demandeur)
+  for (const d of departments || []) {
+    const isManager = d.manager_id !== undefined && String(d.manager_id) === userIdStr;
+    const isDeputy =
+      Array.isArray(d.deputy_manager_ids) &&
+      d.deputy_manager_ids.some((id) => String(id) === userIdStr);
+    if (isManager || isDeputy) {
+      if (proj && proj.department_id === d.id) return true;
+      if (reqDept && ((d.name || '').trim().toLowerCase() === reqDept || String(d.id) === reqDept)) {
+        return true;
+      }
+      if (userDept && reqDept && userDept === reqDept) {
+        return true;
+      }
+    }
   }
+
+  // 3. Rôle 8 (Responsable de Département) pour les commandes de son département ou de ses chantiers
+  if (Number(currentUser.role_id) === 8) {
+    if (userDept && reqDept && userDept === reqDept) {
+      return true;
+    }
+    if (proj && userDept) {
+      const projDept = (departments || []).find((d) => d.id === proj.department_id);
+      if (projDept && (projDept.name || '').trim().toLowerCase() === userDept) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 

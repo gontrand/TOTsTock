@@ -40,8 +40,10 @@ body, #root {
   height: 0 !important;
 }
 
-.overflow-y-auto {
+.overflow-y-auto,
+main {
   overflow-x: hidden !important;
+  scrollbar-gutter: stable;
 }
 
 /* ==========================================================================
@@ -97,11 +99,9 @@ button > svg.lucide:not(.absolute) {
 /* Animation du bouton central (+) de la barre de navigation */
 @keyframes centerFabPulse {
   0%, 100% {
-    transform: translateY(0) scale(1);
     box-shadow: 0 10px 20px -4px rgba(249, 115, 22, 0.45), 0 0 0 0 rgba(249, 115, 22, 0.3);
   }
   50% {
-    transform: translateY(-2.5px) scale(1.045);
     box-shadow: 0 14px 26px -4px rgba(249, 115, 22, 0.65), 0 0 14px 3px rgba(251, 146, 60, 0.35);
   }
 }
@@ -133,11 +133,9 @@ button > svg.lucide:not(.absolute) {
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: scale(0.985);
   }
   to {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
@@ -147,7 +145,7 @@ button > svg.lucide:not(.absolute) {
     opacity: 0;
   }
   to {
-    transform: translateY(0);
+    transform: none;
     opacity: 1;
   }
 }

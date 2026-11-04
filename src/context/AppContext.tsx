@@ -20,6 +20,7 @@ import {
   isRecognizedLicensePlan,
   normalizeToCanonicalPlan,
   getMaxDepotsForPlan,
+  plan_limits,
   MaterialOrder,
   MaterialOrderItem,
   OrderStatus,
@@ -58,6 +59,8 @@ import {
   isCheckDue,
   getPlanMaxReferences,
   normalizePlanType,
+  enforceSignedLicenseQuotasSync,
+  verifyAndApplySignedLicenseQuotas,
 } from '../services/licenseService';
 import {
   INITIAL_PRODUCTS,
@@ -166,6 +169,8 @@ import {
   getAllFromStore,
   enqueueSyncOperation,
   migrateFromLocalStorageToIndexedDb,
+  hydrateAllFromIndexedDb,
+  replaceStoreContents,
 } from '../services/offline/indexedDb';
 import { processSyncQueue, performIncrementalSync } from '../services/offline/syncEngine';
 import {
@@ -315,6 +320,14 @@ interface AppContextType {
   removeFromCart: (productId: string) => void;
   clearCart: () => void;
   confirmBatchMovements: (siteNumber?: string) => Promise<{ success: boolean; message?: string }>;
+  transferStockBetweenDepots: (params: {
+    productId: string;
+    sourceDepotName: string;
+    destDepotName: string;
+    quantity: number;
+    destRack?: string;
+    reason?: string;
+  }) => Promise<{ success: boolean; message: string; newQty?: number; depotQty?: number; destDepotQty?: number }>;
 
   // Material Orders & Preparation (Click & Collect Drive Chantier)
   orders: MaterialOrder[];
@@ -599,7 +612,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // License Management
   const [license, setLicense] = useState<LicenseInfo>(() => getSavedLicense());
+  const licenseRef = useRef<LicenseInfo>(license);
+  useEffect(() => {
+    licenseRef.current = license;
+  }, [license]);
   const [licenseNotification, setLicenseNotification] = useState<string | null>(null);
+
+  // Vérification cryptographique systématique du jeton signé (signed_token) lorsqu'il est présent :
+  // garantit que les quotas appliqués sont exclusivement ceux de la licence signée et détecte toute falsification.
+  useEffect(() => {
+    if (!license?.signed_token) return;
+    let cancelled = false;
+    verifyAndApplySignedLicenseQuotas(license, supabaseUrl)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.downgraded || res.valid) {
+          saveLicenseLocally(res.license);
+          setLicense((prev) => {
+            if (
+              prev.plan_type === res.license.plan_type &&
+              prev.license_key === res.license.license_key &&
+              prev.max_depots === res.license.max_depots &&
+              prev.status === res.license.status &&
+              prev.signed_token?.signature === res.license.signed_token?.signature
+            ) {
+              return prev;
+            }
+            return res.license;
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [license, supabaseUrl]);
 
   const daysUntilNextCheck = useMemo(() => getDaysUntilNextCheck(license), [license]);
 
@@ -612,19 +659,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || localStorage.getItem('tqt_company_url') || '');
       const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || localStorage.getItem('tqt_company_key') || '');
       const client = getClientSupabase(effectiveUrl, effectiveKey);
-      const res = await checkAndSync15DaysLicense(license, effectiveUrl, force, client);
+      const currentLic = licenseRef.current;
+      const res = await checkAndSync15DaysLicense(currentLic, effectiveUrl, force, client);
       if (res.license) {
-        setLicense(res.license);
-        if (client && res.license.license_key && res.license.license_key !== 'TOT-STOCK-FREE-COMMUNITY') {
-          syncLicenseToClientDatabase(res.license, client).catch(() => {});
+        let nextLic = res.license;
+        if (nextLic.signed_token) {
+          const verified = await verifyAndApplySignedLicenseQuotas(nextLic, effectiveUrl);
+          nextLic = verified.license;
         }
-      }
-      if (res.planChanged) {
-        setLicenseNotification(res.message);
+        let didChangePlan = false;
+        setLicense((prev) => {
+          const same =
+            prev.license_key === nextLic.license_key &&
+            prev.plan_type === nextLic.plan_type &&
+            prev.max_depots === nextLic.max_depots &&
+            prev.status === nextLic.status &&
+            prev.is_active === nextLic.is_active &&
+            prev.organization_name === nextLic.organization_name &&
+            prev.contact_email === nextLic.contact_email &&
+            prev.signed_token?.signature === nextLic.signed_token?.signature;
+          if (same) return prev;
+          if (prev.plan_type !== nextLic.plan_type || prev.license_key !== nextLic.license_key) {
+            didChangePlan = true;
+          }
+          return nextLic;
+        });
+        if (client && nextLic.license_key && nextLic.license_key !== 'TOT-STOCK-FREE-COMMUNITY') {
+          syncLicenseToClientDatabase(nextLic, client).catch(() => {});
+        }
+        if (res.planChanged && didChangePlan) {
+          setLicenseNotification(res.message);
+        }
       }
       return res;
     },
-    [license, supabaseUrl, supabaseKey]
+    [supabaseUrl, supabaseKey]
   );
 
   // 15-Day check & Server plan change detector on startup, interval, and network reconnect
@@ -647,7 +716,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearInterval(interval);
       window.removeEventListener('online', handleOnline);
     };
-  }, [supabaseUrl, supabaseKey]);
+  }, [supabaseUrl, supabaseKey, syncLicenseWithServer]);
 
   const verifyLicense = useCallback(
     async (key: string, overrideUrl?: string, overrideKey?: string): Promise<LicenseVerificationResult> => {
@@ -909,14 +978,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Trigger license recovery/discovery when an authenticated user logs in and current plan is still free
+  // Trigger license recovery/discovery once when an authenticated user logs in
+  const postLoginSyncKeyRef = useRef<string>('');
   useEffect(() => {
-    if (currentUser?.id && supabaseUrl && supabaseKey && license.plan_type === 'free') {
+    if (!currentUser?.id || !supabaseUrl || !supabaseKey) {
+      postLoginSyncKeyRef.current = '';
+      return;
+    }
+    const sessionKey = `${currentUser.id}|${supabaseUrl}`;
+    if (postLoginSyncKeyRef.current === sessionKey) return;
+    postLoginSyncKeyRef.current = sessionKey;
+    if (licenseRef.current.plan_type === 'free') {
       syncLicenseWithServer(false).catch((e) =>
         console.warn('Post-login license discovery/sync error:', e)
       );
     }
-  }, [currentUser?.id, supabaseUrl, supabaseKey, license.plan_type, syncLicenseWithServer]);
+  }, [currentUser?.id, supabaseUrl, supabaseKey, syncLicenseWithServer]);
 
   // Batch Cart
   const [batchCart, setBatchCart] = useState<BatchCartItem[]>([]);
@@ -1233,8 +1310,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           try {
             localStorage.setItem(tsKey, String(remoteTs));
           } catch {}
-        } else if (localTs > remoteTs && client) {
-          // Cet appareil a une modification plus récente (ex: suppression de panier) : pousser vers le cloud
+        } else if (localTs > remoteTs && client && lastPushedBasketTsRef.current < localTs) {
+          // Cet appareil a une modification plus récente (ex: suppression de panier) : pousser une seule fois vers le cloud
+          lastPushedBasketTsRef.current = localTs;
           pushUserBasketsToSupabase(
             client,
             currentUser,
@@ -1244,8 +1322,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             localTs
           ).catch(() => {});
         }
-      } else if (localHasItems && client) {
-        // Aucun panier dans le cloud pour ce compte, mais cet appareil contient des articles : publier
+      } else if (localHasItems && client && lastPushedBasketTsRef.current === 0) {
+        // Aucun panier dans le cloud pour ce compte, mais cet appareil contient des articles : publier une seule fois
         const initTs = localTs || Date.now();
         lastPushedBasketTsRef.current = Math.max(lastPushedBasketTsRef.current, initTs);
         try {
@@ -1275,9 +1353,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setScannerPickingModeOpen(true);
   }, []);
 
+  const lastIdbSnapRef = useRef<Record<string, string>>({});
+
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}orders`, JSON.stringify(orders));
-    putManyToStore('material_orders', orders).catch((e) => console.warn('[IDB] put orders:', e));
+    const raw = JSON.stringify(orders);
+    if (lastIdbSnapRef.current.orders === raw) return;
+    lastIdbSnapRef.current.orders = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}orders`, raw);
+    replaceStoreContents('material_orders', orders).catch((e) => console.warn('[IDB] put orders:', e));
   }, [orders]);
 
   // Active basket & computed orderCart (maintains full backward compatibility)
@@ -1354,52 +1437,118 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setStoredActivities(getStoredActivities());
   }, []);
 
-  // Automatic non-destructive migration from localStorage to IndexedDB on boot (Priority 17)
+  // Hydratation initiale depuis IndexedDB (source locale de référence) après migration localStorage
   useEffect(() => {
-    migrateFromLocalStorageToIndexedDb().catch((err) =>
-      console.warn('[IndexedDB] Migration notice:', err)
-    );
+    let mounted = true;
+    hydrateAllFromIndexedDb()
+      .then((hydrated) => {
+        if (!mounted) return;
+        if (Array.isArray(hydrated.products) && hydrated.products.length > 0) {
+          setProducts(hydrated.products.map(normalizeProductRecord));
+        }
+        if (Array.isArray(hydrated.movements) && hydrated.movements.length > 0) {
+          setMovements(hydrated.movements.map(normalizeMovementRecord));
+        }
+        if (Array.isArray(hydrated.orders) && hydrated.orders.length > 0) {
+          setOrders((prev) => mergeMaterialOrdersLists(prev, hydrated.orders.map(normalizeOrderRecord)));
+        }
+        if (Array.isArray(hydrated.depots) && hydrated.depots.length > 0) {
+          setDepots(hydrated.depots.map(normalizeDepotRecord));
+        }
+        if (Array.isArray(hydrated.departments) && hydrated.departments.length > 0) {
+          setDepartments(hydrated.departments.map(normalizeDepartmentRecord));
+        }
+        if (Array.isArray(hydrated.projects) && hydrated.projects.length > 0) {
+          setProjects(hydrated.projects.map(normalizeProjectRecord));
+        }
+        if (Array.isArray(hydrated.subCategories) && hydrated.subCategories.length > 0) {
+          setSubCategories(hydrated.subCategories);
+        }
+        if (Array.isArray(hydrated.roles) && hydrated.roles.length > 0) {
+          setRoles(hydrated.roles);
+        }
+        if (Array.isArray(hydrated.users) && hydrated.users.length > 0) {
+          let deletedIds: string[] = [];
+          try {
+            const rawDel = localStorage.getItem('tot_deleted_user_ids');
+            if (rawDel) deletedIds = JSON.parse(rawDel);
+          } catch {}
+          setUsers((prev) =>
+            mergeUserLists(prev, hydrated.users).filter(
+              (u) => !(u as any).is_deleted && !deletedIds.includes(String(u.id))
+            )
+          );
+        }
+      })
+      .catch((err) => console.warn('[IndexedDB] Hydration notice:', err));
+    return () => {
+      mounted = false;
+    };
   }, []);
 
-  // Sync to LocalStorage (instant cache) & IndexedDB (offline-first database)
+  // Sync to LocalStorage (instant cache) & IndexedDB (authoritative offline-first database)
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}products`, JSON.stringify(products));
-    putManyToStore('products', products).catch((e) => console.warn('[IDB] put prods:', e));
+    const raw = JSON.stringify(products);
+    if (lastIdbSnapRef.current.products === raw) return;
+    lastIdbSnapRef.current.products = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}products`, raw);
+    replaceStoreContents('products', products).catch((e) => console.warn('[IDB] put prods:', e));
   }, [products]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}movements`, JSON.stringify(movements));
-    putManyToStore('stock_movements', movements).catch((e) => console.warn('[IDB] put movs:', e));
+    const raw = JSON.stringify(movements);
+    if (lastIdbSnapRef.current.movements === raw) return;
+    lastIdbSnapRef.current.movements = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}movements`, raw);
+    replaceStoreContents('stock_movements', movements).catch((e) => console.warn('[IDB] put movs:', e));
   }, [movements]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}roles`, JSON.stringify(roles));
-    putManyToStore('roles', roles).catch((e) => console.warn('[IDB] put roles:', e));
+    const raw = JSON.stringify(roles);
+    if (lastIdbSnapRef.current.roles === raw) return;
+    lastIdbSnapRef.current.roles = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}roles`, raw);
+    replaceStoreContents('roles', roles).catch((e) => console.warn('[IDB] put roles:', e));
   }, [roles]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}users`, JSON.stringify(users));
-    putManyToStore('users', users).catch((e) => console.warn('[IDB] put users:', e));
+    const raw = JSON.stringify(users);
+    if (lastIdbSnapRef.current.users === raw) return;
+    lastIdbSnapRef.current.users = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}users`, raw);
+    replaceStoreContents('users', users).catch((e) => console.warn('[IDB] put users:', e));
   }, [users]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}departments`, JSON.stringify(departments));
-    putManyToStore('departments', departments).catch((e) => console.warn('[IDB] put depts:', e));
+    const raw = JSON.stringify(departments);
+    if (lastIdbSnapRef.current.departments === raw) return;
+    lastIdbSnapRef.current.departments = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}departments`, raw);
+    replaceStoreContents('departments', departments).catch((e) => console.warn('[IDB] put depts:', e));
   }, [departments]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}projects`, JSON.stringify(projects));
-    putManyToStore('projects', projects).catch((e) => console.warn('[IDB] put projs:', e));
+    const raw = JSON.stringify(projects);
+    if (lastIdbSnapRef.current.projects === raw) return;
+    lastIdbSnapRef.current.projects = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}projects`, raw);
+    replaceStoreContents('projects', projects).catch((e) => console.warn('[IDB] put projs:', e));
   }, [projects]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}subcategories`, JSON.stringify(subCategories));
-    putManyToStore('sub_categories', subCategories).catch((e) => console.warn('[IDB] put subs:', e));
+    const raw = JSON.stringify(subCategories);
+    if (lastIdbSnapRef.current.subCategories === raw) return;
+    lastIdbSnapRef.current.subCategories = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}subcategories`, raw);
+    replaceStoreContents('sub_categories', subCategories).catch((e) => console.warn('[IDB] put subs:', e));
   }, [subCategories]);
 
   useEffect(() => {
-    localStorage.setItem(`${LOCAL_PREFIX}depots`, JSON.stringify(depots));
-    putManyToStore('depots', depots).catch((e) => console.warn('[IDB] put depots:', e));
+    const raw = JSON.stringify(depots);
+    if (lastIdbSnapRef.current.depots === raw) return;
+    lastIdbSnapRef.current.depots = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}depots`, raw);
+    replaceStoreContents('depots', depots).catch((e) => console.warn('[IDB] put depots:', e));
   }, [depots]);
 
   useEffect(() => {
@@ -1448,37 +1597,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch(() => {});
 
     // Helper to recover & apply company license whenever DB is connected
+    const applyLicenseIfChanged = (candidate: LicenseInfo, shouldSyncDb: boolean) => {
+      saveLicenseLocally(candidate);
+      let didChange = false;
+      setLicense((prev) => {
+        const same =
+          prev.license_key === candidate.license_key &&
+          prev.plan_type === candidate.plan_type &&
+          prev.max_depots === candidate.max_depots &&
+          prev.status === candidate.status &&
+          prev.signed_token?.signature === candidate.signed_token?.signature;
+        if (same) return prev;
+        didChange = true;
+        return candidate;
+      });
+      if (shouldSyncDb && didChange) {
+        syncLicenseToClientDatabase(candidate, client).catch(() => {});
+      }
+    };
+
     const recoverAndApplyCompanyLicense = async (pubSettings?: Record<string, string>) => {
       try {
         const currentSaved = getSavedLicense();
         const recovered = await recoverCompanyLicenseFromServerAndClientDb(effectiveUrl, client, currentSaved);
         if (recovered && recovered.license_key) {
-          saveLicenseLocally(recovered);
-          setLicense(recovered);
-          syncLicenseToClientDatabase(recovered, client).catch(() => {});
+          if (recovered.signed_token) {
+            const verifiedRec = await verifyAndApplySignedLicenseQuotas(recovered, effectiveUrl);
+            applyLicenseIfChanged(verifiedRec.license, verifiedRec.valid && !verifiedRec.downgraded);
+          } else {
+            applyLicenseIfChanged(recovered, true);
+          }
           return;
         }
         if (pubSettings?.company_license_info) {
           try {
             const parsedLic = JSON.parse(pubSettings.company_license_info);
             if (parsedLic && parsedLic.license_key && !String(parsedLic.license_key).toUpperCase().startsWith('TOT-STOCK-FREE')) {
-              const pType = normalizePlanType(parsedLic.plan_type || parsedLic.plan || 'free', parsedLic.license_key);
-              const normalizedLic: LicenseInfo = {
-                ...parsedLic,
-                plan_type: pType,
-                max_references: Math.max(Number(parsedLic.max_references ?? parsedLic.max_tools) || 0, getPlanMaxReferences(pType)),
-                max_depots: Math.max(Number(parsedLic.max_depots) || 0, getMaxDepotsForPlan(pType)),
-                status: parsedLic.status || (parsedLic.is_active === false ? 'inactive' : 'valid'),
-              };
-              saveLicenseLocally(normalizedLic);
-              setLicense(normalizedLic);
-              syncLicenseToClientDatabase(normalizedLic, client).catch(() => {});
-              return;
+              const verified = await verifyAndApplySignedLicenseQuotas(parsedLic, effectiveUrl);
+              if (verified.valid && !verified.downgraded) {
+                applyLicenseIfChanged(verified.license, true);
+                return;
+              }
             }
           } catch {}
         }
         if (currentSaved?.license_key && currentSaved.license_key !== 'TOT-STOCK-FREE-COMMUNITY') {
-          syncLicenseToClientDatabase(currentSaved, client).catch(() => {});
+          if (currentSaved.signed_token) {
+            const verifiedCurrent = await verifyAndApplySignedLicenseQuotas(currentSaved, effectiveUrl);
+            if (verifiedCurrent.valid && !verifiedCurrent.downgraded) {
+              applyLicenseIfChanged(verifiedCurrent.license, false);
+            }
+          } else {
+            applyLicenseIfChanged(currentSaved, false);
+          }
         }
       } catch (e) {
         console.warn('Auto license recovery notice:', e);
@@ -1532,12 +1703,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    setSupabaseSyncStatus('syncing');
-    setSupabaseSyncMessage('Synchronisation des données Supabase...');
+    setSupabaseSyncStatus((prev) => (prev === 'connected' ? 'connected' : 'syncing'));
+    setSupabaseSyncMessage((prev) => (prev && prev.startsWith('Connecté') ? prev : 'Synchronisation des données Supabase...'));
 
     try {
-      // 1. Priorité N°5 & 6 : Dépilage de la file d'attente hors-ligne (sync_queue)
+      // 1. Priorité N°5 & 6 : Dépilage de la file d'attente hors-ligne (sync_queue) AVANT lecture distante
       const queueRes = await processSyncQueue(client);
+      if (queueRes.updatedOrders && queueRes.updatedOrders.length > 0) {
+        const ordMap = new Map(queueRes.updatedOrders.map((u) => [u.id, u.order_number]));
+        setOrders((prev) =>
+          prev.map((o) => (ordMap.has(String(o.id)) ? { ...o, order_number: ordMap.get(String(o.id))! } : o))
+        );
+      }
+      if (queueRes.updatedProductQuantities && queueRes.updatedProductQuantities.length > 0) {
+        const qtyMap = new Map(queueRes.updatedProductQuantities.map((u) => [u.product_id, u.new_quantity]));
+        setProducts((prev) =>
+          prev.map((p) => (qtyMap.has(String(p.id)) ? { ...p, quantity: qtyMap.get(String(p.id))! } : p))
+        );
+      }
       if (queueRes.conflicts && queueRes.conflicts.length > 0) {
         const firstConflict = queueRes.conflicts[0];
         setLicenseNotification(
@@ -1549,12 +1732,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const details: string[] = [];
 
       if (data.products && data.products.length > 0) {
-        setProducts(data.products);
-        details.push(`${data.products.length} réf.`);
+        const nextProducts = data.products;
+        setProducts((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextProducts) ? prev : nextProducts
+        );
+        details.push(`${nextProducts.length} réf.`);
       }
       if (data.movements && data.movements.length > 0) {
-        setMovements(data.movements);
-        details.push(`${data.movements.length} flux`);
+        const nextMovements = data.movements;
+        setMovements((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextMovements) ? prev : nextMovements
+        );
+        details.push(`${nextMovements.length} flux`);
       }
 
       let deletedIds: string[] = [];
@@ -1573,7 +1762,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           currentUser ? [currentUser] : []
         ).filter((u) => !(u as any).is_deleted && !deletedIds.includes(String(u.id)));
         finalSyncUsers = mergedDbUsers;
-        return mergedDbUsers.length > 0 ? mergedDbUsers : prev;
+        if (mergedDbUsers.length === 0) return prev;
+        return JSON.stringify(prev) === JSON.stringify(mergedDbUsers) ? prev : mergedDbUsers;
       });
 
       if (finalSyncUsers.length > 0) {
@@ -1585,24 +1775,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (data.roles && data.roles.length > 0) {
-        setRoles(data.roles);
+        const nextRoles = data.roles;
+        setRoles((prev) => (JSON.stringify(prev) === JSON.stringify(nextRoles) ? prev : nextRoles));
       }
       if (data.departments && data.departments.length > 0) {
-        setDepartments(data.departments);
+        const nextDepartments = data.departments;
+        setDepartments((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextDepartments) ? prev : nextDepartments
+        );
       }
       if (data.projects && data.projects.length > 0) {
-        setProjects(data.projects);
+        const nextProjects = data.projects;
+        setProjects((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextProjects) ? prev : nextProjects
+        );
       }
       if (data.subCategories && data.subCategories.length > 0) {
-        setSubCategories(data.subCategories);
+        const nextSubCategories = data.subCategories;
+        setSubCategories((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextSubCategories) ? prev : nextSubCategories
+        );
       }
       if (data.depots && data.depots.length > 0) {
-        setDepots(data.depots);
-        details.push(`${data.depots.length} dépôts`);
+        const nextDepots = data.depots;
+        setDepots((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextDepots) ? prev : nextDepots
+        );
+        details.push(`${nextDepots.length} dépôts`);
       }
       if (data.orders && data.orders.length > 0) {
-        setOrders((prev) => mergeMaterialOrdersLists(prev, data.orders));
-        details.push(`${data.orders.length} cmd.`);
+        const nextOrdersRaw = data.orders;
+        setOrders((prev) => {
+          const next = mergeMaterialOrdersLists(prev, nextOrdersRaw);
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+        });
+        details.push(`${nextOrdersRaw.length} cmd.`);
       }
 
       if (currentUser) {
@@ -1623,7 +1830,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSupabaseSyncMessage(`Erreur de synchronisation : ${formatPostgresErrorMessage(err)}`);
       return false;
     }
-  }, [supabaseUrl, supabaseKey, currentUser, language]);
+  }, [supabaseUrl, supabaseKey, currentUser]);
 
   // Session persistence and real-time auth state listener
   useEffect(() => {
@@ -1681,7 +1888,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (resolvedProfile && !resolvedProfile.is_blocked) {
             const cleanProf = sanitizeUserForDirectory(resolvedProfile);
-            setCurrentUser(cleanProf);
+            setCurrentUser((prev) => {
+              if (prev && JSON.stringify(prev) === JSON.stringify(cleanProf)) {
+                return prev;
+              }
+              return cleanProf;
+            });
             localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(cleanProf));
             let deletedIds: string[] = [];
             try {
@@ -1689,11 +1901,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               if (rawDel) deletedIds = JSON.parse(rawDel);
             } catch {}
             const activeInitial = INITIAL_USERS.filter((u) => !deletedIds.includes(String(u.id)));
-            setUsers((prev) =>
-              mergeUserLists(activeInitial, prev, [cleanProf]).filter(
+            setUsers((prev) => {
+              const next = mergeUserLists(activeInitial, prev, [cleanProf]).filter(
                 (u) => !(u as any).is_deleted && !deletedIds.includes(String(u.id))
-              )
-            );
+              );
+              return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+            });
           }
         }
       }
@@ -1721,27 +1934,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     let isMounted = true;
     let isPolling = false;
+    let lastLiveSyncAt = 0;
 
-    const runSilentLiveSync = async () => {
+    const runSilentLiveSync = async (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastLiveSyncAt < 3000) return;
       if (!isMounted || isPolling || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
       isPolling = true;
+      lastLiveSyncAt = now;
       try {
+        // 1. Rejouer systématiquement la file d'attente hors ligne (sync_queue) à la reprise réseau
+        // avant d'écraser l'état local par les données distantes
+        const queueRes = await processSyncQueue(client);
+        if (!isMounted) return;
+        if (queueRes.updatedOrders && queueRes.updatedOrders.length > 0) {
+          const ordMap = new Map(queueRes.updatedOrders.map((u) => [u.id, u.order_number]));
+          setOrders((prev) =>
+            prev.map((o) => (ordMap.has(String(o.id)) ? { ...o, order_number: ordMap.get(String(o.id))! } : o))
+          );
+        }
+        if (queueRes.updatedProductQuantities && queueRes.updatedProductQuantities.length > 0) {
+          const qtyMap = new Map(queueRes.updatedProductQuantities.map((u) => [u.product_id, u.new_quantity]));
+          setProducts((prev) =>
+            prev.map((p) => (qtyMap.has(String(p.id)) ? { ...p, quantity: qtyMap.get(String(p.id))! } : p))
+          );
+        }
+        if (queueRes.conflicts && queueRes.conflicts.length > 0) {
+          setLicenseNotification(
+            tr(
+              language,
+              `⚠️ Conflit de stock détecté : ${queueRes.conflicts[0].message}`,
+              `⚠️ Stock conflict detected: ${queueRes.conflicts[0].message}`
+            )
+          );
+        }
+
+        // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel sans re-rendu inutile
+        await performIncrementalSync(client).catch(() => {});
         const live = await fetchLiveOperationalData(client, currentUser);
         if (!isMounted) return;
         if (live.orders && live.orders.length > 0) {
-          setOrders((prev) => mergeMaterialOrdersLists(prev, live.orders));
+          const liveOrders = live.orders;
+          setOrders((prev) => {
+            const next = mergeMaterialOrdersLists(prev, liveOrders);
+            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+          });
         }
         if (currentUser) {
           reconcileUserBasketsWithRemote(live.userBaskets);
         }
         if (live.products && live.products.length > 0) {
-          setProducts(live.products);
+          const liveProducts = live.products;
+          setProducts((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveProducts) ? prev : liveProducts
+          );
         }
         if (live.movements && live.movements.length > 0) {
-          setMovements(live.movements);
+          const liveMovements = live.movements;
+          setMovements((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveMovements) ? prev : liveMovements
+          );
         }
         if (live.depots && live.depots.length > 0) {
-          setDepots(live.depots);
+          const liveDepots = live.depots;
+          setDepots((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveDepots) ? prev : liveDepots
+          );
         }
       } catch {
         // Ignorer silencieusement les erreurs réseau transitoires en arrière-plan
@@ -1753,9 +2011,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const channel = client
       .channel('tot-live-multi-device-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'material_orders' }, () => {
-        runSilentLiveSync();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, () => {
         runSilentLiveSync();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
@@ -1934,6 +2189,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const resetInactivityTimer = useCallback(() => {
     const now = Date.now();
+    if (now - lastActivityRef.current < 2500 && logoutTimerRef.current) {
+      return;
+    }
     lastActivityRef.current = now;
     try {
       localStorage.setItem(LAST_ACTIVITY_TS_KEY, String(now));
@@ -3150,7 +3408,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           user_id: currentUser ? currentUser.id : null,
           user_name: currentUser ? currentUser.name : 'Inconnu',
           movement_type: mode,
+          type: mode,
+          quantity: delta,
           quantity_changed: delta,
+          depot_name: item.product.store_name || 'Dépôt Principal',
           site_number: siteNumber || null,
           department_name: depName || null,
           total_cost: delta * (item.product.unit_price || 0),
@@ -3196,18 +3457,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           metadata: { id: mov.id, product_ref: mov.product_ref },
         };
 
-        if (client) {
+        if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
           pushMovementToSupabase(client, mov, newQty, currentUser?.id, opId)
             .then((res) => {
               if (!res.success) {
                 if (res.conflict) {
                   setLicenseNotification(`⚠️ Conflit de stock sur ${mov.product_ref} : ${res.error}`);
-                } else {
+                } else if (res.isNetworkError) {
                   // Erreur transitoire ou coupure réseau : mise en file d'attente
                   enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch((err) =>
                     console.warn('[SyncQueue] enqueue error:', err)
                   );
                 }
+              } else if (typeof res.newQty === 'number') {
+                setProducts((prev) =>
+                  prev.map((p) => (p.id === mov.product_id ? { ...p, quantity: res.newQty! } : p))
+                );
               }
             })
             .catch(() => {
@@ -3226,6 +3491,189 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, message: `${newMovements.length} mouvement(s) enregistré(s) avec succès !` };
     },
     [batchCart, scanState.mode, currentUser, projects, departments, depots, language, supabaseUrl, supabaseKey, commitUserBasketsChange]
+  );
+
+  // Transfert de stock inter-dépôts atomique (TRANSFER)
+  const transferStockBetweenDepots = useCallback(
+    async (params: {
+      productId: string;
+      sourceDepotName: string;
+      destDepotName: string;
+      quantity: number;
+      destRack?: string;
+      reason?: string;
+    }) => {
+      const prod = products.find((p) => String(p.id) === String(params.productId));
+      if (!prod) {
+        return { success: false, message: tr(language, 'Article introuvable.', 'Product not found.') };
+      }
+
+      const srcDepot = (params.sourceDepotName || prod.store_name || 'Dépôt Principal').trim();
+      const dstDepot = (params.destDepotName || '').trim();
+      const qty = Number(params.quantity);
+
+      if (!dstDepot || dstDepot.toLowerCase() === srcDepot.toLowerCase()) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            'Le dépôt de destination doit être renseigné et distinct du dépôt source.',
+            'Destination depot must be specified and different from source depot.'
+          ),
+        };
+      }
+
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return {
+          success: false,
+          message: tr(language, 'La quantité transférée doit être supérieure à zéro.', 'Transfer quantity must be greater than zero.'),
+        };
+      }
+
+      if (isDepotClosed(depots, srcDepot) || isDepotClosed(depots, dstDepot)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            'Transfert refusé : le dépôt source ou le dépôt de destination est fermé / inactif.',
+            'Transfer rejected: source or destination depot is closed/inactive.'
+          ),
+        };
+      }
+
+      if (qty > (prod.quantity || 0)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            `Stock insuffisant pour "${prod.reference}" (Disponible : ${prod.quantity || 0}, Demandé : ${qty}).`,
+            `Insufficient stock for "${prod.reference}" (Available: ${prod.quantity || 0}, Requested: ${qty}).`
+          ),
+        };
+      }
+
+      const now = new Date().toISOString();
+      const opId =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : 'trf-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+
+      const mov: StockMovement = {
+        id: `mov-trf-${Date.now()}-${opId.slice(0, 8)}`,
+        product_id: prod.id,
+        product_ref: prod.reference,
+        user_id: currentUser ? currentUser.id : null,
+        user_name: currentUser ? currentUser.name : 'Transfert Inter-Dépôts',
+        movement_type: 'OUT',
+        type: 'TRANSFER',
+        quantity: qty,
+        quantity_changed: qty,
+        depot_name: srcDepot,
+        dest_depot_name: dstDepot,
+        reason: params.reason || `Transfert ${srcDepot} -> ${dstDepot}`,
+        site_number: `TRANSFERT -> ${dstDepot}`,
+        department_name: currentUser?.department || 'Logistique',
+        total_cost: qty * (prod.unit_price || 0),
+        created_at: now,
+        metadata: {
+          dest_depot_name: dstDepot,
+          dest_rack: params.destRack || null,
+        },
+      };
+
+      // Si tout le stock de l'article est transféré vers le nouveau dépôt, mettre à jour store_name localement
+      const updatedStoreName = qty >= (prod.quantity || 0) ? dstDepot : prod.store_name;
+      setProducts((prev) =>
+        prev.map((p) =>
+          p.id === prod.id
+            ? {
+                ...p,
+                store_name: updatedStoreName,
+                shelf_name: qty >= (prod.quantity || 0) && params.destRack ? params.destRack : p.shelf_name,
+              }
+            : p
+        )
+      );
+      setMovements((prev) => [mov, ...prev]);
+      await putToStore('stock_movements', mov).catch(() => {});
+
+      const rpcPayload = {
+        product_id: prod.id,
+        depot_name: srcDepot,
+        dest_depot_name: dstDepot,
+        dest_rack: params.destRack || null,
+        type: 'TRANSFER',
+        quantity: qty,
+        reason: mov.reason,
+        project_name: mov.site_number,
+        department: mov.department_name,
+        metadata: {
+          id: mov.id,
+          product_ref: prod.reference,
+          dest_depot_name: dstDepot,
+          dest_rack: params.destRack || null,
+        },
+      };
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        const res = await pushMovementToSupabase(
+          client,
+          mov,
+          prod.quantity,
+          currentUser?.id,
+          opId,
+          dstDepot,
+          params.destRack
+        );
+        if (!res.success) {
+          if (res.isNetworkError) {
+            await enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId);
+            return {
+              success: true,
+              message: tr(
+                language,
+                `Transfert vers ${dstDepot} enregistré hors ligne (sera synchronisé dès le retour du réseau).`,
+                `Transfer to ${dstDepot} queued offline.`
+              ),
+              newQty: prod.quantity,
+            };
+          }
+          return {
+            success: false,
+            message: res.error || tr(language, 'Échec du transfert inter-dépôts.', 'Inter-depot transfer failed.'),
+          };
+        }
+        if (typeof res.newQty === 'number') {
+          setProducts((prev) =>
+            prev.map((p) => (p.id === prod.id ? { ...p, quantity: res.newQty! } : p))
+          );
+        }
+        return {
+          success: true,
+          message: tr(
+            language,
+            `Transfert de ${qty} x ${prod.reference} de "${srcDepot}" vers "${dstDepot}" effectué avec succès.`,
+            `Transferred ${qty} x ${prod.reference} from "${srcDepot}" to "${dstDepot}".`
+          ),
+          newQty: res.newQty,
+          depotQty: res.depotQty,
+          destDepotQty: res.destDepotQty,
+        };
+      }
+
+      await enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId);
+      return {
+        success: true,
+        message: tr(
+          language,
+          `Transfert vers ${dstDepot} enregistré hors ligne (sera synchronisé dès le retour du réseau).`,
+          `Transfer to ${dstDepot} saved offline.`
+        ),
+        newQty: prod.quantity,
+      };
+    },
+    [products, depots, currentUser, language, supabaseUrl, supabaseKey]
   );
 
   // Material Orders & Fulfillment (Click & Collect Drive Magasin)
@@ -3294,8 +3742,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateOrderBasketSite = useCallback(
     (id: string, siteNumber: string) => {
+      const normalizedSite = siteNumber.trim() || undefined;
+      const target = orderBasketsRef.current.find((b) => b.id === id);
+      if (!target || target.site_number === normalizedSite) return;
       const next = orderBasketsRef.current.map((b) =>
-        b.id === id ? { ...b, site_number: siteNumber.trim() || undefined } : b
+        b.id === id ? { ...b, site_number: normalizedSite } : b
       );
       commitUserBasketsChange(next, activeOrderBasketIdRef.current, batchCartRef.current);
     },
@@ -3563,9 +4014,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : undefined;
       const effectiveDept = projDept || userDept;
 
+      const userIdStr = currentUser ? String(currentUser.id) : '';
+      const isRequesterApprover = Boolean(
+        currentUser &&
+          (Number(currentUser.id) === 0 ||
+            Number(currentUser.role_id) === 0 ||
+            Number(currentUser.role_id) === 1 ||
+            Number(currentUser.role_id) === 2 ||
+            Number(currentUser.role_id) === 8 ||
+            userHasPermission('perm_order_approve') ||
+            (proj &&
+              (String(proj.manager_id) === userIdStr ||
+                proj.deputy_manager_ids?.some((id) => String(id) === userIdStr))) ||
+            (effectiveDept &&
+              (String(effectiveDept.manager_id) === userIdStr ||
+                effectiveDept.deputy_manager_ids?.some((id) => String(id) === userIdStr))))
+      );
+
       const requiresApproval =
         Boolean(effectiveDept?.require_order_approval) &&
-        totalCost >= (Number(effectiveDept?.order_approval_threshold) || 0);
+        totalCost >= (Number(effectiveDept?.order_approval_threshold) || 0) &&
+        !isRequesterApprover;
+
+      const AutoApproved =
+        Boolean(effectiveDept?.require_order_approval) &&
+        totalCost >= (Number(effectiveDept?.order_approval_threshold) || 0) &&
+        isRequesterApprover;
 
       const initialStatus: OrderStatus = requiresApproval ? 'WAITING_APPROVAL' : 'PENDING';
 
@@ -3582,8 +4056,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         total_cost: totalCost,
         items: [...itemsToSubmit],
         notes: notes || basketToSubmit?.notes || undefined,
-        approved_by: null,
-        approved_at: null,
+        approved_by: AutoApproved && currentUser ? currentUser.name : null,
+        approved_at: AutoApproved ? now.toISOString() : null,
         rejected_by: null,
         rejected_at: null,
         rejection_reason: null,
@@ -3932,19 +4406,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         badgeText: 'Retiré',
       });
 
-      // 5. Sync order + stock movements + product quantities to Supabase
+      // 5. Sync order + stock movements + product quantities to Supabase (or queue offline)
       const client = getClientSupabase(supabaseUrl, supabaseKey);
-      if (client) {
-        await upsertOrderToSupabase(client, order).catch((err) => {
-          console.warn('Supabase order collect error:', err);
-        });
+      for (const mov of newMovements) {
+        putToStore('stock_movements', mov).catch(() => {});
+      }
+      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        const ordRes = await upsertOrderToSupabase(client, order).catch(() => ({
+          success: false,
+          isNetworkError: true,
+        }));
+        if (!ordRes.success && ordRes.isNetworkError) {
+          enqueueSyncOperation('material_orders', 'UPDATE', order).catch(() => {});
+        }
         for (const mov of newMovements) {
           const prod = products.find((p) => String(p.id) === String(mov.product_id) || p.reference === mov.product_ref);
           const deduction = prod ? qtyDeductions.get(prod.id) || 0 : 0;
           const nextQty = prod ? Math.max(0, (prod.quantity || 0) - deduction) : undefined;
-          pushMovementToSupabase(client, mov, nextQty).catch((err) => {
-            console.warn('Supabase collect movement sync error:', err);
-          });
+          const opId =
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : 'col-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+          const rpcPayload = {
+            product_id: mov.product_id,
+            depot_name: mov.depot_name || order.depot_name || null,
+            type: 'OUT',
+            quantity: mov.quantity_changed,
+            reason: `Commande ${order.order_number}`,
+            project_name: order.site_number || null,
+            department: mov.department_name || null,
+            metadata: { id: mov.id, product_ref: mov.product_ref, order_number: order.order_number },
+          };
+          pushMovementToSupabase(client, mov, nextQty, currentUser?.id, opId)
+            .then((res) => {
+              if (!res.success && res.isNetworkError) {
+                enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
+              }
+            })
+            .catch(() => {
+              enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
+            });
+        }
+      } else {
+        enqueueSyncOperation('material_orders', 'UPDATE', order).catch(() => {});
+        for (const mov of newMovements) {
+          const opId =
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : 'col-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+          enqueueSyncOperation(
+            'stock_movements',
+            'RPC_STOCK_MOVEMENT',
+            {
+              product_id: mov.product_id,
+              depot_name: mov.depot_name || order.depot_name || null,
+              type: 'OUT',
+              quantity: mov.quantity_changed,
+              reason: `Commande ${order.order_number}`,
+              project_name: order.site_number || null,
+              department: mov.department_name || null,
+              metadata: { id: mov.id, product_ref: mov.product_ref, order_number: order.order_number },
+            },
+            opId
+          ).catch(() => {});
         }
       }
 
@@ -4148,13 +4672,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (order: MaterialOrder): boolean => {
       if (!currentUser) return false;
       const isSuperAdmin = Number(currentUser.role_id) === 0 || Number(currentUser.id) === 0;
-      // Règle stricte (PDF Chapitre 5) : Pas d'auto-validation de commande (sauf Super Administrateur)
-      if (!isSuperAdmin && order.requester_id && String(order.requester_id) === String(currentUser.id)) {
-        return false;
-      }
-      // Super Admin ou Administrateur (rôle 2) ou détenteur de la permission 'perm_order_approve'
+      // Super Admin, Administrateur (rôle 1 ou 2) ou détenteur de la permission 'perm_order_approve'
       if (
         isSuperAdmin ||
+        Number(currentUser.role_id) === 1 ||
         Number(currentUser.role_id) === 2 ||
         userHasPermission('perm_order_approve')
       ) {
@@ -4168,7 +4689,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const proj = projects.find(
         (p) =>
           p.project_number.toUpperCase() === cleanSite ||
-          cleanSite.includes(p.project_number.toUpperCase()) ||
+          (cleanSite && cleanSite.includes(p.project_number.toUpperCase())) ||
           (p.project_name && cleanSiteName && p.project_name.toLowerCase().trim() === cleanSiteName)
       );
       if (proj) {
@@ -4178,6 +4699,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // 2. Chef de Département ou Suppléant (du département du chantier ou du service demandeur)
       const requesterDeptStr = (order.requester_department || '').trim().toLowerCase();
+      const userDeptStr = (currentUser.department || '').trim().toLowerCase();
       for (const d of departments) {
         const isManager = String(d.manager_id) === userIdStr;
         const isDeputy = d.deputy_manager_ids?.some((id) => String(id) === userIdStr);
@@ -4192,11 +4714,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return true;
           }
           // Correspondance avec le département de l'utilisateur connecté s'il est du même service
-          if (
-            currentUser.department &&
-            requesterDeptStr &&
-            currentUser.department.toLowerCase().trim() === requesterDeptStr
-          ) {
+          if (userDeptStr && requesterDeptStr && userDeptStr === requesterDeptStr) {
+            return true;
+          }
+        }
+      }
+
+      // 3. Rôle 8 (Responsable de Département) pour les commandes de son propre département ou de ses chantiers
+      if (Number(currentUser.role_id) === 8 && userDeptStr) {
+        if (requesterDeptStr && requesterDeptStr === userDeptStr) {
+          return true;
+        }
+        if (proj) {
+          const projDept = departments.find((d) => d.id === proj.department_id);
+          if (projDept && projDept.name.toLowerCase().trim() === userDeptStr) {
             return true;
           }
         }
@@ -4288,14 +4819,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const order = orders.find((o) => o.id === orderId);
       if (!order) {
         return { success: false, message: tr(language, 'Commande introuvable.', 'Order not found.') };
-      }
-      // Strict RLS requirement: Pas d'auto-approbation
-      if (String(order.requester_id) === String(currentUser?.id)) {
-        return {
-          success: false,
-          message:
-            tr(language, 'Accès refusé : L\'auto-approbation d\'une commande par son propre demandeur est strictement interdite.', 'Access denied: Self-approval is strictly forbidden.'),
-        };
       }
       // Allowed transition: WAITING_APPROVAL -> PENDING
       if (order.status !== 'WAITING_APPROVAL') {
@@ -4814,11 +5337,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return false;
       }
 
-      // Quota check: if creating a new product and quota is reached (plafonds via plan_limits(plan))
-      const maxAllowed = getPlanMaxReferences(license?.plan_type);
+      // Quota check: strictement issu de la licence signée (ou forfait Gratuit si non signée)
+      const signedQuotas = enforceSignedLicenseQuotasSync(license);
+      const maxAllowed = signedQuotas.max_references;
       if (isNew && products.length >= maxAllowed) {
         alert(
-          `Limite de catalogue atteinte (${products.length}/${maxAllowed} articles).\n\nVotre forfait actuel (${(license?.plan_type || 'gratuit').toUpperCase()}) est limité à ${maxAllowed} articles.\nVeuillez activer une licence Standard, Pro ou Entreprise dans le menu Entreprise pour ajouter de nouveaux articles.`
+          `Limite de catalogue atteinte (${products.length}/${maxAllowed} articles).\n\nVotre forfait certifié (${signedQuotas.plan.toUpperCase()}) est limité à ${maxAllowed} articles.\nVeuillez activer une licence Standard, Pro ou Entreprise dans le menu Entreprise pour ajouter de nouveaux articles.`
         );
         return false;
       }
@@ -4904,16 +5428,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             await syncLicenseToClientDatabase(license, client).catch(() => {});
             res = await upsertProductToSupabase(client, savedProduct, true);
           }
-          if (
-            !res.success &&
-            res.error &&
-            !(
-              products.length < maxAllowed &&
-              (res.error.toLowerCase().includes('quota') ||
-                res.error.toLowerCase().includes('licence') ||
-                res.error.toLowerCase().includes('license'))
-            )
-          ) {
+          if (!res.success && res.error) {
+            if (isNew && (res.error.toLowerCase().includes('quota') || res.error.includes('23514'))) {
+              setProducts((prev) => prev.filter((item) => item.id !== savedProduct.id));
+            }
             alert(res.error);
           }
         }
@@ -4993,6 +5511,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const delta = Math.abs(adj.difference);
         const movType: MovementType = adj.difference > 0 ? 'IN' : 'OUT';
+        const targetDepot =
+          inventoryAuditTargetDepot || prod.store_name || 'Dépôt Principal';
 
         newMovements.push({
           id: `mov-audit-${Date.now()}-${crypto.randomUUID()}`,
@@ -5001,7 +5521,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           user_id: currentUser?.id || null,
           user_name: currentUser?.name || 'Inventaire Physique',
           movement_type: movType,
+          type: 'INVENTORY',
+          quantity: newQty,
           quantity_changed: delta,
+          depot_name: targetDepot,
+          reason: adj.reason || 'Régularisation Inventaire',
           site_number: 'INV-REGUL',
           department_name: adj.reason || 'Régularisation Inventaire',
           total_cost: delta * (prod.unit_price || 0),
@@ -5036,18 +5560,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
       });
 
-      // Push to Supabase if connected
+      // Push to Supabase via process_stock_movement (type: INVENTORY) or enqueue in sync_queue if offline
       const client = getClientSupabase(supabaseUrl, supabaseKey);
-      if (client) {
-        for (const mov of newMovements) {
-          const newQty = updatedMap.get(mov.product_id);
-          pushMovementToSupabase(client, mov, newQty).catch((err) =>
-            console.warn('Erreur envoi régularisation Supabase:', err)
-          );
-        }
+      for (const mov of newMovements) {
+        const newQty = updatedMap.get(mov.product_id) ?? 0;
+        const opId =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : 'inv-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
 
+        putToStore('stock_movements', mov).catch(() => {});
+
+        const rpcPayload = {
+          product_id: mov.product_id,
+          depot_name: mov.depot_name || 'Dépôt Principal',
+          type: 'INVENTORY',
+          quantity: newQty,
+          reason: mov.reason || 'Régularisation Inventaire',
+          project_name: 'INV-REGUL',
+          department: mov.department_name || 'Régularisation Inventaire',
+          metadata: { id: mov.id, product_ref: mov.product_ref },
+        };
+
+        if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+          pushMovementToSupabase(client, mov, newQty, currentUser?.id, opId)
+            .then((res) => {
+              if (!res.success && res.isNetworkError) {
+                enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
+              } else if (res.success && typeof res.newQty === 'number') {
+                setProducts((prev) =>
+                  prev.map((p) => (p.id === mov.product_id ? { ...p, quantity: res.newQty! } : p))
+                );
+              }
+            })
+            .catch(() => {
+              enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
+            });
+        } else {
+          enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
+        }
+      }
+
+      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
         recordInventoryAuditToSupabase(client, {
-          depot_name: currentUser?.department || 'Inventaire Principal',
+          depot_name: inventoryAuditTargetDepot || currentUser?.department || 'Inventaire Principal',
           auditor_id: currentUser?.id,
           auditor_name: currentUser?.name || 'Inventaire Physique',
           items_counted: adjustments.length,
@@ -5084,6 +5640,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saveDepartment = useCallback(async (dep: Partial<Department>) => {
     const name = dep.name?.trim();
     if (!name) return false;
+    const normalized = name.toLowerCase();
+    const duplicate = departments.find(
+      (d) =>
+        d.name.trim().toLowerCase() === normalized &&
+        (dep.id === undefined || d.id !== dep.id)
+    );
+    if (duplicate) {
+      return false;
+    }
     const savedDep: Department = {
       ...dep,
       id: dep.id || Date.now(),
@@ -5103,7 +5668,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
     return true;
-  }, [supabaseUrl, supabaseKey]);
+  }, [departments, supabaseUrl, supabaseKey]);
 
   const deleteDepartment = useCallback(async (id: number) => {
     if (!userHasPermission('perm_dep_delete')) {
@@ -5125,6 +5690,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const project_number = proj.project_number?.trim();
     const project_name = proj.project_name?.trim();
     if (!project_number || !project_name) return false;
+    const duplicate = projects.find(
+      (p) =>
+        p.project_number.trim().toLowerCase() === project_number.toLowerCase() &&
+        (proj.id === undefined || p.id !== proj.id)
+    );
+    if (duplicate) {
+      return false;
+    }
     const savedProj: Project = {
       ...proj,
       id: proj.id || Date.now(),
@@ -5145,7 +5718,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
     return true;
-  }, [supabaseUrl, supabaseKey]);
+  }, [projects, supabaseUrl, supabaseKey]);
 
   const deleteProject = useCallback(async (id: number) => {
     if (!userHasPermission('perm_proj_delete')) {
@@ -5390,6 +5963,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saveSubCategory = useCallback(async (name: string, id?: number) => {
     const trimmed = name.trim();
     if (!trimmed) return false;
+    const normalized = trimmed.toLowerCase();
+    const duplicate = subCategories.find(
+      (s) =>
+        s.name.trim().toLowerCase() === normalized &&
+        (id === undefined || s.id !== id)
+    );
+    if (duplicate) {
+      return false;
+    }
     const catId = id || Date.now();
     const updatedCat: SubCategory = { id: catId, name: trimmed };
     setSubCategories((prev) => {
@@ -5406,7 +5988,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
     return true;
-  }, [supabaseUrl, supabaseKey]);
+  }, [subCategories, supabaseUrl, supabaseKey]);
 
   const deleteSubCategory = useCallback(async (id: number) => {
     setSubCategories((prev) => prev.filter((s) => s.id !== id));
@@ -5419,10 +6001,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [supabaseUrl, supabaseKey]);
 
-  const maxDepots = useMemo(
-    () => Math.max(Number(license?.max_depots) || 0, getMaxDepotsForPlan(license?.plan_type)),
-    [license?.max_depots, license?.plan_type]
-  );
+  const maxDepots = useMemo(() => {
+    if (license?.signed_token) {
+      return enforceSignedLicenseQuotasSync(license).max_depots;
+    }
+    const canonical = normalizeToCanonicalPlan(
+      license?.plan || license?.plan_type || 'free',
+      license?.license_key
+    );
+    const limits = plan_limits(canonical);
+    const raw = Number(license?.max_depots) || 0;
+    return raw > 0 ? Math.min(raw, limits.max_depots) : limits.max_depots;
+  }, [license]);
 
   const saveDepot = useCallback(
     async (depotData: Partial<Depot> & { name: string }) => {
@@ -5571,16 +6161,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             syncRes.error.toLowerCase().includes('licence') ||
             syncRes.error.toLowerCase().includes('license'))
         ) {
-          // Si le quota vérifié par la licence de l'entreprise est bien respecté (activeDepotsCount < maxDepots),
-          // ne pas bloquer l'utilisateur à cause d'une table license_config ancienne verrouillée en lecture seule
-          if (activeDepotsCount >= maxDepots && existingIndex === -1) {
+          if (existingIndex === -1) {
             setDepots((prev) => prev.filter((d) => d.name.toLowerCase() !== cleanName.toLowerCase()));
-            return {
-              success: false,
-              message: `Rejet par la base de données (Modèle B) : ${syncRes.error}`,
-            };
           }
-          supabaseFeedback = ` • Enregistré (quota licence ${license?.plan_type?.toUpperCase() || 'PRO'} : ${maxDepots} dépôts validé)`;
+          return {
+            success: false,
+            message: `Rejet par la base de données : ${syncRes.error}`,
+          };
         } else if (syncRes.isNetworkError) {
           supabaseFeedback = ` • ⚠️ Serveur Supabase inaccessible (Failed to fetch). Dépôt conservé localement.`;
         } else if (syncRes.isTableMissing) {
@@ -5830,6 +6417,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeFromOrderCart,
       clearOrderCart,
       submitMaterialOrder,
+      transferStockBetweenDepots,
       assignOrderToMe,
       markOrderReady,
       markOrderCollected,
@@ -6018,6 +6606,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeFromCart,
       clearCart,
       confirmBatchMovements,
+      transferStockBetweenDepots,
       orders,
       orderCart,
       orderBaskets,

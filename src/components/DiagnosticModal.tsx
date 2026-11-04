@@ -27,7 +27,9 @@ export const DiagnosticModal: React.FC = () => {
     supabaseUrl,
     supabaseKey,
     isSupabaseConnected,
+    appCompat,
     language,
+    t,
   } = useApp();
 
   const [loading, setLoading] = useState(false);
@@ -78,6 +80,20 @@ export const DiagnosticModal: React.FC = () => {
 
   if (!diagnosticModalOpen) return null;
 
+  const isSchema100 =
+    appCompat?.schemaVersion === '1.0.0' ||
+    rows.some(
+      (r) =>
+        (r.check_key === 'app_compat' || r.check_key === 'schema_version') &&
+        r.details.includes('1.0.0') &&
+        !r.details.includes('schema_version = 1.1.0') &&
+        !r.details.includes('1.1.0 (attendu')
+    );
+
+  const permissiveRlsRow = rows.find(
+    (r) => r.check_key === 'permissive_rls_policies' && r.status === 'ERREUR'
+  );
+
   const buildPlainTextReport = (): string => {
     const nowIso = new Date().toISOString();
     const lines: string[] = [
@@ -97,6 +113,14 @@ export const DiagnosticModal: React.FC = () => {
     } else {
       for (const r of rows) {
         lines.push(`[${r.status}] ${r.check_label} (${r.check_key}) : ${r.details}`);
+      }
+      if (permissiveRlsRow) {
+        lines.push(
+          '[ALERTE SÉCURITÉ RLS] Des règles RLS permissives héritées (public/anon USING true) subsistent. Ré-exécutez 02_rls_hardening.sql et 05_rpc_admin_users.sql (ou dist/install.sql) pour les purger.'
+        );
+      }
+      if (isSchema100) {
+        lines.push(`[INFO] ${t('diag_schema_1_0_0_upgrade_hint')}`);
       }
     }
 
@@ -222,26 +246,65 @@ export const DiagnosticModal: React.FC = () => {
               </div>
               <p className="text-[11px] font-mono break-words">{errorMsg}</p>
               <p className="text-[11px] text-rose-600/90 dark:text-rose-300/80">
-                {tr(language, 'Vérifiez que le script 07_app_compat.sql a bien été exécuté sur votre base Supabase.', 'Verify that script 07_app_compat.sql has been executed on your Supabase database.')}
+                {tr(
+                  language,
+                  'Vérifiez que les scripts 07_app_compat.sql et 08_print_jobs.sql (ou dist/install.sql) ont bien été exécutés sur votre base Supabase.',
+                  'Verify that scripts 07_app_compat.sql and 08_print_jobs.sql (or dist/install.sql) have been executed on your Supabase database.'
+                )}
               </p>
             </div>
           ) : (
-            rows.map((item) => (
-              <div
-                key={item.check_key}
-                className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 space-y-1"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100">
-                    {item.check_label}
-                  </span>
-                  {renderStatusBadge(item.status)}
+            <>
+              {permissiveRlsRow && (
+                <div
+                  data-testid="diag-permissive-rls-alert"
+                  className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-[11px] font-bold text-rose-800 dark:text-rose-200 space-y-1"
+                >
+                  <div className="flex items-center gap-1.5 font-extrabold">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                    <span>
+                      {tr(
+                        language,
+                        'Règles RLS permissives détectées (public / anon USING true)',
+                        'Permissive RLS policies detected (public / anon USING true)'
+                      )}
+                    </span>
+                  </div>
+                  <p className="font-normal">
+                    {tr(
+                      language,
+                      'Des règles RLS anciennes ou trop permissives subsistent sur votre base. Ré-exécutez les scripts 02_rls_hardening.sql et 05_rpc_admin_users.sql (ou dist/install.sql) pour purger toutes les anciennes règles et recréer uniquement les politiques sécurisées.',
+                      'Legacy or overly permissive RLS policies remain on your database. Re-run scripts 02_rls_hardening.sql and 05_rpc_admin_users.sql (or dist/install.sql) to purge all legacy policies and recreate only secure policies.'
+                    )}
+                  </p>
                 </div>
-                <div className="text-[11px] text-slate-600 dark:text-slate-300 font-mono break-words">
-                  {item.details}
+              )}
+              {isSchema100 && (
+                <div
+                  data-testid="diag-schema-1-0-0-hint"
+                  className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] font-bold text-amber-800 dark:text-amber-200"
+                >
+                  {t('diag_schema_1_0_0_upgrade_hint')}
                 </div>
-              </div>
-            ))
+              )}
+              {rows.map((item) => (
+                <div
+                  key={item.check_key}
+                  data-testid={`diag-check-${item.check_key}`}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 space-y-1"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100">
+                      {item.check_label}
+                    </span>
+                    {renderStatusBadge(item.status)}
+                  </div>
+                  <div className="text-[11px] text-slate-600 dark:text-slate-300 font-mono break-words">
+                    {item.details}
+                  </div>
+                </div>
+              ))}
+            </>
           )}
         </div>
 

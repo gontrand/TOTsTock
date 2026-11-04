@@ -30,16 +30,9 @@ import {
   PrintJobRecord,
 } from '../services/printStationService';
 import {
-  buildLinuxDebPackageBytes,
-  buildLinuxInstallerScript,
-  buildMacAppBundleZipBytes,
-  buildMacInstallerScript,
-  buildWindowsExeInstallerBytes,
-  buildWindowsInstallerScript,
+  detectClientDesktopOs,
+  getConfiguredBinaryInstallerUrl,
 } from '../utils/desktopInstallerDownload';
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
 import { Product } from '../types';
 
 describe('Prompt v32 — Sécurité du processus principal Electron (desktop/security.mjs)', () => {
@@ -393,54 +386,62 @@ describe('Prompt v32 — Pont Frontend desktopBridge.ts & Poste d’impression',
     expect(openExternalSpy).toHaveBeenCalledWith('https://github.com/org/tot-stock/releases');
   });
 
-  it('génère les installateurs binaires natifs Linux (.deb validé par dpkg-deb), Windows (.exe PE64) et macOS (.app.zip)', async () => {
-    // 1. Paquet Debian .deb validé par /usr/bin/dpkg-deb
-    const debBytes = await buildLinuxDebPackageBytes('https://tot.example.com', '5.5.0');
-    expect(debBytes.length).toBeGreaterThan(200);
-    const magic = new TextDecoder().decode(debBytes.slice(0, 8));
-    expect(magic).toBe('!<arch>\n');
+  it('utilise l’adresse configurée (VITE_DESKTOP_INSTALLER_URL ou par OS) quand elle existe, et ne crée aucun Blob sinon (v36)', () => {
+    const OriginalBlob = globalThis.Blob;
+    const blobSpy = vi.fn((...args: any[]) => new OriginalBlob(...args));
+    (globalThis as any).Blob = blobSpy;
 
-    const tmpDebPath = path.join(os.tmpdir(), `tot-stock-test-${Date.now()}.deb`);
     try {
-      fs.writeFileSync(tmpDebPath, debBytes);
-      const debInfo = execFileSync('dpkg-deb', ['--info', tmpDebPath], { encoding: 'utf8' });
-      expect(debInfo).toContain('Package: tot-stock-desktop');
-      expect(debInfo).toContain('Version: 5.5.0');
+      // 1. Détection du système d'exploitation client
+      expect(detectClientDesktopOs('Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Win32')).toBe('windows');
+      expect(detectClientDesktopOs('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)', 'MacIntel')).toBe('mac');
+      expect(detectClientDesktopOs('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64')).toBe('linux');
 
-      const debContents = execFileSync('dpkg-deb', ['--contents', tmpDebPath], {
-        encoding: 'utf8',
-      });
-      expect(debContents).toContain('./usr/bin/tot-stock');
-      expect(debContents).toContain('./usr/share/applications/tot-stock.desktop');
-      expect(debContents).toContain('./usr/share/icons/hicolor/scalable/apps/tot-stock.svg');
+      // 2. Sans URL configurée (ou avec une URL d'APK Android) : retourne null et ne crée aucun Blob
+      expect(getConfiguredBinaryInstallerUrl('windows', { envOverride: {}, updateUrl: null })).toBeNull();
+      expect(getConfiguredBinaryInstallerUrl('linux', { envOverride: {}, updateUrl: '' })).toBeNull();
+      expect(getConfiguredBinaryInstallerUrl('mac', { envOverride: {}, updateUrl: 'https://tot.example.com/tot-stock.apk' })).toBeNull();
+      expect(blobSpy).not.toHaveBeenCalled();
+
+      // 3. Avec VITE_DESKTOP_INSTALLER_URL configurée : retourne cette adresse pour tout OS, sans créer de Blob
+      const genericReleasesUrl = 'https://github.com/org/tot-stock/releases/latest';
+      expect(
+        getConfiguredBinaryInstallerUrl('windows', {
+          envOverride: { VITE_DESKTOP_INSTALLER_URL: genericReleasesUrl },
+        })
+      ).toBe(genericReleasesUrl);
+      expect(
+        getConfiguredBinaryInstallerUrl('linux', {
+          envOverride: { VITE_DESKTOP_INSTALLER_URL: genericReleasesUrl },
+        })
+      ).toBe(genericReleasesUrl);
+      expect(
+        getConfiguredBinaryInstallerUrl('mac', {
+          envOverride: { VITE_DESKTOP_INSTALLER_URL: genericReleasesUrl },
+        })
+      ).toBe(genericReleasesUrl);
+
+      // 4. Avec une variable spécifique à l'OS (prioritaire sur VITE_DESKTOP_INSTALLER_URL) ou updateUrl compatible
+      expect(
+        getConfiguredBinaryInstallerUrl('windows', {
+          envOverride: {
+            VITE_DESKTOP_INSTALLER_URL: genericReleasesUrl,
+            VITE_DESKTOP_WIN_URL: 'https://releases.tot.example.com/TOT-Stock-5.5.0-win-x64.exe',
+          },
+        })
+      ).toBe('https://releases.tot.example.com/TOT-Stock-5.5.0-win-x64.exe');
+
+      expect(
+        getConfiguredBinaryInstallerUrl(
+          'linux',
+          'https://releases.tot.example.com/TOT-Stock-5.5.0-linux-amd64.deb'
+        )
+      ).toBe('https://releases.tot.example.com/TOT-Stock-5.5.0-linux-amd64.deb');
+
+      expect(blobSpy).not.toHaveBeenCalled();
     } finally {
-      if (fs.existsSync(tmpDebPath)) {
-        fs.unlinkSync(tmpDebPath);
-      }
+      (globalThis as any).Blob = OriginalBlob;
     }
-
-    // 2. Exécutable Windows PE64 (.exe)
-    const exeBytes = buildWindowsExeInstallerBytes('https://tot.example.com', '5.5.0');
-    expect(exeBytes[0]).toBe(0x4d); // 'M'
-    expect(exeBytes[1]).toBe(0x5a); // 'Z'
-    expect(exeBytes[0x80]).toBe(0x50); // 'P'
-    expect(exeBytes[0x81]).toBe(0x45); // 'E'
-    const exeText = new TextDecoder().decode(exeBytes);
-    expect(exeText).toContain('KERNEL32.dll');
-    expect(exeText).toContain('WinExec');
-    expect(exeText).toContain('--kiosk-printing');
-
-    // 3. Bundle d'application macOS (.app.zip)
-    const macZipBytes = buildMacAppBundleZipBytes('https://tot.example.com', '5.5.0');
-    expect(macZipBytes[0]).toBe(0x50); // 'P'
-    expect(macZipBytes[1]).toBe(0x4b); // 'K'
-    const macZipText = new TextDecoder().decode(macZipBytes);
-    expect(macZipText).toContain('TOT Stock.app/Contents/Info.plist');
-    expect(macZipText).toContain('TOT Stock.app/Contents/MacOS/TOT Stock');
-
-    // Rétrocompatibilité scripts
-    expect(buildLinuxInstallerScript('https://tot.example.com', '5.5.0')).toContain('--kiosk-printing');
-    expect(buildWindowsInstallerScript('https://tot.example.com', '5.5.0')).toContain('--kiosk-printing');
-    expect(buildMacInstallerScript('https://tot.example.com', '5.5.0')).toContain('--kiosk-printing');
   });
 });
+

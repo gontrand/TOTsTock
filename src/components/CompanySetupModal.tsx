@@ -34,6 +34,7 @@ import {
   Mail,
   FileText,
   BadgeCheck,
+  Printer,
 } from 'lucide-react';
 import {
   ConnectionTestResult,
@@ -60,6 +61,7 @@ import {
   SQL_SCRIPT_05_RPC_ADMIN_USERS,
   SQL_SCRIPT_06_INSTALL_ADDITIONAL_ROLES,
   SQL_SCRIPT_07_APP_COMPAT,
+  SQL_SCRIPT_08_PRINT_JOBS,
   SQL_MASTER_LICENSES_SCHEMA,
 } from '../constants/supabaseScripts';
 
@@ -3536,6 +3538,36 @@ ON CONFLICT (id) DO UPDATE SET
                     >
                       <Copy className="w-3.5 h-3.5" />
                       <span>{copiedSql === 'script_07' ? (tr(language, 'Script 07 Copié !', 'Script 07 Copied!')) : (tr(language, 'Copier le script 07_app_compat.sql', 'Copy 07_app_compat.sql'))}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 08 : IMPRESSION D'ÉTIQUETTES À DISTANCE */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-orange-950 via-slate-900 to-amber-950 text-white border border-orange-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Printer className="w-4 h-4 text-orange-400" />
+                      <span className="font-black text-xs text-orange-200">
+                        {t('sql_script_08_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-orange-950 border border-orange-600 text-orange-300 font-bold">
+                      {t('sql_script_08_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-orange-100/90 leading-relaxed">
+                    {t('sql_script_08_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_08_PRINT_JOBS, 'script_08')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_08' ? t('sql_script_08_copied_btn') : t('sql_script_08_copy_btn')}</span>
                     </button>
                   </div>
                 </div>

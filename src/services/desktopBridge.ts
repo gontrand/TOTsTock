@@ -71,26 +71,43 @@ export interface DesktopNotificationPayload {
   dedupeKey?: string;
 }
 
-export type DesktopMenuCommandId =
-  | 'new-product'
-  | 'new-order'
-  | 'new-movement'
-  | 'import-csv'
-  | 'export-csv'
-  | 'print-labels'
-  | 'focus-search'
-  | 'command-palette'
-  | 'nav-dashboard'
-  | 'nav-inventory'
-  | 'nav-movements'
-  | 'nav-orders'
-  | 'nav-preparation'
-  | 'nav-print-station'
-  | 'nav-settings'
-  | 'open-shortcuts'
-  | 'open-docs'
-  | 'open-about'
-  | 'toggle-print-pause';
+export const DESKTOP_INTERNAL_ROUTES = [
+  'dashboard',
+  'inventory',
+  'movements',
+  'orders',
+  'preparation',
+  'print_station',
+  'settings',
+] as const;
+
+export type DesktopInternalRouteId = (typeof DESKTOP_INTERNAL_ROUTES)[number];
+
+export const DESKTOP_MENU_COMMANDS = [
+  'new-product',
+  'new-movement',
+  'new-order',
+  'import-csv',
+  'export-csv',
+  'print-labels',
+  'focus-search',
+  'command-palette',
+  'refresh-data',
+  'toggle-sidebar',
+  'toggle-print-pause',
+  'open-shortcuts',
+  'open-docs',
+  'open-about',
+  'nav-dashboard',
+  'nav-inventory',
+  'nav-movements',
+  'nav-orders',
+  'nav-preparation',
+  'nav-print-station',
+  'nav-settings',
+] as const;
+
+export type DesktopMenuCommandId = (typeof DESKTOP_MENU_COMMANDS)[number];
 
 export interface TotDesktopBridge {
   readonly isDesktop: true;
@@ -128,14 +145,13 @@ export interface TotDesktopBridge {
   showNotification?: (
     payload: DesktopNotificationPayload
   ) => Promise<{ ok: boolean; errorMessage?: string }>;
-  openSecondaryWindow?: (route?: string) => Promise<{ ok: boolean; errorMessage?: string }>;
+  openSecondaryWindow?: (route?: DesktopInternalRouteId | string) => Promise<{ ok: boolean; errorMessage?: string }>;
   updateTrayStatus?: (status: {
     pendingJobsCount: number;
     paused: boolean;
   }) => Promise<{ ok: boolean }>;
   setMenuLocale?: (locale: 'fr' | 'en' | 'nl') => Promise<{ ok: boolean }>;
   onMenuCommand?: (callback: (command: DesktopMenuCommandId) => void) => () => void;
-  onNavigateRoute?: (callback: (route: string) => void) => () => void;
 }
 
 declare global {
@@ -514,16 +530,6 @@ export function subscribeDesktopMenuCommand(
     return () => {};
   }
   return bridge.onMenuCommand(callback);
-}
-
-export function subscribeDesktopNavigateRoute(
-  callback: (route: string) => void
-): () => void {
-  const bridge = getBridge();
-  if (!bridge || typeof bridge.onNavigateRoute !== 'function') {
-    return () => {};
-  }
-  return bridge.onNavigateRoute(callback);
 }
 
 /**

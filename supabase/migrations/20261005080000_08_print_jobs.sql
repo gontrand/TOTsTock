@@ -90,12 +90,31 @@ CREATE INDEX IF NOT EXISTS idx_print_jobs_created_by_created_at
 
 -- -------------------------------------------------------------------------
 -- 2. DROITS & RLS SUR LES TABLES (aucun accès direct, tout passe par RPC)
+-- Purge de toutes les règles RLS existantes sur print_stations et print_jobs (v37)
 -- -------------------------------------------------------------------------
 ALTER TABLE public.print_stations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.print_jobs ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Deny direct access print_stations" ON public.print_stations;
-DROP POLICY IF EXISTS "Deny direct access print_jobs" ON public.print_jobs;
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'print_stations'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.print_stations', r.policyname);
+  END LOOP;
+
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'print_jobs'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.print_jobs', r.policyname);
+  END LOOP;
+END $$;
 
 REVOKE ALL ON TABLE public.print_stations FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON TABLE public.print_jobs FROM PUBLIC, anon, authenticated;
@@ -1043,11 +1062,15 @@ DECLARE
     'app_settings', 'audit_logs', 'license_config', 'app_compat',
     'print_stations', 'print_jobs'
   ];
+  v_explicit_public_select_tables TEXT[] := ARRAY['app_compat'];
   v_tbl TEXT;
   v_missing_tables TEXT[] := ARRAY[]::TEXT[];
   v_no_rls_tables TEXT[] := ARRAY[]::TEXT[];
   v_rls_enabled BOOLEAN;
   v_anon_leaks TEXT[] := ARRAY[]::TEXT[];
+  v_pol RECORD;
+  v_permissive_policies TEXT[] := ARRAY[]::TEXT[];
+  v_permissive_tables TEXT[] := ARRAY[]::TEXT[];
   v_super_admin_count INT := 0;
   v_plain_pin_count INT := 0;
   v_has_pin_col BOOLEAN := false;
@@ -1164,6 +1187,56 @@ BEGIN
       'Révocation des droits anon (users, license_config, movements, products, print_stations, print_jobs)'::TEXT,
       'OK'::TEXT,
       'Aucun privilège accordé à anon sur les tables sensibles'::TEXT;
+  END IF;
+
+  FOR v_pol IN
+    SELECT
+      p.tablename,
+      p.policyname,
+      p.cmd,
+      p.roles::text[] AS role_names
+    FROM pg_policies p
+    WHERE p.schemaname = 'public'
+      AND ('public' = ANY(p.roles::text[]) OR 'anon' = ANY(p.roles::text[]))
+      AND (
+        regexp_replace(LOWER(COALESCE(p.qual, '')), '[\s()]', '', 'g') = 'true'
+        OR regexp_replace(LOWER(COALESCE(p.with_check, '')), '[\s()]', '', 'g') = 'true'
+      )
+      AND NOT (
+        p.tablename = ANY(v_explicit_public_select_tables)
+        AND p.cmd = 'SELECT'
+        AND COALESCE(p.with_check, '') = ''
+      )
+    ORDER BY p.tablename ASC, p.policyname ASC
+  LOOP
+    v_permissive_policies := array_append(
+      v_permissive_policies,
+      format('%s."%s" (%s)', v_pol.tablename, v_pol.policyname, v_pol.cmd)
+    );
+    IF NOT (v_pol.tablename = ANY(v_permissive_tables)) THEN
+      v_permissive_tables := array_append(v_permissive_tables, v_pol.tablename);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_permissive_policies, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'permissive_rls_policies'::TEXT,
+      'Règles RLS permissives (public / anon USING true)'::TEXT,
+      'ERREUR'::TEXT,
+      format(
+        'Table(s) exposée(s) [%s] via : %s — ré-exécutez 02_rls_hardening.sql et 05_rpc_admin_users.sql',
+        array_to_string(v_permissive_tables, ', '),
+        array_to_string(v_permissive_policies, ', ')
+      )::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'permissive_rls_policies'::TEXT,
+      'Règles RLS permissives (public / anon USING true)'::TEXT,
+      'OK'::TEXT,
+      format(
+        'Aucune règle RLS permissive (public/anon USING true) hors lecture publique explicite (%s)',
+        array_to_string(v_explicit_public_select_tables, ', ')
+      )::TEXT;
   END IF;
 
   SELECT COUNT(*) INTO v_super_admin_count
@@ -1389,12 +1462,15 @@ DECLARE
   r RECORD;
 BEGIN
   FOR r IN
-    SELECT p.oid::regprocedure AS sig
+    SELECT p.oid::regprocedure AS sig, p.proname
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public' AND p.prosecdef
   LOOP
     EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon', r.sig);
+    IF r.proname NOT IN ('get_email_secret', 'sync_verified_license_token') THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role', r.sig);
+    END IF;
   END LOOP;
 END $$;
 

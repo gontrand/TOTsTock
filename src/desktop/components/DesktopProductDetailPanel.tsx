@@ -37,11 +37,15 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
   onRequestLabelPrint,
   onRequestMovement,
 }) => {
-  const { language, subCategories, depots } = useApp();
+  const { language, subCategories, depots, setProductFormState } = useApp();
   const ctrl = useProductDetailController(productId);
   const { product, subCategory } = ctrl;
 
   const [isEditingInline, setIsEditingInline] = useState(false);
+  const [editReference, setEditReference] = useState('');
+  const [editBarcode, setEditBarcode] = useState('');
+  const [editManufacturerRef, setEditManufacturerRef] = useState('');
+  const [editQrCode, setEditQrCode] = useState('');
   const [editBrand, setEditBrand] = useState('');
   const [editModel, setEditModel] = useState('');
   const [editRackLocation, setEditRackLocation] = useState('');
@@ -58,6 +62,10 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
   useEffect(() => {
     setIsEditingInline(false);
     if (product) {
+      setEditReference(product.reference || '');
+      setEditBarcode(product.barcode || '');
+      setEditManufacturerRef(product.manufacturer_ref || '');
+      setEditQrCode(product.qr_code || product.reference || '');
       setEditBrand(product.brand || '');
       setEditModel(product.model || '');
       setEditRackLocation(product.rack_location || '');
@@ -84,9 +92,14 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
     if (!ctrl.canEditProduct || savingInline) return;
     setSavingInline(true);
     try {
+      const cleanRef = editReference.trim() || product.reference;
       const ok = await ctrl.saveProduct(
         {
           ...product,
+          reference: cleanRef,
+          barcode: editBarcode.trim(),
+          manufacturer_ref: editManufacturerRef.trim(),
+          qr_code: editQrCode.trim() || cleanRef,
           brand: editBrand.trim() || product.brand,
           model: editModel.trim() || product.model,
           rack_location: editRackLocation.trim(),
@@ -239,6 +252,57 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    {tr(language, 'Référence Interne', 'Internal Ref', 'Interne ref.')}
+                  </label>
+                  <input
+                    type="text"
+                    value={editReference}
+                    onChange={(e) => setEditReference(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    {tr(language, 'Code-barres 1D (EAN / UPC)', '1D Barcode (EAN / UPC)', '1D Barcode (EAN / UPC)')}
+                  </label>
+                  <input
+                    type="text"
+                    value={editBarcode}
+                    onChange={(e) => setEditBarcode(e.target.value)}
+                    placeholder="Ex: 3700001234567"
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    {tr(language, 'Réf. Fabricant (OEM)', 'Manufacturer Ref (OEM)', 'Fabrikantref. (OEM)')}
+                  </label>
+                  <input
+                    type="text"
+                    value={editManufacturerRef}
+                    onChange={(e) => setEditManufacturerRef(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                    {tr(language, 'Code QR', 'QR Code', 'QR-code')}
+                  </label>
+                  <input
+                    type="text"
+                    value={editQrCode}
+                    onChange={(e) => setEditQrCode(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
                     {tr(language, 'Marque', 'Brand', 'Merk')}
                   </label>
                   <input
@@ -388,22 +452,31 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
+              <div className="flex items-center justify-between gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsEditingInline(false)}
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  onClick={() => setProductFormState({ open: true, product })}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                 >
-                  {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                  {tr(language, 'Formulaire complet…', 'Full form…', 'Volledig formulier…')}
                 </button>
-                <button
-                  type="submit"
-                  disabled={savingInline}
-                  className="px-3.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{tr(language, 'Enregistrer', 'Save', 'Opslaan')}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingInline(false)}
+                    className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingInline}
+                    className="px-3.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{tr(language, 'Enregistrer', 'Save', 'Opslaan')}</span>
+                  </button>
+                </div>
               </div>
             </form>
           ) : (
@@ -547,6 +620,14 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                   </span>
                   <span className="font-semibold text-slate-900 dark:text-white">
                     {subCategory?.name || '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {tr(language, 'Code-barres 1D', '1D Barcode', '1D Barcode')}
+                  </span>
+                  <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                    {product.barcode || '—'}
                   </span>
                 </div>
                 {product.manufacturer_ref && (
