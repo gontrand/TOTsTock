@@ -577,6 +577,8 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
     '07_app_compat.sql',
   ]) {
     await db.exec(readClientScript(scriptToReplay));
@@ -932,6 +934,8 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
     '07_app_compat.sql',
   ];
 
@@ -1356,6 +1360,8 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
     '07_app_compat.sql',
   ];
 
