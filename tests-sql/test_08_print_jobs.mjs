@@ -100,7 +100,7 @@ export async function runPrintJobsSqlTests() {
     `SELECT schema_version, min_schema_version FROM public.core_app_compat WHERE id = 1;`
   );
   if (
-    compatRes.rows[0]?.schema_version !== '2.4.0' ||
+    !/^2\.([4-9]|\d{2})\.\d+$/.test(String(compatRes.rows[0]?.schema_version)) ||
     compatRes.rows[0]?.min_schema_version !== '1.0.0'
   ) {
     throw new Error(

@@ -128,7 +128,7 @@ import {
   SQL_SCRIPT_14_MAILING,
 } from '../../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from '../../components/EdgeFunctionsSetupPanel';
-import { EmailSettingsPanel } from '../../components/SmtpSettingsModal';
+import { EmailSettingsPanel } from '../../components/EmailSettingsPanel';
 import { AboutAppPanel } from '../../components/AboutAppPanel';
 
 interface DesktopSettingsPageProps {
