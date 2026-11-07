@@ -62,6 +62,8 @@ const desktopApi = Object.freeze({
       ipcRenderer.removeListener('tot:menu-command', listener);
     };
   },
+  getOrCreateSafeStorageKey: () => ipcRenderer.invoke('tot:safe-storage-get-or-create-key'),
+  clearSafeStorageKey: () => ipcRenderer.invoke('tot:safe-storage-clear-key'),
 });
 
 contextBridge.exposeInMainWorld('totDesktop', desktopApi);

@@ -39,13 +39,22 @@ import {
   User as UserIcon,
   Lock,
   ShoppingCart,
+  Plus,
 } from 'lucide-react';
+import { getProductDepotBreakdown } from '../services/desktopInventoryLogic';
+import {
+  buildAvailableDepotsSignature,
+  buildProductEditableSignature,
+  buildProductStockLevelsSignature,
+  computeDefaultAddDepotTarget,
+} from '../hooks/useProductDetailController';
 
 export const ProductDetailModal: React.FC = () => {
   const {
     activeProductId,
     setActiveProductId,
     products,
+    stockLevels,
     depots,
     departments,
     users,
@@ -64,6 +73,9 @@ export const ProductDetailModal: React.FC = () => {
     currentUser,
     language,
     t,
+    addProductToDepot,
+    canTransferBetweenDepots,
+    openStockTransferModal,
   } = useApp();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -77,15 +89,110 @@ export const ProductDetailModal: React.FC = () => {
   const [historySearch, setHistorySearch] = useState('');
   const [historyTypeFilter, setHistoryTypeFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
 
-  const product = products.find((p) => String(p.id) === String(activeProductId));
+  const [addDepotOpen, setAddDepotOpen] = useState(false);
+  const [targetDepotName, setTargetDepotName] = useState('');
+  const [targetInitialQty, setTargetInitialQty] = useState('1');
+  const [targetRackLocation, setTargetRackLocation] = useState('');
+  const [targetMinAlert, setTargetMinAlert] = useState('2');
+  const [addingToDepot, setAddingToDepot] = useState(false);
+
+  const addDepotOpenRef = useRef(addDepotOpen);
+  addDepotOpenRef.current = addDepotOpen;
+  const userSelectedTargetDepotRef = useRef(false);
+
+  const rawProduct = useMemo(
+    () => products.find((p) => String(p.id) === String(activeProductId)) || undefined,
+    [products, activeProductId]
+  );
+
+  const productSignature = useMemo(() => buildProductEditableSignature(rawProduct), [rawProduct]);
+  const stockLevelsSignature = useMemo(
+    () => buildProductStockLevelsSignature(activeProductId, stockLevels),
+    [activeProductId, stockLevels]
+  );
+  const availableDepotsSignature = useMemo(
+    () => buildAvailableDepotsSignature(depots, currentUser),
+    [depots, currentUser]
+  );
+
+  const latestDataRef = useRef({
+    rawProduct,
+    stockLevels,
+    depots,
+    currentUser,
+  });
+  latestDataRef.current = {
+    rawProduct,
+    stockLevels,
+    depots,
+    currentUser,
+  };
+
+  const product = useMemo(
+    () => latestDataRef.current.rawProduct,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [productSignature]
+  );
+
   const subCategory = subCategories.find((s) => Number(s.id) === Number(product?.sub_category_id));
 
-  // Reset tab and filters when selected product changes
+  const depotBreakdown = useMemo(
+    () =>
+      getProductDepotBreakdown(
+        latestDataRef.current.rawProduct,
+        latestDataRef.current.stockLevels,
+        latestDataRef.current.currentUser
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [productSignature, stockLevelsSignature, availableDepotsSignature]
+  );
+
+  const availableDepotsForAdd = useMemo(
+    () =>
+      (latestDataRef.current.depots || []).filter(
+        (d) =>
+          d.is_active !== false &&
+          isUserAllowedForDepot(latestDataRef.current.currentUser, d.name)
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [availableDepotsSignature]
+  );
+
+  // 1. Réinitialisation uniquement au changement de fiche produit
   useEffect(() => {
     setActiveTab('details');
     setHistorySearch('');
     setHistoryTypeFilter('ALL');
+    setAddDepotOpen(false);
+    addDepotOpenRef.current = false;
+    userSelectedTargetDepotRef.current = false;
+    setTargetDepotName('');
+    setTargetInitialQty('1');
+    setTargetRackLocation('');
+    setTargetMinAlert(String(product?.min_stock_alert ?? 2));
   }, [activeProductId]);
+
+  // 2. Mise à jour du seuil par défaut quand le produit évolue réellement (hors saisie en cours dans le menu)
+  useEffect(() => {
+    if (!product || addDepotOpenRef.current) return;
+    setTargetMinAlert(String(product.min_stock_alert ?? 2));
+  }, [activeProductId, productSignature]);
+
+  // 3. Calcul du dépôt cible par défaut à l'ouverture du menu « Ajouter à un autre dépôt »
+  useEffect(() => {
+    if (!addDepotOpen || !product) return;
+    setTargetDepotName((prev) =>
+      computeDefaultAddDepotTarget({
+        currentTargetDepotName: prev,
+        allDepotRows: depotBreakdown.allDepotRows,
+        availableDepotsForAdd,
+        userHasSelectedTarget: userSelectedTargetDepotRef.current,
+      })
+    );
+    if (!userSelectedTargetDepotRef.current) {
+      setTargetMinAlert(String(product.min_stock_alert ?? 2));
+    }
+  }, [addDepotOpen]);
 
   const isDepotClosedState = isDepotClosed(depots, product?.store_name);
   const isDepotAllowed = isUserAllowedForDepot(currentUser, product?.store_name);
@@ -147,7 +254,7 @@ export const ProductDetailModal: React.FC = () => {
         }
       }
     }
-  }, [product]);
+  }, [product?.id, product?.qr_code, product?.reference, product?.barcode]);
 
   // 1. All movements for this product sorted newest first
   const productMovements = useMemo(() => {
@@ -506,6 +613,30 @@ export const ProductDetailModal: React.FC = () => {
                   </span>
                 </button>
               )}
+
+              {canTransferBetweenDepots && (
+                <button
+                  type="button"
+                  data-testid="product-detail-transfer-btn"
+                  onClick={() => {
+                    const sourceDepot = product.store_name || depots[0]?.name || undefined;
+                    openStockTransferModal({
+                      sourceDepot,
+                      items: [{ productId: product.id, quantity: 1 }],
+                    });
+                  }}
+                  className="p-2 rounded-xl bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800/60 hover:bg-sky-100 font-bold text-xs flex items-center gap-1 transition active:scale-95 cursor-pointer"
+                  title={tr(
+                    language,
+                    'Transférer vers un autre dépôt',
+                    'Transfer to another depot',
+                    'Overdragen naar een ander depot'
+                  )}
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                  <span>{tr(language, 'Transférer', 'Transfer', 'Overdragen')}</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -567,6 +698,238 @@ export const ProductDetailModal: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Stock par dépôt (LOT 2 v40) */}
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-2.5 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <Building className="w-3.5 h-3.5 text-orange-500" />
+                <span>
+                  {tr(language, 'Stock par dépôt', 'Stock per depot', 'Voorraad per depot')}
+                </span>
+              </span>
+              {(canIn || canEditProduct) && availableDepotsForAdd.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddDepotOpen((prev) => {
+                      const next = !prev;
+                      if (next && product) {
+                        const defaultTarget = computeDefaultAddDepotTarget({
+                          currentTargetDepotName: targetDepotName,
+                          allDepotRows: depotBreakdown.allDepotRows,
+                          availableDepotsForAdd,
+                          userHasSelectedTarget: userSelectedTargetDepotRef.current,
+                        });
+                        setTargetDepotName(defaultTarget);
+                        if (!userSelectedTargetDepotRef.current) {
+                          setTargetMinAlert(String(product.min_stock_alert ?? 2));
+                        }
+                      }
+                      return next;
+                    });
+                  }}
+                  className="px-2 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800/60 hover:bg-orange-100 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>
+                    {tr(
+                      language,
+                      'Ajouter à un autre dépôt',
+                      'Add to another depot',
+                      'Toevoegen aan een ander depot'
+                    )}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            {depotBreakdown.hasDiscrepancy && (
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300 flex items-start gap-2 text-[11px]">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+                <div>
+                  <strong className="font-bold block">
+                    {tr(
+                      language,
+                      'Écart de cohérence',
+                      'Consistency discrepancy',
+                      'Consistentieafwijking'
+                    )}
+                  </strong>
+                  <span>
+                    {tr(
+                      language,
+                      `Stock fiche (${depotBreakdown.productQuantity}) ≠ somme des dépôts (${depotBreakdown.sumOfStockLevels}).`,
+                      `Product quantity (${depotBreakdown.productQuantity}) ≠ sum of depots (${depotBreakdown.sumOfStockLevels}).`,
+                      `Productvoorraad (${depotBreakdown.productQuantity}) ≠ som van depots (${depotBreakdown.sumOfStockLevels}).`
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {addDepotOpen && (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!targetDepotName || addingToDepot) return;
+                  setAddingToDepot(true);
+                  try {
+                    const res = await addProductToDepot({
+                      productId: product.id,
+                      depotName: targetDepotName,
+                      quantity: Math.max(1, Number(targetInitialQty) || 1),
+                      rackLocation: targetRackLocation.trim() || undefined,
+                      minAlert: Math.max(0, Number(targetMinAlert) || 0),
+                    });
+                    if (res.success) {
+                      setAddDepotOpen(false);
+                      userSelectedTargetDepotRef.current = false;
+                      setTargetDepotName('');
+                      setTargetInitialQty('1');
+                      setTargetRackLocation('');
+                    }
+                  } finally {
+                    setAddingToDepot(false);
+                  }
+                }}
+                className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2"
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                      {tr(language, 'Dépôt cible', 'Target depot', 'Doeldepot')}
+                    </label>
+                    <select
+                      value={targetDepotName}
+                      onChange={(e) => {
+                        userSelectedTargetDepotRef.current = true;
+                        setTargetDepotName(e.target.value);
+                      }}
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+                    >
+                      {availableDepotsForAdd.map((d) => (
+                        <option key={d.id} value={d.name}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                      {tr(language, 'Quantité initiale', 'Initial quantity', 'Beginvoorraad')}
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={targetInitialQty}
+                      onChange={(e) => setTargetInitialQty(e.target.value)}
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                      {tr(language, 'Emplacement (Rack)', 'Rack location', 'Reklocatie')}
+                    </label>
+                    <input
+                      type="text"
+                      value={targetRackLocation}
+                      onChange={(e) => setTargetRackLocation(e.target.value)}
+                      placeholder="Ex: B2-01"
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                      {tr(language, 'Seuil min.', 'Min. alert', 'Min. drempel')}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={targetMinAlert}
+                      onChange={(e) => setTargetMinAlert(e.target.value)}
+                      className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-1.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setAddDepotOpen(false)}
+                    className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 text-[11px] font-semibold cursor-pointer"
+                  >
+                    {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={addingToDepot || !targetDepotName}
+                    className="px-3 py-1 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                  >
+                    {tr(language, 'Valider l’entrée', 'Confirm entry', 'Inname bevestigen')}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900">
+              <table className="w-full text-left border-collapse text-[11px]">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase text-slate-500">
+                  <tr>
+                    <th className="py-1.5 px-2.5">
+                      {tr(language, 'Dépôt', 'Depot', 'Depot')}
+                    </th>
+                    <th className="py-1.5 px-2">
+                      {tr(language, 'Emplacement', 'Location', 'Locatie')}
+                    </th>
+                    <th className="py-1.5 px-2 text-right">
+                      {tr(language, 'Seuil', 'Min', 'Min')}
+                    </th>
+                    <th className="py-1.5 px-2.5 text-right">
+                      {tr(language, 'Qté', 'Qty', 'Aantal')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {depotBreakdown.depotRows.map((row) => (
+                    <tr key={row.depotName}>
+                      <td className="py-1.5 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                        {row.depotName}
+                      </td>
+                      <td className="py-1.5 px-2 font-mono text-slate-500">
+                        {row.rackLocation || '—'}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono text-slate-400">
+                        {row.minAlert}
+                      </td>
+                      <td
+                        className={`py-1.5 px-2.5 text-right font-mono font-bold ${
+                          row.isOut
+                            ? 'text-rose-600 dark:text-rose-400'
+                            : row.isLow
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {row.quantity}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="bg-slate-50 dark:bg-slate-800/70 font-bold border-t border-slate-200 dark:border-slate-800">
+                  <tr>
+                    <td colSpan={3} className="py-1.5 px-2.5 text-slate-600 dark:text-slate-300">
+                      {tr(language, 'Total dépôts autorisés', 'Total allowed depots', 'Totaal toegestane depots')}
+                    </td>
+                    <td className="py-1.5 px-2.5 text-right font-mono text-slate-900 dark:text-white">
+                      {depotBreakdown.allowedTotalQuantity}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           </div>
 
           {/* Description */}

@@ -1,6 +1,10 @@
 import { MaterialOrder, MaterialOrderItem, Product, User } from '../types';
 import { isUserAllowedForDepot, playScanBeep } from '../utils/crypto';
 import { getUnlockedAudioContext, hapticFeedback } from '../utils/haptics';
+import {
+  readLocalPreferenceValue,
+  setUserPreference,
+} from './userPreferencesService';
 
 export const SCANNER_SOUND_KEY = 'tot_scanner_sound_enabled';
 export const SCANNER_VIBRATION_KEY = 'tot_scanner_vibration_enabled';
@@ -609,6 +613,10 @@ export function isScannerSoundEnabled(
 ): boolean {
   if (!storage) return true;
   try {
+    if (typeof localStorage !== 'undefined' && storage === localStorage) {
+      const val = readLocalPreferenceValue('scanner_sound');
+      if (val !== undefined) return val;
+    }
     return storage.getItem(SCANNER_SOUND_KEY) !== 'false';
   } catch {
     return true;
@@ -621,7 +629,11 @@ export function setScannerSoundEnabled(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(SCANNER_SOUND_KEY, enabled ? 'true' : 'false');
+    if (typeof localStorage !== 'undefined' && storage === localStorage) {
+      setUserPreference('scanner_sound', Boolean(enabled));
+    } else {
+      storage.setItem(SCANNER_SOUND_KEY, enabled ? 'true' : 'false');
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('tot-scanner-prefs-changed'));
     }
@@ -635,6 +647,10 @@ export function isScannerVibrationEnabled(
 ): boolean {
   if (!storage) return true;
   try {
+    if (typeof localStorage !== 'undefined' && storage === localStorage) {
+      const val = readLocalPreferenceValue('scanner_vibration');
+      if (val !== undefined) return val;
+    }
     return storage.getItem(SCANNER_VIBRATION_KEY) !== 'false';
   } catch {
     return true;
@@ -647,7 +663,11 @@ export function setScannerVibrationEnabled(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(SCANNER_VIBRATION_KEY, enabled ? 'true' : 'false');
+    if (typeof localStorage !== 'undefined' && storage === localStorage) {
+      setUserPreference('scanner_vibration', Boolean(enabled));
+    } else {
+      storage.setItem(SCANNER_VIBRATION_KEY, enabled ? 'true' : 'false');
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('tot-scanner-prefs-changed'));
     }

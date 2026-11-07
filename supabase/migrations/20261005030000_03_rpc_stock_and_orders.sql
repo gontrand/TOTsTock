@@ -5,10 +5,11 @@
 -- =========================================================================
 -- =========================================================================
 -- TOT STOCK - SCRIPT 03 : RPC STOCK & COMMANDES (03_rpc_stock_and_orders.sql)
--- Exécution transactionnelle côté serveur, idempotence (operation_id),
--- contrôle d'intégrité, quotas de références (max_references) et concurrence
--- S'appuie strictement sur les fonctions de sécurité définies dans 02_rls_hardening.sql
--- Rejouable : oui
+-- Description : Exécution transactionnelle côté serveur, idempotence (operation_id),
+--   contrôle d'intégrité, quotas de références (max_references) et concurrence
+--   sur les tables préfixées core_* et stk_*.
+-- Dépendances : 02_rls_hardening.sql
+-- Rejouable : oui (idempotent)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------
@@ -18,16 +19,16 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'products'
+    WHERE table_schema = 'public' AND table_name = 'stk_products'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (03_rpc_stock_and_orders.sql) : La table public.products est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (03_rpc_stock_and_orders.sql) : La table public.stk_products est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'license_config'
+    WHERE table_schema = 'public' AND table_name = 'core_license_config'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (03_rpc_stock_and_orders.sql) : La table public.license_config est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (03_rpc_stock_and_orders.sql) : La table public.core_license_config est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 
   IF NOT EXISTS (
@@ -48,38 +49,57 @@ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
--- 0.1 ALIGNEMENT SCHÉMA ADDITIF (TABLES CLIENTS RÉELLES)
+-- 0.05 PURGE DES DÉCLENCHEURS HÉRITÉS SUR LES TABLES DE STOCK (v41 & v42)
 -- -------------------------------------------------------------------------
--- Conversion idempotente de stock_movements.id (et movements, audit_logs, stock_levels)
--- lorsque la colonne id est numérique / IDENTITY sur une ancienne base, en conservant les lignes.
+DROP TRIGGER IF EXISTS trg_process_stock_movement ON public.stk_movements;
 DO $$
-DECLARE v_type text; v_identity text;
 BEGIN
-  SELECT data_type, is_identity INTO v_type, v_identity
-  FROM information_schema.columns
-  WHERE table_schema='public' AND table_name='stock_movements' AND column_name='id';
-  IF v_type IS NOT NULL AND v_type <> 'text' THEN
-    BEGIN
-      CREATE TABLE IF NOT EXISTS public.stock_movements_backup_ids AS TABLE public.stock_movements;
-      ALTER TABLE public.stock_movements_backup_ids ENABLE ROW LEVEL SECURITY;
-      REVOKE ALL ON TABLE public.stock_movements_backup_ids FROM PUBLIC, anon, authenticated;
-      IF v_identity = 'YES' THEN
-        ALTER TABLE public.stock_movements ALTER COLUMN id DROP IDENTITY;
-      END IF;
-      ALTER TABLE public.stock_movements ALTER COLUMN id DROP DEFAULT;
-      ALTER TABLE public.stock_movements ALTER COLUMN id TYPE text USING id::text;
-    EXCEPTION WHEN OTHERS THEN
-      DECLARE
-        v_err_msg text;
-        v_err_detail text;
-      BEGIN
-        GET STACKED DIAGNOSTICS v_err_msg = MESSAGE_TEXT, v_err_detail = PG_EXCEPTION_DETAIL;
-        RAISE EXCEPTION 'conversion impossible : %', COALESCE(NULLIF(v_err_detail, ''), v_err_msg);
-      END;
-    END;
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'stock_movements' AND c.relkind = 'r'
+  ) THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS trg_process_stock_movement ON public.stock_movements';
   END IF;
 END $$;
+DROP FUNCTION IF EXISTS public.process_stock_movement();
 
+DO $$
+DECLARE
+  v_allowed_triggers TEXT[] := ARRAY[
+    'trg_check_product_quantity_update',
+    'trg_enforce_license_max_references',
+    'trg_sync_app_to_company',
+    'trg_sync_company_to_app',
+    'trg_check_material_orders_update',
+    'trg_enforce_license_max_depots',
+    'trg_app_compat_updated_at',
+    'trg_on_auth_user_created',
+    'trg_on_auth_user_email_confirmed'
+  ];
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT t.tgname, c.relname
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND c.relname IN (
+        'stk_movements', 'stk_stock_levels', 'stk_products',
+        'stock_movements', 'stock_levels', 'movements', 'products'
+      )
+      AND NOT t.tgisinternal
+      AND NOT (t.tgname = ANY(v_allowed_triggers))
+  LOOP
+    RAISE NOTICE 'Suppression du déclencheur hérité : % sur public.%', r.tgname, r.relname;
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON public.%I', r.tgname, r.relname);
+  END LOOP;
+END $$;
+
+-- -------------------------------------------------------------------------
+-- 0.1 ALIGNEMENT SCHÉMA ADDITIF (TABLES CLIENTS RÉELLES)
+-- -------------------------------------------------------------------------
 DO $$
 DECLARE
   v_tbl text;
@@ -89,72 +109,78 @@ DECLARE
   v_err_msg text;
   v_err_detail text;
 BEGIN
-  FOREACH v_tbl IN ARRAY ARRAY['stock_movements', 'movements', 'audit_logs', 'stock_levels'] LOOP
-    SELECT data_type, is_identity INTO v_type, v_identity
-    FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = v_tbl AND column_name = 'id';
+  FOREACH v_tbl IN ARRAY ARRAY[
+    'stk_movements', 'core_audit_logs', 'stk_stock_levels',
+    'stock_movements', 'movements', 'audit_logs', 'stock_levels'
+  ] LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = v_tbl AND c.relkind = 'r'
+    ) THEN
+      SELECT data_type, is_identity INTO v_type, v_identity
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = v_tbl AND column_name = 'id';
 
-    IF v_type IS NOT NULL AND v_type <> 'text' THEN
-      -- Vérification préalable de clés étrangères dépendantes de <table_name>.id
-      SELECT c.conname || ' sur ' || c.conrelid::regclass::text
-      INTO v_dep_obj
-      FROM pg_constraint c
-      JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = ANY(c.confkey)
-      WHERE c.confrelid = format('public.%I', v_tbl)::regclass
-        AND c.contype = 'f'
-        AND a.attname = 'id'
-      LIMIT 1;
+      IF v_type IS NOT NULL AND v_type <> 'text' THEN
+        SELECT c.conname || ' sur ' || c.conrelid::regclass::text
+        INTO v_dep_obj
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = ANY(c.confkey)
+        WHERE c.confrelid = format('public.%I', v_tbl)::regclass
+          AND c.contype = 'f'
+          AND a.attname = 'id'
+        LIMIT 1;
 
-      IF v_dep_obj IS NOT NULL THEN
-        RAISE EXCEPTION 'conversion impossible : %', v_dep_obj;
-      END IF;
-
-      BEGIN
-        EXECUTE format('CREATE TABLE IF NOT EXISTS public.%I AS TABLE public.%I', v_tbl || '_backup_ids', v_tbl);
-        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_tbl || '_backup_ids');
-        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated', v_tbl || '_backup_ids');
-        IF v_identity = 'YES' THEN
-          EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id DROP IDENTITY', v_tbl);
+        IF v_dep_obj IS NOT NULL THEN
+          RAISE EXCEPTION 'conversion impossible : %', v_dep_obj;
         END IF;
-        EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id DROP DEFAULT', v_tbl);
-        EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id TYPE text USING id::text', v_tbl);
-      EXCEPTION WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS v_err_msg = MESSAGE_TEXT, v_err_detail = PG_EXCEPTION_DETAIL;
-        RAISE EXCEPTION 'conversion impossible : %', COALESCE(NULLIF(v_err_detail, ''), v_err_msg);
-      END;
+
+        BEGIN
+          DROP VIEW IF EXISTS public.stock_movements;
+          DROP VIEW IF EXISTS public.movements;
+          DROP VIEW IF EXISTS public.audit_logs;
+          DROP VIEW IF EXISTS public.stock_levels;
+          EXECUTE format('CREATE TABLE IF NOT EXISTS public.%I AS TABLE public.%I', v_tbl || '_backup_ids', v_tbl);
+          EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', v_tbl || '_backup_ids');
+          EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated', v_tbl || '_backup_ids');
+          IF v_identity = 'YES' THEN
+            EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id DROP IDENTITY', v_tbl);
+          END IF;
+          EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id DROP DEFAULT', v_tbl);
+          EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id TYPE text USING id::text', v_tbl);
+          IF EXISTS (
+            SELECT 1 FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = '_tot_refresh_compat_views'
+          ) THEN
+            PERFORM public._tot_refresh_compat_views();
+          END IF;
+        EXCEPTION WHEN OTHERS THEN
+          GET STACKED DIAGNOSTICS v_err_msg = MESSAGE_TEXT, v_err_detail = PG_EXCEPTION_DETAIL;
+          RAISE EXCEPTION 'conversion impossible : %', COALESCE(NULLIF(v_err_detail, ''), v_err_msg);
+        END;
+      END IF;
     END IF;
   END LOOP;
 END $$;
 
-ALTER TABLE public.license_config
+ALTER TABLE public.core_license_config
   ADD COLUMN IF NOT EXISTS modules TEXT[] DEFAULT ARRAY['stock']::TEXT[];
 
 -- Identifiants générés par la base pour les lignes écrites par les fonctions RPC (rejouable)
-ALTER TABLE IF EXISTS public.movements ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-ALTER TABLE IF EXISTS public.stock_movements ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-ALTER TABLE IF EXISTS public.audit_logs ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-ALTER TABLE IF EXISTS public.stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-ALTER TABLE IF EXISTS public.stock_levels ADD COLUMN IF NOT EXISTS rack_location TEXT DEFAULT NULL;
+ALTER TABLE IF EXISTS public.stk_movements ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+ALTER TABLE IF EXISTS public.core_audit_logs ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+ALTER TABLE IF EXISTS public.stk_stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+ALTER TABLE IF EXISTS public.stk_stock_levels ADD COLUMN IF NOT EXISTS rack_location TEXT DEFAULT NULL;
 
--- 0.2 Colonnes complémentaires sur movements & stock_movements si manquantes
-ALTER TABLE IF EXISTS public.stock_movements ADD COLUMN IF NOT EXISTS reason TEXT;
-ALTER TABLE IF EXISTS public.movements ADD COLUMN IF NOT EXISTS reason TEXT;
+-- 0.2 Colonnes complémentaires sur stk_movements si manquantes
+ALTER TABLE IF EXISTS public.stk_movements ADD COLUMN IF NOT EXISTS reason TEXT;
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
-    ALTER TABLE public.movements
-      ADD COLUMN IF NOT EXISTS product_ref TEXT,
-      ADD COLUMN IF NOT EXISTS site_number TEXT,
-      ADD COLUMN IF NOT EXISTS department_name TEXT,
-      ADD COLUMN IF NOT EXISTS depot_name TEXT DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS dest_depot_name TEXT DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS total_cost NUMERIC(10,2) DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS order_number TEXT;
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
-    ALTER TABLE public.stock_movements
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
+    ALTER TABLE public.stk_movements
       ADD COLUMN IF NOT EXISTS product_ref TEXT,
       ADD COLUMN IF NOT EXISTS site_number TEXT,
       ADD COLUMN IF NOT EXISTS department_name TEXT,
@@ -165,8 +191,8 @@ BEGIN
   END IF;
 END $$;
 
--- 0.3 Colonnes sur material_orders
-ALTER TABLE public.material_orders
+-- 0.3 Colonnes sur stk_material_orders
+ALTER TABLE public.stk_material_orders
   ADD COLUMN IF NOT EXISTS preparer_id TEXT,
   ADD COLUMN IF NOT EXISTS preparer_name TEXT,
   ADD COLUMN IF NOT EXISTS pickup_delegate_id TEXT,
@@ -178,28 +204,30 @@ ALTER TABLE public.material_orders
   ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 
 -- -------------------------------------------------------------------------
--- 1. TABLE DES OPÉRATIONS TRAITÉES (IDEMPOTENCE SERVEUR)
+-- 1. TABLE DES OPÉRATIONS TRAITÉES (IDEMPOTENCE SERVEUR : core_processed_operations)
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.processed_operations (
+CREATE TABLE IF NOT EXISTS public.core_processed_operations (
   operation_id UUID PRIMARY KEY,
+  app TEXT DEFAULT 'stock',
   user_id TEXT,
-  entity TEXT NOT NULL,
-  action TEXT NOT NULL,
+  entity TEXT,
+  action TEXT,
+  action_type TEXT,
   result JSONB,
-  processed_at TIMESTAMPTZ DEFAULT now()
+  processed_at TIMESTAMPTZ DEFAULT now(),
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Alignement avec la version V4 de process_stock_movement (colonnes action_type et created_at ;
--- les anciennes colonnes entity / action deviennent facultatives). Rejouable.
-ALTER TABLE public.processed_operations
+ALTER TABLE public.core_processed_operations
+  ADD COLUMN IF NOT EXISTS app TEXT DEFAULT 'stock',
   ADD COLUMN IF NOT EXISTS action_type TEXT,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE public.processed_operations ALTER COLUMN entity DROP NOT NULL;
-ALTER TABLE public.processed_operations ALTER COLUMN action DROP NOT NULL;
+ALTER TABLE public.core_processed_operations ALTER COLUMN entity DROP NOT NULL;
+ALTER TABLE public.core_processed_operations ALTER COLUMN action DROP NOT NULL;
 
-ALTER TABLE public.processed_operations ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.processed_operations FROM anon, public;
-GRANT SELECT ON TABLE public.processed_operations TO authenticated;
+ALTER TABLE public.core_processed_operations ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.core_processed_operations FROM anon, public;
+GRANT SELECT ON TABLE public.core_processed_operations TO authenticated;
 
 DO $$
 DECLARE
@@ -208,21 +236,30 @@ BEGIN
   FOR r IN
     SELECT policyname
     FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'processed_operations'
+    WHERE schemaname = 'public' AND tablename = 'core_processed_operations'
   LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON public.processed_operations', r.policyname);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.core_processed_operations', r.policyname);
   END LOOP;
 END $$;
 
 CREATE POLICY "User read self processed_operations"
-  ON public.processed_operations FOR SELECT TO authenticated
+  ON public.core_processed_operations FOR SELECT TO authenticated
   USING (user_id = public.current_user_id());
+
+-- Rafraîchissement des vues de compatibilité si présentes (bases migrées)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = '_tot_refresh_compat_views'
+  ) THEN
+    PERFORM public._tot_refresh_compat_views();
+  END IF;
+END $$;
 
 -- -------------------------------------------------------------------------
 -- 2. TRIGGER QUOTA DE RÉFÉRENCES (max_references) & RÈGLE DE DOWNGRADE
--- Seul l'INSERT de nouvelles références est bloqué au-delà du quota.
--- La consultation et la mise à jour des articles existants restent permises.
--- Aucun downgrade ne supprime jamais de données existantes.
 -- -------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.enforce_license_max_references_quota() CASCADE;
 CREATE OR REPLACE FUNCTION public.enforce_license_max_references_quota()
@@ -243,15 +280,13 @@ BEGIN
   BEGIN
     SELECT LOWER(COALESCE(plan_type, 'free')), signed_token
     INTO v_plan_type, v_signed_token
-    FROM public.license_config
+    FROM public.core_license_config
     LIMIT 1;
   EXCEPTION WHEN OTHERS THEN
     v_plan_type := 'free';
     v_signed_token := NULL;
   END;
 
-  -- Les quotas appliqués sont strictement ceux de la licence signée (signed_token).
-  -- Toute licence non gratuite dépourvue de jeton signé retombe sur le forfait 'free'.
   IF v_signed_token IS NOT NULL AND TRIM(v_signed_token) <> '' THEN
     BEGIN
       IF LEFT(TRIM(v_signed_token), 1) = '{' THEN
@@ -281,12 +316,11 @@ BEGIN
     v_max_references := 50;
   END IF;
 
-  -- Quota illimité (99999)
   IF v_max_references >= 99999 THEN
     RETURN NEW;
   END IF;
 
-  SELECT COUNT(*) INTO v_current_count FROM public.products;
+  SELECT COUNT(*) INTO v_current_count FROM public.stk_products;
 
   IF v_current_count >= v_max_references THEN
     RAISE EXCEPTION 'Quota de références atteint (Forfait % : max % références, actuelles : %). Veuillez passer au forfait supérieur pour créer des articles supplémentaires.',
@@ -301,19 +335,14 @@ $$;
 REVOKE ALL ON FUNCTION public.enforce_license_max_references_quota() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.enforce_license_max_references_quota() TO authenticated;
 
-DROP TRIGGER IF EXISTS trg_enforce_license_max_references ON public.products;
+DROP TRIGGER IF EXISTS trg_enforce_license_max_references ON public.stk_products;
 CREATE TRIGGER trg_enforce_license_max_references
-  BEFORE INSERT ON public.products
+  BEFORE INSERT ON public.stk_products
   FOR EACH ROW
   EXECUTE FUNCTION public.enforce_license_max_references_quota();
 
 -- -------------------------------------------------------------------------
 -- 3. RPC TRANSACTIONNELLE DE MOUVEMENT DE STOCK (process_stock_movement)
--- Atomicité complète : vérification profil, permissions, droits dépôt,
--- verrouillage FOR UPDATE, mise à jour stock par dépôt (stock_levels) et global (products),
--- gestion des transferts inter-dépôts (TRANSFER) et inventaires (INVENTORY),
--- insertion mouvement et audit.
--- AUCUN repli administrateur (erreur 42501 si non authentifié ou bloqué).
 -- -------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.process_stock_movement(UUID, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.process_stock_movement(
@@ -363,10 +392,15 @@ DECLARE
   v_unit_price NUMERIC;
   v_total_cost NUMERIC;
 BEGIN
+  -- 0. Sonde de diagnostic (sans effet de bord) pour vérifier la présence de la signature à 12 paramètres
+  IF p_action = 'DIAGNOSTIC_PING' OR p_product_id = '__DIAGNOSTIC_PING__' THEN
+    RETURN jsonb_build_object('success', true, 'ready', true, 'params', 12);
+  END IF;
+
   -- 1. Authentification & vérification stricte du profil (ZÉRO repli administrateur)
   SELECT id::text, role_id, name, trigram, allowed_depots, is_blocked
   INTO v_caller_id, v_caller_role, v_caller_name, v_caller_trigram, v_allowed_depots, v_is_blocked
-  FROM public.users
+  FROM public.core_users
   WHERE auth_user_id = auth.uid() AND COALESCE(is_blocked, false) = false
   LIMIT 1;
 
@@ -374,11 +408,11 @@ BEGIN
     RAISE EXCEPTION 'User profile not found or blocked' USING ERRCODE = '42501';
   END IF;
 
-  -- Définir la variable de session transactionnelle pour autoriser la mise à jour de products.quantity par le trigger
+  -- Définir la variable de session transactionnelle pour autoriser la mise à jour de stk_products.quantity par le trigger
   PERFORM set_config('app.stock_rpc', 'on', true);
 
   -- 2. Idempotence : si cette opération a déjà été exécutée
-  SELECT * INTO v_existing_op FROM public.processed_operations WHERE operation_id = p_operation_id LIMIT 1;
+  SELECT * INTO v_existing_op FROM public.core_processed_operations WHERE operation_id = p_operation_id LIMIT 1;
   IF v_existing_op.operation_id IS NOT NULL THEN
     IF v_existing_op.user_id IS DISTINCT FROM v_caller_id THEN
       RAISE EXCEPTION 'Operation ID already registered by another user' USING ERRCODE = '42501';
@@ -410,11 +444,12 @@ BEGIN
     IF NOT (
       public.is_super_admin()
       OR v_caller_role IN (0, 1)
+      OR public.current_user_has_perm('perm_stock_transfer')
       OR public.current_user_has_perm('perm_mov_out')
       OR public.current_user_has_perm('perm_stock_in')
       OR public.current_user_has_perm('perm_prod_movement_direct')
     ) THEN
-      RAISE EXCEPTION 'Permission denied: stock transfer rights required (perm_mov_out or perm_stock_in)' USING ERRCODE = '42501';
+      RAISE EXCEPTION 'Permission denied: stock transfer rights required (perm_stock_transfer, perm_mov_out or perm_stock_in)' USING ERRCODE = '42501';
     END IF;
   ELSIF v_mov_type = 'INVENTORY' THEN
     IF NOT (
@@ -458,7 +493,7 @@ BEGIN
   -- 5. Verrouillage FOR UPDATE de l'article source
   SELECT reference, unit_price, COALESCE(quantity, 0), COALESCE(NULLIF(TRIM(store_name), ''), 'Dépôt Principal')
   INTO v_product_ref, v_unit_price, v_prod_initial_qty, v_prod_store_name
-  FROM public.products
+  FROM public.stk_products
   WHERE id::text = p_product_id::text
   FOR UPDATE;
 
@@ -470,21 +505,27 @@ BEGIN
     RAISE EXCEPTION 'La quantité du mouvement est invalide.' USING ERRCODE = '22023';
   END IF;
 
-  -- 6. Gestion du stock par dépôt (stock_levels si la table existe, sinon repli sur products)
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_levels') THEN
-    IF NOT EXISTS (SELECT 1 FROM public.stock_levels WHERE product_id = p_product_id) THEN
-      INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
+  -- 6. Gestion du stock par dépôt (stk_stock_levels)
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_stock_levels') THEN
+    IF NOT EXISTS (SELECT 1 FROM public.stk_stock_levels WHERE product_id = p_product_id) THEN
+      INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, updated_at)
       VALUES (p_product_id, v_prod_store_name, v_prod_initial_qty, now())
       ON CONFLICT (product_id, depot_name) DO NOTHING;
     END IF;
 
-    INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
-    VALUES (p_product_id, v_source_depot, 0, now())
+    INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
+    VALUES (
+      p_product_id,
+      v_source_depot,
+      0,
+      CASE WHEN v_mov_type != 'TRANSFER' THEN NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '') ELSE NULL END,
+      now()
+    )
     ON CONFLICT (product_id, depot_name) DO NOTHING;
 
     SELECT quantity
     INTO v_current_depot_stock
-    FROM public.stock_levels
+    FROM public.stk_stock_levels
     WHERE product_id = p_product_id AND depot_name = v_source_depot
     FOR UPDATE;
 
@@ -501,25 +542,35 @@ BEGIN
       v_new_depot_stock := p_quantity;
     END IF;
 
-    UPDATE public.stock_levels
+    UPDATE public.stk_stock_levels
     SET quantity = v_new_depot_stock,
+        rack_location = CASE
+          WHEN v_mov_type != 'TRANSFER' AND NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '') IS NOT NULL
+          THEN NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '')
+          ELSE rack_location
+        END,
+        min_alert = CASE
+          WHEN p_metadata ? 'min_alert' AND (p_metadata->>'min_alert') ~ '^[0-9]+(\.[0-9]+)?$'
+          THEN (p_metadata->>'min_alert')::numeric
+          ELSE min_alert
+        END,
         updated_at = now()
     WHERE product_id = p_product_id AND depot_name = v_source_depot;
 
     IF v_mov_type = 'TRANSFER' AND v_dest_depot IS NOT NULL THEN
-      INSERT INTO public.stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
+      INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
       VALUES (p_product_id, v_dest_depot, 0, p_dest_rack, now())
       ON CONFLICT (product_id, depot_name) DO NOTHING;
 
       SELECT quantity
       INTO v_dest_depot_stock
-      FROM public.stock_levels
+      FROM public.stk_stock_levels
       WHERE product_id = p_product_id AND depot_name = v_dest_depot
       FOR UPDATE;
 
       v_new_dest_stock := v_dest_depot_stock + p_quantity;
 
-      UPDATE public.stock_levels
+      UPDATE public.stk_stock_levels
       SET quantity = v_new_dest_stock,
           rack_location = COALESCE(p_dest_rack, rack_location),
           updated_at = now()
@@ -528,7 +579,7 @@ BEGIN
 
     SELECT COALESCE(SUM(quantity), 0)
     INTO v_total_product_stock
-    FROM public.stock_levels
+    FROM public.stk_stock_levels
     WHERE product_id = p_product_id;
   ELSE
     v_current_depot_stock := v_prod_initial_qty;
@@ -547,8 +598,8 @@ BEGIN
     v_total_product_stock := CASE WHEN v_mov_type = 'TRANSFER' THEN v_current_depot_stock ELSE v_new_depot_stock END;
   END IF;
 
-  -- 7. Mise à jour atomique de products
-  UPDATE public.products
+  -- 7. Mise à jour atomique de stk_products
+  UPDATE public.stk_products
   SET quantity = v_total_product_stock,
       store_name = CASE
         WHEN v_mov_type = 'TRANSFER' AND v_dest_depot IS NOT NULL AND v_new_depot_stock = 0 THEN v_dest_depot
@@ -561,7 +612,7 @@ BEGIN
       updated_at = now()
   WHERE id::text = p_product_id::text;
 
-  -- 8. Calcul de la variation enregistrée pour l'historique (mouvements & audit)
+  -- 8. Calcul de la variation enregistrée pour l'historique (stk_movements & core_audit_logs)
   IF v_mov_type = 'INVENTORY' THEN
     v_recorded_qty := ABS(v_new_depot_stock - v_current_depot_stock);
     v_effective_dir := CASE WHEN v_new_depot_stock >= v_current_depot_stock THEN 'IN' ELSE 'OUT' END;
@@ -576,42 +627,29 @@ BEGIN
   v_mov_id := 'MOV-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text;
   v_total_cost := ROUND(v_recorded_qty * COALESCE(v_unit_price, 0), 2);
 
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
-    INSERT INTO public.movements (
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
+    INSERT INTO public.stk_movements (
       id, product_id, product_ref, user_id, user_name, movement_type,
-      quantity_changed, site_number, department_name, depot_name, dest_depot_name, total_cost, order_number, created_at
+      quantity_changed, reason, site_number, department_name, depot_name, dest_depot_name, total_cost, order_number, created_at
     ) VALUES (
       v_mov_id, p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
       v_caller_id, v_caller_name,
       v_effective_dir,
-      v_recorded_qty, COALESCE(p_project_name, p_reason), p_department,
+      v_recorded_qty, COALESCE(p_reason, 'Mouvement direct'),
+      COALESCE(p_project_name, p_reason), p_department,
       v_source_depot, v_dest_depot,
       v_total_cost, (p_metadata->>'order_number'), now()
     );
   END IF;
 
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
-    INSERT INTO public.stock_movements (
-      product_id, product_ref, user_id, user_name, movement_type,
-      quantity_changed, reason, site_number, department_name, depot_name, dest_depot_name, total_cost, order_number, created_at
-    ) VALUES (
-      p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
-      v_caller_id, v_caller_name,
-      v_effective_dir,
-      ROUND(v_recorded_qty)::integer, COALESCE(p_reason, 'Mouvement direct'),
-      p_project_name, p_department,
-      v_source_depot, v_dest_depot,
-      v_total_cost, (p_metadata->>'order_number'), now()
-    );
-  END IF;
-
-  -- 9. Insertion dans audit_logs
-  INSERT INTO public.audit_logs (
-    id, type, category, user_id, user_name, user_trigram,
+  -- 9. Insertion dans core_audit_logs
+  INSERT INTO public.core_audit_logs (
+    id, app, type, category, user_id, user_name, user_trigram,
     product_id, product_ref, quantity_changed, site_number, depot_name,
     title, description, badge_text, meta, created_at
   ) VALUES (
     'AUD-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text,
+    'stock',
     'STOCK_' || v_mov_type,
     'MOVEMENTS',
     v_caller_id,
@@ -658,8 +696,8 @@ BEGIN
     'timestamp', now()
   );
 
-  INSERT INTO public.processed_operations (operation_id, user_id, entity, action, action_type, result, created_at)
-  VALUES (p_operation_id, v_caller_id, 'product_stock', v_mov_type, 'STOCK_MOVE_V4', v_result, now())
+  INSERT INTO public.core_processed_operations (operation_id, app, user_id, entity, action, action_type, result, created_at)
+  VALUES (p_operation_id, 'stock', v_caller_id, 'product_stock', v_mov_type, 'STOCK_MOVE_V4', v_result, now())
   ON CONFLICT (operation_id) DO NOTHING;
 
   RETURN v_result;
@@ -671,13 +709,12 @@ GRANT EXECUTE ON FUNCTION public.process_stock_movement(UUID, TEXT, TEXT, TEXT, 
 
 -- -------------------------------------------------------------------------
 -- 4. RPC DE TRANSITION DU STATUT DE COMMANDE (transition_order_status)
--- Validation sécurisée côté serveur de l'ensemble du cycle de vie d'une commande
 -- -------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.transition_order_status(UUID, TEXT, TEXT, TEXT, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.transition_order_status(
   p_operation_id UUID,
   p_order_id TEXT,
-  p_target_status TEXT, -- 'PENDING', 'PREPARING', 'READY', 'COLLECTED', 'CANCELLED', 'REJECTED'
+  p_target_status TEXT,
   p_preparer_id TEXT DEFAULT NULL,
   p_comment TEXT DEFAULT NULL
 )
@@ -697,10 +734,9 @@ DECLARE
   v_result JSONB;
   v_status TEXT;
 BEGIN
-  -- 1. Authentification stricte (ZÉRO repli administrateur)
   SELECT id::text, role_id, name, trigram, is_blocked
   INTO v_caller_id, v_caller_role, v_caller_name, v_caller_trigram, v_is_blocked
-  FROM public.users
+  FROM public.core_users
   WHERE auth_user_id = auth.uid()
   LIMIT 1;
 
@@ -708,8 +744,7 @@ BEGIN
     RAISE EXCEPTION 'User profile not found or blocked' USING ERRCODE = '42501';
   END IF;
 
-  -- 2. Idempotence
-  SELECT * INTO v_existing_op FROM public.processed_operations WHERE operation_id = p_operation_id LIMIT 1;
+  SELECT * INTO v_existing_op FROM public.core_processed_operations WHERE operation_id = p_operation_id LIMIT 1;
   IF v_existing_op.operation_id IS NOT NULL THEN
     IF v_existing_op.user_id IS DISTINCT FROM v_caller_id THEN
       RAISE EXCEPTION 'Operation ID already registered by another user' USING ERRCODE = '42501';
@@ -717,9 +752,8 @@ BEGIN
     RETURN v_existing_op.result;
   END IF;
 
-  -- 3. Verrouillage de la commande
   SELECT * INTO v_order
-  FROM public.material_orders
+  FROM public.stk_material_orders
   WHERE id = p_order_id
   FOR UPDATE;
 
@@ -729,8 +763,6 @@ BEGIN
 
   v_status := UPPER(TRIM(p_target_status));
 
-  -- 4. Machine à états finis des commandes
-  -- WAITING_APPROVAL -> PENDING / REJECTED (Validation par approbateur département ou chantier)
   IF v_status IN ('PENDING', 'REJECTED') AND v_order.status = 'WAITING_APPROVAL' THEN
     IF v_order.requester_id = v_caller_id AND NOT (
       public.is_super_admin()
@@ -744,7 +776,7 @@ BEGIN
     IF NOT (
       public.is_super_admin()
       OR v_caller_role IN (0, 1, 2, 8)
-      OR (public.is_administrator() AND (v_order.requester_department IS NULL OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND (u.department IS NULL OR LOWER(TRIM(u.department)) = LOWER(TRIM(v_order.requester_department))))))
+      OR (public.is_administrator() AND (v_order.requester_department IS NULL OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND (u.department IS NULL OR LOWER(TRIM(u.department)) = LOWER(TRIM(v_order.requester_department))))))
       OR public.current_user_has_perm('perm_order_approve')
       OR public.current_user_has_perm('perm_orders_manage')
       OR public.current_user_has_perm('perm_menu_order_prep')
@@ -753,7 +785,6 @@ BEGIN
       RAISE EXCEPTION 'Droits insuffisants pour approuver les commandes de ce département.' USING ERRCODE = '42501';
     END IF;
 
-  -- PENDING -> PREPARING (Prise en charge par préparateur)
   ELSIF v_status = 'PREPARING' THEN
     IF v_order.status != 'PENDING' THEN
       RAISE EXCEPTION 'Transition invalide : La commande doit être en attente (PENDING) pour démarrer la préparation.' USING ERRCODE = '22023';
@@ -761,12 +792,11 @@ BEGIN
     IF NOT (
       public.is_super_admin()
       OR public.current_user_has_perm('perm_menu_order_prep')
-      OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
+      OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
     ) THEN
       RAISE EXCEPTION 'Permission refusée : Seuls les préparateurs peuvent prendre en charge une commande.' USING ERRCODE = '42501';
     END IF;
 
-  -- PREPARING -> READY (Prête pour retrait)
   ELSIF v_status = 'READY' THEN
     IF v_order.status != 'PREPARING' THEN
       RAISE EXCEPTION 'Transition invalide : La commande doit être en cours de préparation (PREPARING) pour être marquée prête.' USING ERRCODE = '22023';
@@ -774,12 +804,11 @@ BEGIN
     IF NOT (
       public.is_super_admin()
       OR public.current_user_has_perm('perm_menu_order_prep')
-      OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
+      OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
     ) THEN
       RAISE EXCEPTION 'Permission refusée : Seuls les préparateurs peuvent marquer une commande prête.' USING ERRCODE = '42501';
     END IF;
 
-  -- READY -> COLLECTED (Retrait par demandeur, délégué ou magasinier)
   ELSIF v_status = 'COLLECTED' THEN
     IF v_order.status != 'READY' THEN
       RAISE EXCEPTION 'Transition invalide : La commande doit être prête (READY) pour être retirée.' USING ERRCODE = '22023';
@@ -789,12 +818,11 @@ BEGIN
       OR (v_order.pickup_delegate_id IS NOT NULL AND v_order.pickup_delegate_id = v_caller_id)
       OR public.is_super_admin()
       OR public.current_user_has_perm('perm_menu_order_prep')
-      OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
+      OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
     ) THEN
       RAISE EXCEPTION 'Permission refusée : Seul le demandeur, le délégué de retrait ou un magasinier peut confirmer le retrait.' USING ERRCODE = '42501';
     END IF;
 
-  -- CANCELLED (Annulation : demandeur tant que non préparée, ou approbateur / gestionnaire)
   ELSIF v_status = 'CANCELLED' THEN
     IF v_order.status IN ('COLLECTED', 'CANCELLED', 'REJECTED') THEN
       RAISE EXCEPTION 'Impossible d''annuler une commande au statut %.', v_order.status USING ERRCODE = '22023';
@@ -806,9 +834,9 @@ BEGIN
     ELSE
       IF NOT (
         public.is_super_admin()
-        OR (public.is_administrator() AND (v_order.requester_department IS NULL OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND (u.department IS NULL OR LOWER(TRIM(u.department)) = LOWER(TRIM(v_order.requester_department))))))
+        OR (public.is_administrator() AND (v_order.requester_department IS NULL OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND (u.department IS NULL OR LOWER(TRIM(u.department)) = LOWER(TRIM(v_order.requester_department))))))
         OR public.current_user_has_perm('perm_menu_order_prep')
-        OR EXISTS (SELECT 1 FROM public.users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
+        OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND u.is_preparer = true)
       ) THEN
         RAISE EXCEPTION 'Droits insuffisants pour annuler cette commande.' USING ERRCODE = '42501';
       END IF;
@@ -818,8 +846,7 @@ BEGIN
     RAISE EXCEPTION 'Transition invalide de % vers %.', v_order.status, v_status USING ERRCODE = '22023';
   END IF;
 
-  -- 5. Mise à jour de la commande avec colonnes réelles
-  UPDATE public.material_orders
+  UPDATE public.stk_material_orders
   SET status = v_status,
       preparer_id = CASE
         WHEN v_status = 'PREPARING' THEN COALESCE(p_preparer_id, v_caller_id)
@@ -840,12 +867,12 @@ BEGIN
       updated_at = now()
   WHERE id = p_order_id;
 
-  -- 6. Audit dans audit_logs (colonnes réelles)
-  INSERT INTO public.audit_logs (
-    id, type, category, user_id, user_name, user_trigram,
+  INSERT INTO public.core_audit_logs (
+    id, app, type, category, user_id, user_name, user_trigram,
     depot_name, title, description, badge_text, meta, created_at
   ) VALUES (
     'AUD-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || substr(p_operation_id::text, 1, 6),
+    'stock',
     'ORDER_STATUS_CHANGE',
     'ORDERS',
     v_caller_id,
@@ -873,8 +900,8 @@ BEGIN
     'new_status', v_status
   );
 
-  INSERT INTO public.processed_operations (operation_id, user_id, entity, action, result)
-  VALUES (p_operation_id, v_caller_id, 'order_transition', 'ACCEPTED', v_result);
+  INSERT INTO public.core_processed_operations (operation_id, app, user_id, entity, action, result)
+  VALUES (p_operation_id, 'stock', v_caller_id, 'order_transition', 'ACCEPTED', v_result);
 
   RETURN v_result;
 END;
@@ -885,11 +912,9 @@ GRANT EXECUTE ON FUNCTION public.transition_order_status(UUID, TEXT, TEXT, TEXT,
 
 -- -------------------------------------------------------------------------
 -- 5. UNICITÉ STRICTE DES NUMÉROS DE COMMANDE ATTRIBUÉS PAR LE SERVEUR
--- Format en ligne : XXXXXXXX-CMD-YYMMDD-XX
--- Format hors-ligne : XXXXXXXX-CMD-YYMMDD-XX_OFF
 -- -------------------------------------------------------------------------
 CREATE UNIQUE INDEX IF NOT EXISTS idx_material_orders_order_number_unique
-  ON public.material_orders (UPPER(TRIM(order_number)));
+  ON public.stk_material_orders (UPPER(TRIM(order_number)));
 
 DROP FUNCTION IF EXISTS public.allocate_unique_order_number(TEXT, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.allocate_unique_order_number(
@@ -911,7 +936,6 @@ BEGIN
   v_site := COALESCE(NULLIF(UPPER(TRIM(p_site_number)), ''), 'CH-00');
   v_date := COALESCE(NULLIF(TRIM(p_date_prefix), ''), to_char(now(), 'YYMMDD'));
 
-  -- Verrou transactionnel consultatif par date pour sérialiser les attributions simultanées
   PERFORM pg_advisory_xact_lock(hashtext('tot_order_num_' || v_date));
 
   SELECT COALESCE(
@@ -924,7 +948,7 @@ BEGIN
     0
   )
   INTO v_max_seq
-  FROM public.material_orders
+  FROM public.stk_material_orders
   WHERE UPPER(TRIM(order_number)) LIKE '%-CMD-' || v_date || '-%';
 
   v_next_seq := v_max_seq + 1;
@@ -932,7 +956,7 @@ BEGIN
   LOOP
     v_candidate := v_site || '-CMD-' || v_date || '-' || LPAD(v_next_seq::TEXT, 2, '0');
     EXIT WHEN NOT EXISTS (
-      SELECT 1 FROM public.material_orders
+      SELECT 1 FROM public.stk_material_orders
       WHERE UPPER(TRIM(order_number)) IN (v_candidate, v_candidate || '_OFF')
     );
     v_next_seq := v_next_seq + 1;
@@ -944,4 +968,3 @@ $$;
 
 REVOKE ALL ON FUNCTION public.allocate_unique_order_number(TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.allocate_unique_order_number(TEXT, TEXT) TO authenticated;
-

@@ -1,5 +1,11 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { User } from '../types';
+import { TABLES } from '../constants/tables';
+import {
+  getResolvedEdgeFunctionName,
+  loadEdgeFunctionOverridesFromClientDb,
+  extractEdgeFunctionErrorDetails,
+} from '../constants/edgeFunctions';
 import {
   syncUserProfileAndDirectoryToSupabase,
   removeUserFromDirectoryMirrorInSupabase,
@@ -50,52 +56,18 @@ async function invokeAdminUsers(
   action: string,
   payload: any
 ): Promise<AdminUsersResponse> {
-  // Helper to extract HTTP status and error body from Supabase FunctionsHttpError
-  const parseFunctionError = async (err: any) => {
-    if (!err) return { status: 200, message: '' };
-    const status = err.context?.status || err.status || 0;
-    let message = '';
-    try {
-      if (err.context && typeof err.context.json === 'function') {
-        const body = await err.context.json();
-        if (body) {
-          message = body.error || body.message || '';
-        }
-      }
-    } catch {
-      try {
-        if (err.context && typeof err.context.text === 'function') {
-          message = await err.context.text();
-        }
-      } catch {}
-    }
-    return { status, message: message || err.message || '' };
-  };
+  await loadEdgeFunctionOverridesFromClientDb(client);
+  const fnName = getResolvedEdgeFunctionName('adminUsers');
 
   try {
-    // 1. Try prefixed Edge Function name first
-    let res = await client.functions.invoke('APP_TOT-Stock_admin-users', {
+    const res = await client.functions.invoke(fnName, {
       body: { action, payload },
     });
-    let data = res.data;
-    let error = res.error;
-    let errDetails = await parseFunctionError(error);
+    const data = res.data;
+    const error = res.error;
+    const errDetails = await extractEdgeFunctionErrorDetails(error, data);
 
-    // 2. If 404, not found, or non-2xx status, try standard name 'admin-users'
-    if (error && (errDetails.status === 404 || errDetails.message.includes('not found') || errDetails.message.includes('non-2xx'))) {
-      const fallback = await client.functions.invoke('admin-users', {
-        body: { action, payload },
-      });
-      if (!fallback.error) {
-        data = fallback.data;
-        error = null;
-      } else {
-        errDetails = await parseFunctionError(fallback.error);
-        error = fallback.error;
-      }
-    }
-
-    // 3. If Edge Function returned a valid result
+    // If Edge Function returned a valid result
     if (!error && data) {
       if (data.success === true) {
         return {
@@ -108,14 +80,12 @@ async function invokeAdminUsers(
       return { success: false, error: data.error || 'Opération refusée par le serveur.' };
     }
 
-    // 4. Edge Functions only: direct error message if Edge Function returned error or failed
     if (error) {
-      const { status, message } = errDetails;
-      if (status === 404 || message.includes('Function not found') || message.includes('non-2xx')) {
+      const { status, message, isNotFound } = errDetails;
+      if (isNotFound || message.includes('non-2xx')) {
         return {
           success: false,
-          error:
-            "L'Edge Function 'admin-users' n'est pas déployée sur votre projet Supabase (Erreur 404).",
+          error: `L'Edge Function "${fnName}" est introuvable sur votre projet Supabase (Erreur 404 — vérifiez le nom exact).`,
         };
       }
       if (status === 403 || message.includes('403') || message.includes('Droits') || message.includes('privilège')) {
@@ -130,14 +100,14 @@ async function invokeAdminUsers(
           error: "Configuration serveur incomplète : La clé SUPABASE_SERVICE_ROLE_KEY n'a pas été définie dans les Secrets Supabase de l'Edge Function.",
         };
       }
-      return { success: false, error: message || error.message || 'Erreur Edge Function admin-users' };
+      return { success: false, error: message || error.message || `Erreur Edge Function ${fnName}` };
     }
 
-    return { success: false, error: 'Réponse serveur inattendue de l\'Edge Function admin-users.' };
+    return { success: false, error: `Réponse serveur inattendue de l'Edge Function ${fnName}.` };
   } catch (err: any) {
     return {
       success: false,
-      error: `Erreur communication admin-users : ${err?.message || err}`,
+      error: `Erreur communication ${fnName} : ${err?.message || err}`,
     };
   }
 }
@@ -149,7 +119,7 @@ export async function adminCreateUser(
   const res = await invokeAdminUsers(client, 'create', payload);
   if (res.success && res.user) {
     await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
@@ -162,14 +132,14 @@ export async function adminCreateUser(
     try {
       const cleanEmail = payload.email.trim().toLowerCase();
       const { data: profile } = await client
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots')
         .ilike('email', cleanEmail)
         .maybeSingle();
 
       if (profile) {
         const synced = await syncUserProfileAndDirectoryToSupabase(client, profile);
-        notifyRealtimeDataMutated('users');
+        notifyRealtimeDataMutated(TABLES.users);
         return {
           success: true,
           message: 'Utilisateur associé avec succès.',
@@ -179,7 +149,7 @@ export async function adminCreateUser(
     } catch {}
   }
 
-  // Fallback si l'Edge Function admin-users n'est pas déployée (404) : créer dans Supabase Auth (client isolé sans écraser la session admin) + synchroniser dans public.users
+  // Fallback si l'Edge Function admin-users n'est pas déployée (404) : créer dans Supabase Auth (client isolé sans écraser la session admin) + synchroniser dans public.core_users
   if (!res.success && (res.error?.includes('404') || res.error?.includes('déployée') || res.error?.includes('communication'))) {
     const cleanEmail = payload.email.trim().toLowerCase();
     const effectivePassword =
@@ -235,7 +205,7 @@ export async function adminCreateUser(
     });
 
     const synced = await syncUserProfileAndDirectoryToSupabase(client, fallbackUser);
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return {
       success: true,
       message: 'Profil utilisateur enregistré et synchronisé dans la base de données.',
@@ -254,11 +224,11 @@ export async function adminUpdateUser(
   const res = await invokeAdminUsers(client, 'update', payload);
   if (res.success && res.user) {
     await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
-  // Fallback direct sur la table public.users + miroir app_settings si l'Edge Function n'est pas déployée ou échoue
+  // Fallback direct sur la table public.core_users + miroir core_app_settings si l'Edge Function n'est pas déployée ou échoue
   try {
     const updateFields: Record<string, any> = {
       updated_at: new Date().toISOString(),
@@ -273,7 +243,7 @@ export async function adminUpdateUser(
     if (payload.must_change_pin !== undefined) updateFields.must_change_pin = Boolean(payload.must_change_pin);
 
     const { data: updatedRow, error: dbErr } = await client
-      .from('users')
+      .from(TABLES.users)
       .update(updateFields)
       .eq('id', String(payload.id))
       .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
@@ -281,7 +251,7 @@ export async function adminUpdateUser(
 
     if (!dbErr && updatedRow) {
       const synced = await syncUserProfileAndDirectoryToSupabase(client, updatedRow);
-      notifyRealtimeDataMutated('users');
+      notifyRealtimeDataMutated(TABLES.users);
       return {
         success: true,
         message: 'Profil utilisateur mis à jour avec succès.',
@@ -289,14 +259,14 @@ export async function adminUpdateUser(
       };
     }
 
-    // Si l'utilisateur n'existait que localement, synchroniser dans public.users + app_settings
+    // Si l'utilisateur n'existait que localement, synchroniser dans public.core_users + core_app_settings
     if (payload.name) {
       const synced = await syncUserProfileAndDirectoryToSupabase(client, {
         id: payload.id,
         ...updateFields,
       });
       if (synced) {
-        notifyRealtimeDataMutated('users');
+        notifyRealtimeDataMutated(TABLES.users);
         return {
           success: true,
           message: 'Profil utilisateur synchronisé avec succès.',
@@ -321,7 +291,7 @@ export async function adminUpdateUser(
     is_blocked: false,
   };
   await syncUserProfileAndDirectoryToSupabase(client, fallbackUser).catch(() => {});
-  notifyRealtimeDataMutated('users');
+  notifyRealtimeDataMutated(TABLES.users);
   return {
     success: true,
     message: 'Modifications appliquées.',
@@ -337,24 +307,24 @@ export async function adminToggleBlockUser(
   const res = await invokeAdminUsers(client, 'block', { id, is_blocked });
   if (res.success) {
     if (res.user) await syncUserProfileAndDirectoryToSupabase(client, res.user).catch(() => {});
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
   try {
     const { data: updated, error } = await client
-      .from('users')
+      .from(TABLES.users)
       .update({ is_blocked: Boolean(is_blocked), updated_at: new Date().toISOString() })
       .eq('id', String(id))
       .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots')
       .maybeSingle();
     if (!error) {
       if (updated) await syncUserProfileAndDirectoryToSupabase(client, updated).catch(() => {});
-      notifyRealtimeDataMutated('users');
+      notifyRealtimeDataMutated(TABLES.users);
       return { success: true, is_blocked: Boolean(is_blocked) };
     }
   } catch {}
-  notifyRealtimeDataMutated('users');
+  notifyRealtimeDataMutated(TABLES.users);
   return { success: true, is_blocked: Boolean(is_blocked) };
 }
 
@@ -365,7 +335,7 @@ export async function adminDeleteUser(
   const res = await invokeAdminUsers(client, 'delete', { id });
   if (res.success) {
     await removeUserFromDirectoryMirrorInSupabase(client, id).catch(() => {});
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
@@ -373,14 +343,14 @@ export async function adminDeleteUser(
     try {
       await client.rpc('admin_delete_user_profile', { p_user_id: String(id) });
     } catch {}
-    const { error } = await client.from('users').delete().eq('id', String(id));
+    const { error } = await client.from(TABLES.users).delete().eq('id', String(id));
     await removeUserFromDirectoryMirrorInSupabase(client, id).catch(() => {});
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     if (!error) {
       return { success: true };
     }
   } catch {}
-  notifyRealtimeDataMutated('users');
+  notifyRealtimeDataMutated(TABLES.users);
   return { success: true };
 }
 
@@ -398,23 +368,23 @@ export async function adminSetRole(
 ): Promise<AdminUsersResponse> {
   const res = await invokeAdminUsers(client, 'setRole', { id, role_id });
   if (res.success) {
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
   try {
     const { data, error } = await client
-      .from('users')
+      .from(TABLES.users)
       .update({ role_id: Number(role_id), updated_at: new Date().toISOString() })
       .eq('id', String(id))
       .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
       .maybeSingle();
     if (!error && data) {
-      notifyRealtimeDataMutated('users');
+      notifyRealtimeDataMutated(TABLES.users);
       return { success: true, user: data as User };
     }
   } catch {}
-  notifyRealtimeDataMutated('users');
+  notifyRealtimeDataMutated(TABLES.users);
   return { success: true };
 }
 
@@ -424,16 +394,16 @@ export async function adminClearMustChangePin(
 ): Promise<AdminUsersResponse> {
   const res = await invokeAdminUsers(client, 'clearMustChangePin', { userId });
   if (res.success) {
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
     return res;
   }
 
   try {
     await client
-      .from('users')
+      .from(TABLES.users)
       .update({ must_change_pin: false, updated_at: new Date().toISOString() })
       .eq('id', String(userId));
-    notifyRealtimeDataMutated('users');
+    notifyRealtimeDataMutated(TABLES.users);
   } catch {}
   return { success: true };
 }

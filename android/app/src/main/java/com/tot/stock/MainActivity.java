@@ -2,12 +2,16 @@ package com.tot.stock;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
 import android.view.HapticFeedbackConstants;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -18,9 +22,19 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebChromeClient;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 
 public class MainActivity extends BridgeActivity {
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 1001;
+    private static final String KEYSTORE_ALIAS = "tot_stock_local_crypto_master_v1";
+    private static final String PREFS_FILE = "tot_stock_native_keystore_prefs";
+    private static final String PREF_WRAPPED_KEY = "wrapped_aes_key_v1";
+    private static final String PREF_WRAPPED_IV = "wrapped_aes_iv_v1";
     private PermissionRequest pendingWebPermissionRequest = null;
     private boolean hapticsBridgeInjected = false;
 
@@ -48,6 +62,84 @@ public class MainActivity extends BridgeActivity {
             return (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    public class TotNativeKeystore {
+        private synchronized SecretKey getOrCreateHardwareWrappingKey() throws Exception {
+            KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            if (ks.containsAlias(KEYSTORE_ALIAS)) {
+                KeyStore.Entry entry = ks.getEntry(KEYSTORE_ALIAS, null);
+                if (entry instanceof KeyStore.SecretKeyEntry) {
+                    return ((KeyStore.SecretKeyEntry) entry).getSecretKey();
+                }
+            }
+            KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+            KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
+                    KEYSTORE_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+            )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .setUserAuthenticationRequired(false)
+                    .build();
+            kg.init(spec);
+            return kg.generateKey();
+        }
+
+        @JavascriptInterface
+        public synchronized String getOrCreateKeyBase64() {
+            try {
+                SharedPreferences prefs = getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE);
+                SecretKey wrappingKey = getOrCreateHardwareWrappingKey();
+                String wrappedCtB64 = prefs.getString(PREF_WRAPPED_KEY, null);
+                String wrappedIvB64 = prefs.getString(PREF_WRAPPED_IV, null);
+
+                if (wrappedCtB64 != null && wrappedIvB64 != null) {
+                    byte[] ct = Base64.decode(wrappedCtB64, Base64.NO_WRAP);
+                    byte[] iv = Base64.decode(wrappedIvB64, Base64.NO_WRAP);
+                    Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                    cipher.init(Cipher.DECRYPT_MODE, wrappingKey, new GCMParameterSpec(128, iv));
+                    byte[] rawKey = cipher.doFinal(ct);
+                    if (rawKey != null && rawKey.length == 32) {
+                        return Base64.encodeToString(rawKey, Base64.NO_WRAP);
+                    }
+                }
+
+                byte[] newRawKey = new byte[32];
+                new SecureRandom().nextBytes(newRawKey);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, wrappingKey);
+                byte[] iv = cipher.getIV();
+                byte[] ct = cipher.doFinal(newRawKey);
+
+                prefs.edit()
+                        .putString(PREF_WRAPPED_KEY, Base64.encodeToString(ct, Base64.NO_WRAP))
+                        .putString(PREF_WRAPPED_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
+                        .apply();
+
+                return Base64.encodeToString(newRawKey, Base64.NO_WRAP);
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public synchronized boolean clearKey() {
+            try {
+                SharedPreferences prefs = getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE);
+                prefs.edit().remove(PREF_WRAPPED_KEY).remove(PREF_WRAPPED_IV).apply();
+                KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                ks.load(null);
+                if (ks.containsAlias(KEYSTORE_ALIAS)) {
+                    ks.deleteEntry(KEYSTORE_ALIAS);
+                }
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
         }
     }
 
@@ -121,6 +213,7 @@ public class MainActivity extends BridgeActivity {
 
                 if (!hapticsBridgeInjected) {
                     webView.addJavascriptInterface(new TotNativeHaptics(), "TotNativeHaptics");
+                    webView.addJavascriptInterface(new TotNativeKeystore(), "TotNativeKeystore");
                     hapticsBridgeInjected = true;
                 }
 

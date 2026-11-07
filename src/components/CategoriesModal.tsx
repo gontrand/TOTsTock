@@ -2,6 +2,11 @@ import React, { useState, useMemo, useRef } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { X, FolderTree, Plus, Trash2, Tag, Search, Edit2, Check } from 'lucide-react';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../services/unsavedChangesGuard';
 
 export const CategoriesModal: React.FC = () => {
   const {
@@ -19,19 +24,60 @@ export const CategoriesModal: React.FC = () => {
   const [newCatName, setNewCatName] = useState('');
   const [editingCatId, setEditingCatId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const catFormRef = useRef<HTMLFormElement>(null);
   const catInputRef = useRef<HTMLInputElement>(null);
 
   const canManageCategories = userHasPermission('perm_manage_categories');
 
+  const performSaveCategory = async (): Promise<boolean> => {
+    if (!newCatName.trim()) return false;
+    if (editingCatId !== null) {
+      const ok = await saveSubCategory(newCatName.trim(), editingCatId);
+      if (!ok) return false;
+      setEditingCatId(null);
+    } else {
+      const ok = await saveSubCategory(newCatName.trim());
+      if (!ok) return false;
+    }
+    setNewCatName('');
+    return true;
+  };
+
+  const handleCancelEdit = () => {
+    setEditingCatId(null);
+    setNewCatName('');
+  };
+
+  const isCatFormDirty =
+    categoriesModalOpen && (editingCatId !== null || Boolean(newCatName.trim()));
+
+  useRegisterUnsavedForm({
+    id: 'mobile-categories-modal',
+    isDirty: isCatFormDirty,
+    label:
+      editingCatId !== null
+        ? tr(language, `Modification de la catégorie (${newCatName})`, `Editing category (${newCatName})`, `Categorie bewerken (${newCatName})`)
+        : tr(language, 'Nouvelle catégorie', 'New category', 'Nieuwe categorie'),
+    onSave: performSaveCategory,
+    onDiscard: handleCancelEdit,
+  });
+
+  const handleRequestClose = () => {
+    requestGuardedNavigation(() => {
+      handleCancelEdit();
+      setCategoriesModalOpen(false);
+    }, ['mobile-categories-modal']);
+  };
+
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && categoriesModalOpen) {
-        setCategoriesModalOpen(false);
+        handleRequestClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [categoriesModalOpen, setCategoriesModalOpen]);
+  }, [categoriesModalOpen, isCatFormDirty]);
 
   const filteredCategories = useMemo(() => {
     if (!searchQuery.trim()) return subCategories;
@@ -44,27 +90,12 @@ export const CategoriesModal: React.FC = () => {
   const handleStartEdit = (cat: { id: number; name: string }) => {
     setEditingCatId(cat.id);
     setNewCatName(cat.name);
-    setTimeout(() => {
-      catInputRef.current?.focus();
-      catInputRef.current?.select();
-    }, 50);
-  };
-
-  const handleCancelEdit = () => {
-    setEditingCatId(null);
-    setNewCatName('');
+    scrollToAndFocusForm(catFormRef.current, catInputRef.current);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCatName.trim()) return;
-    if (editingCatId !== null) {
-      await saveSubCategory(newCatName.trim(), editingCatId);
-      setEditingCatId(null);
-    } else {
-      await saveSubCategory(newCatName.trim());
-    }
-    setNewCatName('');
+    await performSaveCategory();
   };
 
   const handleDelete = async (id: number, name: string) => {
@@ -87,7 +118,7 @@ export const CategoriesModal: React.FC = () => {
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setCategoriesModalOpen(false);
+          handleRequestClose();
         }
       }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-3 bg-slate-950/75 backdrop-blur-sm animate-fadeIn"
@@ -113,7 +144,7 @@ export const CategoriesModal: React.FC = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setCategoriesModalOpen(false);
+              handleRequestClose();
             }}
             className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all cursor-pointer active:scale-95 shadow-xs shrink-0 relative z-20"
             title={t('common_close')}
@@ -165,7 +196,7 @@ export const CategoriesModal: React.FC = () => {
                 </button>
               </div>
             )}
-            <form onSubmit={handleSubmit} className="flex gap-2">
+            <form ref={catFormRef} onSubmit={handleSubmit} className="flex gap-2">
               <input
                 ref={catInputRef}
                 type="text"
@@ -298,7 +329,7 @@ export const CategoriesModal: React.FC = () => {
               .replace('{total}', String(subCategories.length))}
           </span>
           <button
-            onClick={() => setCategoriesModalOpen(false)}
+            onClick={handleRequestClose}
             className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-xs hover:bg-slate-100 dark:hover:bg-slate-800 transition"
           >
             {t('common_close')}

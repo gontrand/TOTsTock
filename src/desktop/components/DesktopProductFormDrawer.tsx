@@ -1,10 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { tr } from '../../i18n/dutchTranslator';
 import { useApp } from '../../context/AppContext';
 import { Product } from '../../types';
 import { validateProductIdentifiersUniqueness } from '../../utils/crypto';
 import { getPlanMaxReferences } from '../../services/licenseService';
 import { X, Save, Package, AlertTriangle, Lock } from 'lucide-react';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../../services/unsavedChangesGuard';
 
 interface DesktopProductFormDrawerProps {
   open: boolean;
@@ -59,6 +64,11 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
   const [errorMsg, setErrorMsg] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const refInputRef = useRef<HTMLInputElement | null>(null);
+
+  const formInitKey = open ? `${product?.id ?? 'new'}:${(prefillCode || '').trim()}` : '';
+
   useEffect(() => {
     if (!open) return;
     setErrorMsg('');
@@ -106,12 +116,11 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
       setQuantity('10');
       setMinStockAlert('2');
     }
-  }, [open, product, prefillCode, depots]);
+    scrollToAndFocusForm(formRef.current, refInputRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, formInitKey]);
 
-  if (!open) return null;
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performSave = async (): Promise<boolean> => {
     setErrorMsg('');
 
     const cleanRef = reference.trim();
@@ -127,7 +136,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
           'Vul referentie, merk en model in.'
         )
       );
-      return;
+      return false;
     }
 
     const uniqueness = validateProductIdentifiersUniqueness(
@@ -148,7 +157,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
 
     if (!uniqueness.valid) {
       setErrorMsg(uniqueness.error || 'Doublon détecté.');
-      return;
+      return false;
     }
 
     setSaving(true);
@@ -182,9 +191,41 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
         onSaved?.(cleanRef);
         onClose();
       }
+      return Boolean(ok);
     } finally {
       setSaving(false);
     }
+  };
+
+  const isFormModified = Boolean(
+    open &&
+      !isQuotaReached &&
+      (isEdit ||
+        reference.trim() !== ((prefillCode || '').trim()) ||
+        brand.trim() !== '' ||
+        model.trim() !== '' ||
+        description.trim() !== '')
+  );
+
+  useRegisterUnsavedForm({
+    id: 'desktop-product-drawer',
+    isDirty: isFormModified,
+    label: isEdit
+      ? `${tr(language, 'Produit', 'Product', 'Product')} : ${reference || product?.reference || ''}`
+      : tr(language, 'Nouveau produit', 'New product', 'Nieuw product'),
+    onSave: () => performSave(),
+    onDiscard: () => onClose(),
+  });
+
+  if (!open) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSave();
+  };
+
+  const handleRequestClose = () => {
+    requestGuardedNavigation(onClose, ['desktop-product-drawer']);
   };
 
   return (
@@ -197,7 +238,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
           : tr(language, 'Nouveau produit', 'New Product', 'Nieuw product')
       }
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) handleRequestClose();
       }}
       className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/60 backdrop-blur-xs"
     >
@@ -227,7 +268,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -259,7 +300,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
+          <form ref={formRef} onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
             {errorMsg && (
               <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 font-semibold flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -286,6 +327,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
                       {tr(language, 'Référence interne *', 'Internal Ref *', 'Interne ref. *')}
                     </label>
                     <input
+                      ref={refInputRef}
                       type="text"
                       required
                       value={reference}
@@ -536,7 +578,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
             <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2.5">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleRequestClose}
                 className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
               >
                 {tr(language, 'Annuler', 'Cancel', 'Annuleren')}

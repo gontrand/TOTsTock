@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Printer, Terminal, X } from 'lucide-react';
 import { Product } from '../../types';
 import { useApp } from '../../context/AppContext';
+import { tr } from '../../i18n/dutchTranslator';
 import {
   CanonicalPrintLabelFormat,
   buildFullPrintableDocumentHtml,
@@ -25,7 +26,7 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
   productsToPrint,
   onClose,
 }) => {
-  const { canViewPrices } = useApp();
+  const { canViewPrices, language } = useApp();
   const [format, setFormat] = useState<CanonicalPrintLabelFormat>('avery_70x37');
   const [copiesPerItem, setCopiesPerItem] = useState(1);
   const [showPrice, setShowPrice] = useState(false);
@@ -75,7 +76,12 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
       const fullHtml = buildFullPrintableDocumentHtml(
         previewHtml,
         format,
-        `Étiquettes TOT Stock (${productsToPrint.length})`
+        tr(
+          language,
+          `Étiquettes TOT Stock (${productsToPrint.length})`,
+          `TOT Stock Labels (${productsToPrint.length})`,
+          `TOT Stock Etiketten (${productsToPrint.length})`
+        )
       );
       const res = await dispatchStationPrintDocument({
         html: fullHtml,
@@ -83,7 +89,15 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
         copies: 1,
       });
       if (!res.ok) {
-        setStatusMessage(res.error || "Erreur lors de l'impression");
+        setStatusMessage(
+          res.error ||
+            tr(
+              language,
+              "Erreur lors de l'impression",
+              'Error while printing',
+              'Fout bij het afdrukken'
+            )
+        );
       } else {
         onClose();
       }
@@ -116,7 +130,10 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
         rawPrinterName: zplCfg.rawPrinterName,
       });
       if (!res.ok) {
-        setStatusMessage(res.errorMessage || "Échec de l'envoi ZPL");
+        setStatusMessage(
+          res.errorMessage ||
+            tr(language, "Échec de l'envoi ZPL", 'ZPL send failed', 'ZPL-verzending mislukt')
+        );
       } else {
         onClose();
       }
@@ -131,10 +148,20 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div>
             <h2 className="text-base font-black text-slate-900 dark:text-white">
-              Impression d'étiquettes ({productsToPrint.length} référence(s))
+              {tr(
+                language,
+                `Impression d'étiquettes (${productsToPrint.length} référence(s))`,
+                `Print labels (${productsToPrint.length} item(s))`,
+                `Etiketten afdrukken (${productsToPrint.length} referentie(s))`
+              )}
             </h2>
             <p className="text-xs text-slate-500">
-              Choisissez le format de planche A4 ou rouleau thermique et prévisualisez avant impression
+              {tr(
+                language,
+                'Choisissez le format de planche A4 ou rouleau thermique et prévisualisez avant impression',
+                'Choose the A4 sheet or thermal roll format and preview before printing',
+                'Kies het A4-vel- of thermische rolformaat en bekijk een voorbeeld voor het afdrukken'
+              )}
             </p>
           </div>
           <button
@@ -150,23 +177,56 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
           <div className="col-span-4 p-5 space-y-4 text-xs overflow-y-auto">
             <div>
               <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Format d'étiquette
+                {tr(language, "Format d'étiquette", 'Label format', 'Etiketformaat')}
               </label>
               <select
                 value={format}
                 onChange={(e) => setFormat(e.target.value as CanonicalPrintLabelFormat)}
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold"
               >
-                <option value="avery_70x37">Planche A4 Avery 70 × 37 mm (24/page)</option>
-                <option value="avery_105x42">Planche A4 Avery 105 × 42 mm (14/page)</option>
-                <option value="thermal_50x30">Rouleau thermique 50 × 30 mm</option>
-                <option value="bin_90x50">Étiquette de bac / étagère 90 × 50 mm</option>
+                <option value="avery_70x37">
+                  {tr(
+                    language,
+                    'Planche A4 Avery 70 × 37 mm (24/page)',
+                    'A4 Sheet Avery 70 × 37 mm (24/page)',
+                    'A4-vel Avery 70 × 37 mm (24/pagina)'
+                  )}
+                </option>
+                <option value="avery_105x42">
+                  {tr(
+                    language,
+                    'Planche A4 Avery 105 × 42 mm (14/page)',
+                    'A4 Sheet Avery 105 × 42 mm (14/page)',
+                    'A4-vel Avery 105 × 42 mm (14/pagina)'
+                  )}
+                </option>
+                <option value="thermal_50x30">
+                  {tr(
+                    language,
+                    'Rouleau thermique 50 × 30 mm',
+                    'Thermal roll 50 × 30 mm',
+                    'Thermische rol 50 × 30 mm'
+                  )}
+                </option>
+                <option value="bin_90x50">
+                  {tr(
+                    language,
+                    'Étiquette de bac / étagère 90 × 50 mm',
+                    'Bin / shelf label 90 × 50 mm',
+                    'Bak- / schapetiket 90 × 50 mm'
+                  )}
+                </option>
               </select>
             </div>
 
             <div>
               <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Nombre de copies par article
+                {tr(
+                  language,
+                  'Nombre de copies par article',
+                  'Number of copies per item',
+                  'Aantal kopieën per artikel'
+                )}
               </label>
               <input
                 type="number"
@@ -187,7 +247,12 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
                   className="rounded text-orange-600"
                 />
                 <span className="font-semibold text-slate-700 dark:text-slate-300">
-                  Afficher le prix unitaire HT
+                  {tr(
+                    language,
+                    'Afficher le prix unitaire HT',
+                    'Show unit price (excl. VAT)',
+                    'Eenheidsprijs (excl. btw) tonen'
+                  )}
                 </span>
               </label>
             )}
@@ -206,7 +271,12 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
                 className="w-full py-2.5 px-4 rounded-xl font-black bg-orange-600 hover:bg-orange-700 text-white flex items-center justify-center gap-2 shadow-xs"
               >
                 <Printer className="w-4 h-4" />
-                Imprimer (Pilote système / A4 / Thermique)
+                {tr(
+                  language,
+                  'Imprimer (Pilote système / A4 / Thermique)',
+                  'Print (System driver / A4 / Thermal)',
+                  'Afdrukken (Systeemsdriver / A4 / Thermisch)'
+                )}
               </button>
 
               {isDesktopApp() && (
@@ -217,7 +287,12 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
                   className="w-full py-2.5 px-4 rounded-xl font-bold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 flex items-center justify-center gap-2"
                 >
                   <Terminal className="w-4 h-4 text-orange-600" />
-                  Imprimer en ZPL direct (Zebra)
+                  {tr(
+                    language,
+                    'Imprimer en ZPL direct (Zebra)',
+                    'Print direct ZPL (Zebra)',
+                    'Direct in ZPL afdrukken (Zebra)'
+                  )}
                 </button>
               )}
             </div>

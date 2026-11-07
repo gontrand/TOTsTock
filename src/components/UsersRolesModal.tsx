@@ -37,6 +37,11 @@ import {
 } from '../data/permissionMatrix';
 import { RECOMMENDED_ROLES_SPEC } from '../data/initialData';
 import { tr } from '../i18n/dutchTranslator';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../services/unsavedChangesGuard';
 
 export const UsersRolesModal: React.FC = () => {
   const {
@@ -165,40 +170,48 @@ export const UsersRolesModal: React.FC = () => {
   const roleFormRef = useRef<HTMLFormElement | null>(null);
   const roleNameInputRef = useRef<HTMLInputElement | null>(null);
 
-  if (!usersRolesModal.open) return null;
-
-  const canManageUsers = userHasPermission('perm_manage_users');
-  const canDeleteUser = userHasPermission('perm_user_delete') && !isDeptManager;
-  const canManageRoles = userHasPermission('perm_manage_roles') && !isDeptManager;
-
-  // Trigram auto-generator on name input
-  const handleNameChange = (val: string) => {
-    setUserName(val);
-    if (!editingUserId) {
-      setUserTrigram(generateTrigram(val));
-    }
+  const resetUserFormState = () => {
+    setEditingUserId(null);
+    setUserName('');
+    setUserTrigram('');
+    setUserEmail('');
+    setUserPassword('');
+    setShowPassword(false);
+    setUserDepartment(managedDeptNames[0] || currentUser?.department || 'Général');
+    setUserRoleId('4');
+    setUserMustChangePin(true);
+    setUserIsPreparer(false);
+    setUserBinomeId('');
+    setAllDepotsAllowed(isSuperAdmin);
+    setUserAllowedDepots([]);
+    setUserFormMsg('');
   };
 
-  // User Submit
-  const handleUserSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const resetRoleFormState = () => {
+    setEditingRoleId(null);
+    setRoleName('');
+    setSelectedPerms([]);
+    setRoleFormMsg('');
+  };
+
+  const performSaveUser = async (): Promise<boolean> => {
     setUserFormMsg('');
 
     if (!userName.trim()) {
       setUserFormMsg(tr(language, 'Le nom est obligatoire.', 'Name is required.'));
-      return;
+      return false;
     }
 
     if (!editingUserId && !userEmail.trim()) {
       setUserFormMsg(tr(language, "L'adresse e-mail professionnelle est obligatoire pour créer un compte.", "Email is required to create an account."));
-      return;
+      return false;
     }
 
     if (userPassword.trim() && userPassword.trim().length < 6) {
       setUserFormMsg(
         tr(language, 'Le mot de passe initial doit comporter au moins 6 caractères.', 'Initial password must be at least 6 characters.')
       );
-      return;
+      return false;
     }
 
     const selectedDepObj = departments.find((d) => d.name === userDepartment);
@@ -208,20 +221,20 @@ export const UsersRolesModal: React.FC = () => {
 
     if (targetRoleId === 0 && !isSuperAdmin) {
       setUserFormMsg('Seul un Super Administrateur (rôle 0) peut attribuer le rôle Super Admin.');
-      return;
+      return false;
     }
 
     // Délégation Responsable de département (PDF Chapitre 4)
     if (isDeptManager) {
       if (targetRoleId !== 4 && targetRoleId !== 9) {
         setUserFormMsg('Délégation Responsable de département : vous ne pouvez créer que des comptes Opérateur (rôle 4) ou Intérimaire (rôle 9).');
-        return;
+        return false;
       }
       const deptNorm = (userDepartment || '').toLowerCase().trim();
       const allowedDeptsNorm = managedDeptNames.map((n) => n.toLowerCase().trim());
       if (!allowedDeptsNorm.includes(deptNorm)) {
         setUserFormMsg(`Délégation Responsable de département : vous ne pouvez assigner que votre département (${managedDeptNames.join(', ')}).`);
-        return;
+        return false;
       }
     }
 
@@ -233,7 +246,7 @@ export const UsersRolesModal: React.FC = () => {
         setUserFormMsg(
           tr(language, `Règle stricte : Le binôme (${selectedBinome.name}) doit obligatoirement appartenir au même département (« ${userDepartment} »).`, `Strict rule: Binôme must belong to the same department ("${userDepartment}").`)
         );
-        return;
+        return false;
       }
     }
 
@@ -254,26 +267,101 @@ export const UsersRolesModal: React.FC = () => {
     const res = await saveUser(payload, userPassword.trim() || undefined);
     if (!res.success) {
       setUserFormMsg(res.message || (tr(language, 'Erreur enregistrement', 'Error saving user')));
-      return;
+      return false;
     }
 
     if (res.message && res.message.includes('Mot de passe temporaire')) {
       alert(res.message);
     }
 
-    setEditingUserId(null);
-    setUserName('');
-    setUserTrigram('');
-    setUserEmail('');
-    setUserPassword('');
-    setShowPassword(false);
-    setUserDepartment(managedDeptNames[0] || currentUser?.department || 'Général');
-    setUserRoleId('4');
-    setUserMustChangePin(true);
-    setUserIsPreparer(false);
-    setUserBinomeId('');
-    setAllDepotsAllowed(isSuperAdmin);
-    setUserAllowedDepots([]);
+    resetUserFormState();
+    return true;
+  };
+
+  const performSaveRole = async (): Promise<boolean> => {
+    if (!roleName.trim()) {
+      setRoleFormMsg(tr(language, 'Le nom du rôle est obligatoire.', 'Role name is required.'));
+      return false;
+    }
+
+    const isSuperAdminCaller = Number(currentUser?.role_id) === 0;
+    if (editingRoleId === 0 && !isSuperAdminCaller) {
+      setRoleFormMsg('Seul un Super Administrateur peut modifier le rôle Super Admin.');
+      return false;
+    }
+    if (selectedPerms.includes('*') && !isSuperAdminCaller) {
+      setRoleFormMsg('Seul un Super Administrateur peut attribuer la permission universelle "*".');
+      return false;
+    }
+
+    const ok = await saveRole({
+      id: editingRoleId || undefined,
+      name: roleName.trim(),
+      permissions: selectedPerms,
+    });
+    if (!ok) return false;
+
+    resetRoleFormState();
+    return true;
+  };
+
+  const isUserFormDirty =
+    usersRolesModal.open &&
+    activeTab === 'users' &&
+    (editingUserId !== null || Boolean(userName.trim() || userEmail.trim() || userPassword.trim()));
+
+  const isRoleFormDirty =
+    usersRolesModal.open &&
+    activeTab === 'roles' &&
+    (editingRoleId !== null || Boolean(roleName.trim()));
+
+  useRegisterUnsavedForm({
+    id: 'mobile-users-roles-modal',
+    isDirty: isUserFormDirty || isRoleFormDirty,
+    label: isUserFormDirty
+      ? editingUserId !== null
+        ? tr(language, `Modification de l’utilisateur (${userName || userTrigram})`, `Editing user (${userName || userTrigram})`, `Gebruiker bewerken (${userName || userTrigram})`)
+        : tr(language, 'Nouvel utilisateur', 'New user', 'Nieuwe gebruiker')
+      : editingRoleId !== null
+        ? tr(language, `Modification du rôle (${roleName})`, `Editing role (${roleName})`, `Rol bewerken (${roleName})`)
+        : tr(language, 'Nouveau rôle', 'New role', 'Nieuwe rol'),
+    onSave: async () => {
+      if (isUserFormDirty) return await performSaveUser();
+      if (isRoleFormDirty) return await performSaveRole();
+      return true;
+    },
+    onDiscard: () => {
+      if (isUserFormDirty) resetUserFormState();
+      if (isRoleFormDirty) resetRoleFormState();
+    },
+  });
+
+  const handleRequestClose = () => {
+    requestGuardedNavigation(() => {
+      resetUserFormState();
+      resetRoleFormState();
+      setUsersRolesModal({ open: false, tab: activeTab });
+    }, ['mobile-users-roles-modal']);
+  };
+
+  if (!usersRolesModal.open) return null;
+
+  const canManageUsers = userHasPermission('perm_manage_users');
+  const canDeleteUser = userHasPermission('perm_user_delete') && !isDeptManager;
+  const canManageRoles = userHasPermission('perm_manage_roles') && !isDeptManager;
+
+  // Trigram auto-generator on name input
+  const handleNameChange = (val: string) => {
+    setUserName(val);
+    if (!editingUserId) {
+      setUserTrigram(generateTrigram(val));
+    }
+  };
+
+  // User Submit
+  const handleUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSaveUser();
   };
 
   const handleEditUser = (u: User) => {
@@ -294,10 +382,7 @@ export const UsersRolesModal: React.FC = () => {
     setUserFormMsg('');
 
     // Règle : Afficher directement le formulaire et scroller dessus
-    setTimeout(() => {
-      userFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      userNameInputRef.current?.focus();
-    }, 50);
+    scrollToAndFocusForm(userFormRef.current, userNameInputRef.current);
   };
 
   const toggleMustChangePin = async (userId: string | number) => {
@@ -333,31 +418,7 @@ export const UsersRolesModal: React.FC = () => {
   // Role Submit
   const handleRoleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!roleName.trim()) {
-      setRoleFormMsg(tr(language, 'Le nom du rôle est obligatoire.', 'Role name is required.'));
-      return;
-    }
-
-    const isSuperAdmin = Number(currentUser?.role_id) === 0;
-    if (editingRoleId === 0 && !isSuperAdmin) {
-      setRoleFormMsg('Seul un Super Administrateur peut modifier le rôle Super Admin.');
-      return;
-    }
-    if (selectedPerms.includes('*') && !isSuperAdmin) {
-      setRoleFormMsg('Seul un Super Administrateur peut attribuer la permission universelle "*".');
-      return;
-    }
-
-    await saveRole({
-      id: editingRoleId || undefined,
-      name: roleName.trim(),
-      permissions: selectedPerms,
-    });
-
-    setEditingRoleId(null);
-    setRoleName('');
-    setSelectedPerms([]);
-    setRoleFormMsg('');
+    await performSaveRole();
   };
 
   const handleEditRole = (r: Role) => {
@@ -367,10 +428,7 @@ export const UsersRolesModal: React.FC = () => {
     setRoleFormMsg('');
 
     // Règle : Afficher directement le formulaire et scroller dessus
-    setTimeout(() => {
-      roleFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      roleNameInputRef.current?.focus();
-    }, 50);
+    scrollToAndFocusForm(roleFormRef.current, roleNameInputRef.current);
   };
 
   const togglePerm = (key: string) => {
@@ -449,7 +507,7 @@ export const UsersRolesModal: React.FC = () => {
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setUsersRolesModal({ open: false, tab: activeTab });
+          handleRequestClose();
         }
       }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-3 bg-slate-950/75 backdrop-blur-sm animate-fadeIn"
@@ -470,7 +528,7 @@ export const UsersRolesModal: React.FC = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setUsersRolesModal({ open: false, tab: activeTab });
+              handleRequestClose();
             }}
             className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all cursor-pointer active:scale-95 shadow-xs shrink-0"
             title={t('common_close')}
@@ -483,7 +541,10 @@ export const UsersRolesModal: React.FC = () => {
         {/* Tab Selector */}
         <div className="flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 my-2.5 sm:my-3 border border-slate-200 dark:border-slate-700 gap-1 shrink-0">
           <button
-            onClick={() => setActiveTab('users')}
+            onClick={() => {
+              if (activeTab === 'users') return;
+              requestGuardedNavigation(() => setActiveTab('users'), ['mobile-users-roles-modal']);
+            }}
             className={`flex-1 min-w-0 py-1.5 px-2 text-xs font-bold rounded-lg transition truncate ${
               activeTab === 'users'
                 ? 'bg-white dark:bg-slate-900 text-orange-600 shadow-sm'
@@ -493,7 +554,10 @@ export const UsersRolesModal: React.FC = () => {
             👥 {t('users_tab')} ({directoryUsers.length})
           </button>
           <button
-            onClick={() => setActiveTab('roles')}
+            onClick={() => {
+              if (activeTab === 'roles') return;
+              requestGuardedNavigation(() => setActiveTab('roles'), ['mobile-users-roles-modal']);
+            }}
             className={`flex-1 min-w-0 py-1.5 px-2 text-xs font-bold rounded-lg transition truncate ${
               activeTab === 'roles'
                 ? 'bg-white dark:bg-slate-900 text-orange-600 shadow-sm'

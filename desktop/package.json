@@ -14,7 +14,7 @@
     "pack": "node scripts/generate-icons.mjs && electron-builder --dir --config electron-builder.yml",
     "dist": "node scripts/generate-icons.mjs && electron-builder --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
     "dist:win": "node scripts/generate-icons.mjs && electron-builder --win nsis --x64 --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
-    "dist:mac": "node scripts/generate-icons.mjs && electron-builder --mac dmg --arm64 --x64 --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
+    "dist:mac": "node scripts/generate-icons.mjs && electron-builder --mac dmg --universal --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
     "dist:linux": "node scripts/generate-icons.mjs && electron-builder --linux AppImage deb --x64 --config electron-builder.yml --publish never && node scripts/generate-checksums.mjs",
     "checksums": "node scripts/generate-checksums.mjs"
   },

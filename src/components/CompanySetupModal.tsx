@@ -42,6 +42,7 @@ import {
   normalizeSupabaseKey,
   getClientSupabase,
   validateSupabaseServerUrl,
+  validateSupabaseAnonKey,
   SupabaseUrlValidationResult,
 } from '../services/clientSupabase';
 import { PLAN_LABELS, PLAN_TIERS, LicensePlan, LicenseInfo, getMaxDepotsForPlan, normalizeToCanonicalPlan, plan_limits } from '../types';
@@ -50,6 +51,8 @@ import {
   getPlanMaxReferences,
   syncLicenseToClientDatabase,
   discoverLicenseByProjectUrl,
+  readClientDatabaseLicenseStatus,
+  ClientDatabaseLicenseStatus,
 } from '../services/licenseService';
 import { masterSupabase } from '../services/masterSupabase';
 import { generateModelBSqlMigration, syncLicenseTokenToClientDb } from '../services/licenseTokenService';
@@ -62,8 +65,15 @@ import {
   SQL_SCRIPT_06_INSTALL_ADDITIONAL_ROLES,
   SQL_SCRIPT_07_APP_COMPAT,
   SQL_SCRIPT_08_PRINT_JOBS,
+  SQL_SCRIPT_09_CORE_PREFIXES,
+  SQL_SCRIPT_10_DROP_COMPAT_VIEWS,
+  SQL_SCRIPT_11_SUITE_TABLES,
+  SQL_SCRIPT_12_USER_PREFERENCES,
+  SQL_SCRIPT_13_TRANSFER_STOCK_BATCH,
+  SQL_SCRIPT_14_MAILING,
   SQL_MASTER_LICENSES_SCHEMA,
 } from '../constants/supabaseScripts';
+import { EdgeFunctionsSetupPanel } from './EdgeFunctionsSetupPanel';
 
 export const CompanySetupModal: React.FC = () => {
   const {
@@ -102,7 +112,7 @@ export const CompanySetupModal: React.FC = () => {
   const canLicense = !currentUser || userHasPermission('perm_config_license') || userHasPermission('perm_config_db');
   const canDb = !currentUser || userHasPermission('perm_config_db');
 
-  const [activeTab, setActiveTab] = useState<'license' | 'db' | 'architecture'>(() => {
+  const [activeTab, setActiveTab] = useState<'license' | 'db' | 'architecture' | 'edge_functions'>(() => {
     // Si aucun utilisateur n'est encore connecté, ouvrir directement sur l'onglet 'db' pour configurer Supabase
     if (!currentUser) return 'db';
     if (userHasPermission('perm_config_license') || userHasPermission('perm_config_db')) return 'license';
@@ -191,6 +201,41 @@ export const CompanySetupModal: React.FC = () => {
   const [showQuoteView, setShowQuoteView] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [copiedSubKey, setCopiedSubKey] = useState(false);
+  const [dbLicenseStatus, setDbLicenseStatus] = useState<ClientDatabaseLicenseStatus | null>(null);
+
+  const refreshDbLicenseStatus = React.useCallback(
+    async (overridePlan?: string) => {
+      try {
+        const cleanUrl = normalizeSupabaseUrl(
+          url || supabaseConfig?.url || localStorage.getItem('tqt_company_url') || ''
+        );
+        const cleanKey = normalizeSupabaseKey(
+          key || supabaseConfig?.key || localStorage.getItem('tqt_company_key') || ''
+        );
+        if (!cleanUrl || !cleanKey) {
+          setDbLicenseStatus(null);
+          return;
+        }
+        const client = getClientSupabase(cleanUrl, cleanKey);
+        if (!client) {
+          setDbLicenseStatus(null);
+          return;
+        }
+        const status = await readClientDatabaseLicenseStatus(
+          client,
+          overridePlan || license?.plan_type || license?.plan
+        );
+        setDbLicenseStatus(status);
+      } catch {}
+    },
+    [url, key, supabaseConfig?.url, supabaseConfig?.key, license?.plan_type, license?.plan]
+  );
+
+  useEffect(() => {
+    if (companySetupModalOpen) {
+      refreshDbLicenseStatus();
+    }
+  }, [companySetupModalOpen, activeTab, license?.plan_type, license?.license_key, refreshDbLicenseStatus]);
 
   const handleOpenSubscription = (plan: 'sta' | 'pro' | 'ent' = 'pro') => {
     setSelectedSubPlan(plan);
@@ -296,9 +341,9 @@ export const CompanySetupModal: React.FC = () => {
   }, [companySetupModalOpen]);
 
   useEffect(() => {
-    if (license?.organization_name) setOrgName(license.organization_name);
-    if (license?.contact_email) setEmailInput(license.contact_email);
-  }, [license?.organization_name, license?.contact_email]);
+    if (!isEditingOrg && license?.organization_name) setOrgName(license.organization_name);
+    if (!isEditingEmail && license?.contact_email) setEmailInput(license.contact_email);
+  }, [license?.organization_name, license?.contact_email, isEditingOrg, isEditingEmail]);
 
   // Pre-fill form when returning from QR Code scan (never save automatically!)
   useEffect(() => {
@@ -367,8 +412,7 @@ export const CompanySetupModal: React.FC = () => {
   // Validation préalable et ouverture de la fenêtre de confirmation du serveur
   const requestServerConfirmation = (mode: 'save' | 'test', e?: React.FormEvent | React.MouseEvent) => {
     if (e) e.preventDefault();
-    const cleanKey = normalizeSupabaseKey(key);
-    if (!url.trim() || !cleanKey) {
+    if (!url.trim() || !key.trim()) {
       setStatusMsg({
         type: 'error',
         text: tr(
@@ -379,6 +423,18 @@ export const CompanySetupModal: React.FC = () => {
       });
       return;
     }
+
+    const keyValidation = validateSupabaseAnonKey(key);
+    if (!keyValidation.valid) {
+      setStatusMsg({
+        type: 'error',
+        text:
+          keyValidation.errorMessage ||
+          tr(language, 'Clé Supabase invalide.', 'Invalid Supabase key.'),
+      });
+      return;
+    }
+    const cleanKey = keyValidation.normalizedKey;
 
     const validation = validateSupabaseServerUrl(url);
     if (!validation.valid) {
@@ -607,6 +663,7 @@ export const CompanySetupModal: React.FC = () => {
     setLicenseMsg(null);
     try {
       const res = await verifyLicense(rawKey.trim());
+      await refreshDbLicenseStatus(res.license?.plan_type);
       if (res.success) {
         setLicenseMsg({ type: 'success', text: res.message });
         setLicenseInput('');
@@ -674,19 +731,58 @@ export const CompanySetupModal: React.FC = () => {
       });
 
       if (res.status === 'found' && res.license) {
-        await syncLicenseToClientDatabase(res.license, client).catch(() => {});
+        const syncRes = await syncLicenseToClientDatabase(res.license, client);
         await syncLicenseWithServer(true, cleanUrl, cleanKey).catch(() => {});
+        await refreshDbLicenseStatus(res.license.plan_type);
         if (res.license.organization_name) {
           setOrgName(res.license.organization_name);
         }
+        if (!syncRes.success) {
+          setLicenseMsg({
+            type: 'error',
+            text: syncRes.message,
+          });
+        } else {
+          setLicenseMsg({
+            type: 'success',
+            text: `${t('license_discover_found')} (${res.license.plan_type.toUpperCase()} — ${res.license.license_key})`,
+          });
+        }
+      } else if (res.status === 'function_not_found') {
         setLicenseMsg({
-          type: 'success',
-          text: `${t('license_discover_found')} (${res.license.plan_type.toUpperCase()} — ${res.license.license_key})`,
+          type: 'error',
+          text:
+            res.message ||
+            tr(
+              language,
+              "Fonction introuvable : vérifiez le nom exact de la fonction Edge maître (APP_TOT-Stock_licenses) ou l'URL de la base maître.",
+              'Function not found: check the exact name of the master Edge Function (APP_TOT-Stock_licenses) or the master database URL.',
+              'Functie niet gevonden: controleer de exacte naam van de master Edge Function (APP_TOT-Stock_licenses) of de URL van de masterdatabase.'
+            ),
+        });
+      } else if (res.status === 'denied') {
+        setLicenseMsg({
+          type: 'error',
+          text:
+            res.message ||
+            tr(
+              language,
+              "Refusé par le serveur : preuve d'appartenance au projet refusée ou permissions insuffisantes.",
+              'Rejected by server: project ownership proof denied or insufficient permissions.',
+              'Geweigerd door de server: eigendomsbewijs van het project geweigerd of onvoldoende rechten.'
+            ),
         });
       } else if (res.status === 'not_found') {
         setLicenseMsg({
           type: 'info',
-          text: t('license_discover_not_found'),
+          text:
+            res.message ||
+            tr(
+              language,
+              "Licence non liée : aucune licence active n'est rattachée à cette URL de projet sur le serveur éditeur.",
+              'Unlinked license: no active license is linked to this project URL on the publisher server.',
+              'Niet-gekoppelde licentie: er is geen actieve licentie gekoppeld aan deze project-URL op de uitgeversserver.'
+            ),
         });
       } else if (res.status === 'inactive' || res.status === 'expired') {
         setLicenseMsg({
@@ -1770,10 +1866,15 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
         return;
       }
       const res = await syncLicenseToClientDatabase(license, client);
+      if (res.dbLicenseStatus) {
+        setDbLicenseStatus(res.dbLicenseStatus);
+      } else {
+        await refreshDbLicenseStatus(license?.plan_type);
+      }
       if (res.success) {
         setLicenseMsg({
           type: 'success',
-          text: tr(language, `✓ Table client "license_config" mise à jour ! Quota débloqué : ${license.max_references} références (Forfait ${license.plan_type.toUpperCase()}).`, `✓ Client table "license_config" updated! Quota unlocked: ${license.max_references} items (${license.plan_type.toUpperCase()} plan).`),
+          text: res.message,
         });
       } else {
         setLicenseMsg({
@@ -1893,6 +1994,21 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
               Modèle B
             </span>
           </button>
+
+          {canDb && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('edge_functions')}
+              className={`flex-1 min-w-[130px] py-2 px-2.5 rounded-xl font-extrabold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                activeTab === 'edge_functions'
+                  ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+              }`}
+            >
+              <Server className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+              <span>{tr(language, '4. Fonctions Edge', '4. Edge Functions', '4. Edge Functions')}</span>
+            </button>
+          )}
         </div>
 
         {/* Access Restriction Notice if neither is allowed */}
@@ -2371,6 +2487,91 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   )}
                   <span className="flex-1">{licenseMsg.text}</span>
+                </div>
+              )}
+
+              {/* LOT 2 v43 : État réel dans la base cliente (core_license_config) + Avertissement rouge si désynchronisé */}
+              {dbLicenseStatus && (
+                <div className="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-black text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      <Database className="w-3.5 h-3.5 text-orange-500" />
+                      {tr(
+                        language,
+                        'État appliqué dans la base de données (core_license_config)',
+                        'Applied status in database (core_license_config)',
+                        'Toegepaste status in database (core_license_config)'
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => refreshDbLicenseStatus()}
+                      className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
+                      {tr(language, 'Relire la base', 'Re-read DB', 'Database herlezen')}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-[11px]">
+                    <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] text-slate-400 block font-bold">
+                        {tr(language, 'Forfait (base)', 'Plan (DB)', 'Pakket (DB)')}
+                      </span>
+                      <span className="font-black uppercase text-slate-900 dark:text-white">
+                        {dbLicenseStatus.plan.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] text-slate-400 block font-bold">
+                        {tr(
+                          language,
+                          'Dépôts autorisés selon la base',
+                          'Allowed depots according to DB',
+                          'Toegestane depots volgens DB'
+                        )}
+                      </span>
+                      <span className="font-black text-slate-900 dark:text-white">
+                        {dbLicenseStatus.max_depots >= 9999
+                          ? tr(language, 'Illimité', 'Unlimited', 'Onbeperkt')
+                          : dbLicenseStatus.max_depots}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] text-slate-400 block font-bold">
+                        {tr(
+                          language,
+                          'Jeton signé présent',
+                          'Signed token present',
+                          'Ondertekend token aanwezig'
+                        )}
+                      </span>
+                      <span
+                        className={`font-black ${
+                          dbLicenseStatus.signedTokenPresent
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-rose-600 dark:text-rose-400'
+                        }`}
+                      >
+                        {dbLicenseStatus.signedTokenPresent
+                          ? tr(language, 'oui', 'yes', 'ja')
+                          : tr(language, 'non', 'no', 'nee')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {dbLicenseStatus.mismatchWarning && (
+                    <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-bold flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                      <span>
+                        {tr(
+                          language,
+                          `Avertissement : l'application affiche le forfait ${(license?.plan_type || 'PRO').toUpperCase()} alors que la base de données est en FREE (${dbLicenseStatus.max_depots} dépôt autorisé, jeton signé présent : non). Les dépôts supplémentaires seront refusés par le serveur (QUOTA_EXCEEDED) tant que la fonction Edge APP_TOT-Stock_licenses_sync-license n'aura pas écrit le jeton signé dans core_license_config.`,
+                          `Warning: the application displays the ${(license?.plan_type || 'PRO').toUpperCase()} plan while the database is in FREE (${dbLicenseStatus.max_depots} allowed depot, signed token present: no). Additional depots will be rejected by the server (QUOTA_EXCEEDED) until the Edge Function APP_TOT-Stock_licenses_sync-license writes the signed token to core_license_config.`,
+                          `Waarschuwing: de applicatie toont het abonnement ${(license?.plan_type || 'PRO').toUpperCase()} terwijl de database op FREE staat (${dbLicenseStatus.max_depots} toegestaan depot, ondertekend token aanwezig: nee). Extra depots worden door de server geweigerd (QUOTA_EXCEEDED) totdat de Edge Function APP_TOT-Stock_licenses_sync-license het ondertekende token naar core_license_config schrijft.`
+                        )}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3332,6 +3533,12 @@ ON CONFLICT (id) DO UPDATE SET
                   </p>
                 </div>
 
+                {/* MENTION BASE ANCIENNE (v41) */}
+                <div className="p-3 rounded-2xl bg-amber-950/60 border border-amber-500/40 text-amber-100 text-[11px] font-bold flex items-start gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <span>{t('sql_legacy_db_auto_fix_notice')}</span>
+                </div>
+
                 {/* SCRIPT 01 : AUTH LINK */}
                 <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-950 via-slate-900 to-indigo-950 text-white border border-purple-500/40 space-y-2.5 shadow-lg">
                   <div className="flex items-center justify-between">
@@ -3377,7 +3584,7 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
 
                   <p className="text-[11px] text-cyan-100/90 leading-relaxed">
-                    {tr(language, 'Durcissement complet : blocage total de "anon", lecture seule de license_config, interdiction des écritures directes sur users, contrôle strict des commandes et isolation des rôles.', 'Complete hardening: total block of "anon", read-only license_config, direct user write prevention, strict order workflow and role isolation.')}
+                    {tr(language, 'Alignement automatique des colonnes manquantes sur les bases anciennes, purge des anciennes règles RLS permissives, blocage total de "anon", lecture seule de license_config et isolation des rôles.', 'Automatic missing column alignment on legacy databases, purge of permissive RLS policies, total block of "anon", read-only license_config and role isolation.')}
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -3407,7 +3614,7 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
 
                   <p className="text-[11px] text-indigo-100/90 leading-relaxed">
-                    {tr(language, 'Exécution atomique côté serveur : process_stock_movement (verrouillage FOR UPDATE, idempotence operation_id), transition_order_status (FSM stricte) et quotas inviolables max_references sans suppression sur downgrade.', 'Server-side atomic execution: process_stock_movement (FOR UPDATE locking, operation_id idempotency), transition_order_status (strict FSM) and unbreakable max_references quotas with no deletion on downgrade.')}
+                    {tr(language, 'Purge des déclencheurs hérités qui comptaient les mouvements en double, conversion automatique des identifiants numériques (bigint -> text), process_stock_movement (verrouillage FOR UPDATE, idempotence operation_id) et transition_order_status.', 'Purge of legacy double-counting triggers, automatic numeric ID conversion (bigint -> text), process_stock_movement (FOR UPDATE locking, operation_id idempotency) and transition_order_status.')}
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -3512,36 +3719,6 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
                 </div>
 
-                {/* CARTE SCRIPT 07 : COMPATIBILITÉ APPLICATION & SCHÉMA */}
-                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-950 via-slate-900 to-blue-950 text-white border border-sky-500/40 space-y-2.5 shadow-lg">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <BadgeCheck className="w-4 h-4 text-sky-400" />
-                      <span className="font-black text-xs text-sky-200">
-                        {tr(language, '🔄 Script 07 : Compatibilité App & Schéma (07_app_compat.sql)', '🔄 Script 07: App & Schema Compatibility (07_app_compat.sql)')}
-                      </span>
-                    </div>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-950 border border-sky-600 text-sky-300 font-bold">
-                      Versionnage
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-sky-100/90 leading-relaxed">
-                    {tr(language, 'Table singleton public.app_compat (id = 1) avec RLS activé et lecture autorisée pour anon/authenticated. Contrôle automatiquement au démarrage que la version de l\'application (Web / APK) est compatible avec min_app_version et schema_version.', 'Singleton table public.app_compat (id = 1) with RLS enabled and read access for anon/authenticated. Automatically verifies at startup that the app version (Web / APK) meets min_app_version and schema_version.')}
-                  </p>
-
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => handleCopySql(SQL_SCRIPT_07_APP_COMPAT, 'script_07')}
-                      className="flex-1 py-1.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>{copiedSql === 'script_07' ? (tr(language, 'Script 07 Copié !', 'Script 07 Copied!')) : (tr(language, 'Copier le script 07_app_compat.sql', 'Copy 07_app_compat.sql'))}</span>
-                    </button>
-                  </div>
-                </div>
-
                 {/* CARTE SCRIPT 08 : IMPRESSION D'ÉTIQUETTES À DISTANCE */}
                 <div className="p-3.5 rounded-2xl bg-gradient-to-r from-orange-950 via-slate-900 to-amber-950 text-white border border-orange-500/40 space-y-2.5 shadow-lg">
                   <div className="flex items-center justify-between">
@@ -3568,6 +3745,216 @@ ON CONFLICT (id) DO UPDATE SET
                     >
                       <Copy className="w-3.5 h-3.5" />
                       <span>{copiedSql === 'script_08' ? t('sql_script_08_copied_btn') : t('sql_script_08_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 11 : TABLES DE LA SUITE TOT ET FICHIERS */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-violet-950 text-white border border-indigo-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-indigo-400" />
+                      <span className="font-black text-xs text-indigo-200">
+                        {t('sql_script_11_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950 border border-indigo-600 text-indigo-300 font-bold">
+                      {t('sql_script_11_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-indigo-100/90 leading-relaxed">
+                    {t('sql_script_11_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_11_SUITE_TABLES, 'script_11')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_11' ? t('sql_script_11_copied_btn') : t('sql_script_11_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 12 : PRÉFÉRENCES UTILISATEUR (core_user_preferences) */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-violet-950 via-slate-900 to-fuchsia-950 text-white border border-violet-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-violet-400" />
+                      <span className="font-black text-xs text-violet-200">
+                        {t('sql_script_12_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-violet-950 border border-violet-600 text-violet-300 font-bold">
+                      {t('sql_script_12_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-violet-100/90 leading-relaxed">
+                    {t('sql_script_12_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_12_USER_PREFERENCES, 'script_12')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_12' ? t('sql_script_12_copied_btn') : t('sql_script_12_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 13 : TRANSFERT DE MATÉRIEL ENTRE DÉPÔTS PAR LOT (transfer_stock_batch) */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-cyan-950 text-white border border-indigo-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-indigo-400" />
+                      <span className="font-black text-xs text-indigo-200">
+                        {t('sql_script_13_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950 border border-indigo-600 text-indigo-300 font-bold">
+                      {t('sql_script_13_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-indigo-100/90 leading-relaxed">
+                    {t('sql_script_13_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_13_TRANSFER_STOCK_BATCH, 'script_13')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_13' ? t('sql_script_13_copied_btn') : t('sql_script_13_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 14 : MAILING MULTI-FOURNISSEURS & EXPÉDITEURS PAR APPLICATION */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white border border-emerald-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-emerald-400" />
+                      <span className="font-black text-xs text-emerald-200">
+                        {t('sql_script_14_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 border border-emerald-600 text-emerald-300 font-bold">
+                      {t('sql_script_14_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-emerald-100/90 leading-relaxed">
+                    {t('sql_script_14_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_14_MAILING, 'script_14')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_14' ? t('sql_script_14_copied_btn') : t('sql_script_14_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 07 : COMPATIBILITÉ APPLICATION & SCHÉMA */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-950 via-slate-900 to-blue-950 text-white border border-sky-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BadgeCheck className="w-4 h-4 text-sky-400" />
+                      <span className="font-black text-xs text-sky-200">
+                        {tr(language, '🔄 Script 07 : Compatibilité App & Schéma (07_app_compat.sql)', '🔄 Script 07: App & Schema Compatibility (07_app_compat.sql)')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-950 border border-sky-600 text-sky-300 font-bold">
+                      Versionnage
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-sky-100/90 leading-relaxed">
+                    {tr(language, 'Table singleton public.core_app_compat (id = 1) avec RLS activé et lecture autorisée pour anon/authenticated. Contrôle automatiquement au démarrage que la version de l\'application (Web / APK) est compatible avec min_app_version et schema_version.', 'Singleton table public.core_app_compat (id = 1) with RLS enabled and read access for anon/authenticated. Automatically verifies at startup that the app version (Web / APK) meets min_app_version and schema_version.')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_07_APP_COMPAT, 'script_07')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_07' ? (tr(language, 'Script 07 Copié !', 'Script 07 Copied!')) : (tr(language, 'Copier le script 07_app_compat.sql', 'Copy 07_app_compat.sql'))}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 09 : PRÉFIXES SUITE TOT (core_ & stk_) */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-teal-950 via-slate-900 to-emerald-950 text-white border border-teal-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-teal-400" />
+                      <span className="font-black text-xs text-teal-200">
+                        {t('sql_script_09_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-950 border border-teal-600 text-teal-300 font-bold">
+                      {t('sql_script_09_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-teal-100/90 leading-relaxed">
+                    {t('sql_script_09_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_09_CORE_PREFIXES, 'script_09')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_09' ? t('sql_script_09_copied_btn') : t('sql_script_09_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 10 : SUPPRESSION DES VUES DE COMPATIBILITÉ */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-slate-900 via-zinc-900 to-slate-950 text-white border border-slate-600/50 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-slate-300" />
+                      <span className="font-black text-xs text-slate-200">
+                        {t('sql_script_10_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 border border-slate-600 text-slate-300 font-bold">
+                      {t('sql_script_10_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {t('sql_script_10_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_10_DROP_COMPAT_VIEWS, 'script_10')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_10' ? t('sql_script_10_copied_btn') : t('sql_script_10_copy_btn')}</span>
                     </button>
                   </div>
                 </div>
@@ -3878,6 +4265,18 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ======================= TAB 4: FONCTIONS EDGE ======================= */}
+          {activeTab === 'edge_functions' && canDb && (
+            <div className="space-y-3 animate-fadeIn">
+              <EdgeFunctionsSetupPanel
+                language={language}
+                supabaseUrl={url || supabaseConfig?.url}
+                supabaseKey={key || supabaseConfig?.key}
+                isSuperAdmin={Number(currentUser?.role_id) === 0}
+              />
             </div>
           )}
 

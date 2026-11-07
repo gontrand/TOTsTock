@@ -8,6 +8,11 @@
  * 4. Web Audio Sub-Bass Tactile Transducer Pulse (for iOS, iframes, and devices where vibration is restricted)
  */
 
+import {
+  readLocalPreferenceValue,
+  setUserPreference,
+} from '../services/userPreferencesService';
+
 const HAPTICS_KEY = 'tot_stock_haptics_enabled';
 const HAPTICS_INTENSITY_KEY = 'tot_stock_haptics_intensity';
 const SOUND_KEY = 'tot_stock_sound_enabled';
@@ -58,6 +63,8 @@ export function isVibrationSupported(): boolean {
 // Check if haptic feedback is enabled in user settings
 export function isHapticsEnabled(): boolean {
   if (typeof localStorage === 'undefined') return true;
+  const val = readLocalPreferenceValue('haptics_enabled');
+  if (val !== undefined) return val;
   const stored = localStorage.getItem(HAPTICS_KEY);
   return stored !== 'false'; // Enabled by default
 }
@@ -65,7 +72,11 @@ export function isHapticsEnabled(): boolean {
 // Toggle or set haptic feedback enabled state
 export function setHapticsEnabled(enabled: boolean): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(HAPTICS_KEY, enabled ? 'true' : 'false');
+  try {
+    setUserPreference('haptics_enabled', Boolean(enabled));
+  } catch {
+    localStorage.setItem(HAPTICS_KEY, enabled ? 'true' : 'false');
+  }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('tot-audio-haptics-changed'));
   }
@@ -74,6 +85,8 @@ export function setHapticsEnabled(enabled: boolean): void {
 // Check if sound effects (beeps, chimes, audio pulses) are enabled in user settings
 export function isSoundEnabled(): boolean {
   if (typeof localStorage === 'undefined') return true;
+  const val = readLocalPreferenceValue('sound_enabled');
+  if (val !== undefined) return val;
   const stored = localStorage.getItem(SOUND_KEY);
   return stored !== 'false'; // Enabled by default
 }
@@ -81,7 +94,11 @@ export function isSoundEnabled(): boolean {
 // Toggle or set sound effects enabled state independently from vibrations
 export function setSoundEnabled(enabled: boolean): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(SOUND_KEY, enabled ? 'true' : 'false');
+  try {
+    setUserPreference('sound_enabled', Boolean(enabled));
+  } catch {
+    localStorage.setItem(SOUND_KEY, enabled ? 'true' : 'false');
+  }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('tot-audio-haptics-changed'));
   }
@@ -90,6 +107,10 @@ export function setSoundEnabled(enabled: boolean): void {
 // Get current vibration intensity ('light' | 'normal' | 'strong')
 export function getHapticIntensity(): HapticIntensity {
   if (typeof localStorage === 'undefined') return 'strong';
+  const val = readLocalPreferenceValue('haptics_intensity');
+  if (val === 'light' || val === 'normal' || val === 'strong') {
+    return val;
+  }
   const stored = localStorage.getItem(HAPTICS_INTENSITY_KEY);
   if (stored === 'light' || stored === 'normal' || stored === 'strong') {
     return stored;
@@ -99,7 +120,11 @@ export function getHapticIntensity(): HapticIntensity {
 
 export function setHapticIntensity(intensity: HapticIntensity): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(HAPTICS_INTENSITY_KEY, intensity);
+  try {
+    setUserPreference('haptics_intensity', intensity);
+  } catch {
+    localStorage.setItem(HAPTICS_INTENSITY_KEY, intensity);
+  }
 }
 
 function getIntensityMultiplier(): number {

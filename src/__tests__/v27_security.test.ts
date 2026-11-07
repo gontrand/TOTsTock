@@ -368,9 +368,9 @@ describe('Tâche 4 — Versions Android, absence d’APK embarqué et empreinte 
     const versionCodeJson = JSON.parse(
       fs.readFileSync(path.join(rootDir, 'android/version-code.json'), 'utf-8')
     );
-    expect(versionCodeJson.versionCode).toBe(3);
+    expect(versionCodeJson.versionCode).toBe(6);
     expect(gradle).toContain(`versionName "${APP_VERSION}"`);
-    expect(gradle).toContain('versionCode 3');
+    expect(gradle).toContain(`versionCode ${versionCodeJson.versionCode}`);
   });
 
   it('n’embarque aucun fichier tot-stock.apk à la racine, dans public/ ni dans android/app/src/main/assets/, et aucun dossier android/keystore/', () => {

@@ -1,5 +1,6 @@
 import { handleCorsPreflight, jsonResponse } from "./cors.ts";
 import { authenticateCaller } from "./auth.ts";
+import { TABLES, CLIENT_EDGE_FUNCTIONS } from "./config.ts";
 
 function generateSecureRandomPassword(length = 16): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*';
@@ -27,7 +28,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
     } = authRes.ctx;
 
     const { data: deptRows } = await supabaseAdmin
-      .from('departments')
+      .from(TABLES.departments)
       .select('id, name, manager_id, deputy_manager_ids');
 
     const callerIdStr = String(callerProfile.id);
@@ -52,8 +53,9 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
     const logAudit = async (actionType: string, targetId: any, targetName: string, extra: any = {}) => {
       try {
         const auditId = `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-        await supabaseAdmin.from('audit_logs').insert([{
+        await supabaseAdmin.from(TABLES.auditLogs).insert([{
           id: auditId,
+          app: 'stock',
           timestamp: new Date().toISOString(),
           user_id: String(callerProfile.id),
           user_name: callerProfile.name,
@@ -75,7 +77,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
           created_at: new Date().toISOString(),
         }]);
       } catch (logErr: any) {
-        console.warn('Erreur insertion audit_logs:', logErr?.message);
+        console.warn('Erreur insertion core_audit_logs:', logErr?.message);
       }
     };
 
@@ -83,7 +85,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
     const { action, payload } = body;
 
     if (action === 'ping' || action === 'status') {
-      return jsonResponse({ success: true, function: 'admin-users', status: 'ok' }, 200);
+      return jsonResponse({ success: true, function: CLIENT_EDGE_FUNCTIONS.adminUsers, status: 'ok' }, 200);
     }
 
     if (action === 'clearMustChangePin') {
@@ -99,7 +101,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .update({ must_change_pin: false, updated_at: new Date().toISOString() })
         .eq('id', targetUserId);
 
@@ -191,7 +193,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { data: targetRoleData } = await supabaseAdmin
-        .from('roles')
+        .from(TABLES.roles)
         .select('id, permissions')
         .eq('id', targetRoleId)
         .maybeSingle();
@@ -229,7 +231,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { data: existingUser } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
         .ilike('email', email.trim().toLowerCase())
         .maybeSingle();
@@ -239,7 +241,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
       if (existingUser) {
         const { data: updatedUser, error: updateErr } = await supabaseAdmin
-          .from('users')
+          .from(TABLES.users)
           .update({
             auth_user_id: newAuthUser.user.id,
             name: name.trim(),
@@ -282,7 +284,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
         };
 
         const res = await supabaseAdmin
-          .from('users')
+          .from(TABLES.users)
           .insert([insertPayload])
           .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
           .single();
@@ -292,7 +294,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
         if (insertErr && (insertErr.message.includes('duplicate key') || insertErr.message.includes('users_email_key'))) {
           const retryUpdate = await supabaseAdmin
-            .from('users')
+            .from(TABLES.users)
             .update({
               auth_user_id: newAuthUser.user.id,
               name: name.trim(),
@@ -354,7 +356,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { data: targetUser } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, role_id, department, allowed_depots')
         .eq('id', userId)
         .maybeSingle();
@@ -424,7 +426,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       if (updates?.role_id !== undefined) {
         const targetRoleId = Number(updates.role_id);
         const { data: newRoleData } = await supabaseAdmin
-          .from('roles')
+          .from(TABLES.roles)
           .select('id, permissions')
           .eq('id', targetRoleId)
           .maybeSingle();
@@ -462,7 +464,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { data: updated, error: updateErr } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .update(safeUpdates)
         .eq('id', userId)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
@@ -492,7 +494,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
       const { userId } = payload || {};
       const { data: targetUser } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, role_id, department')
         .eq('id', userId)
         .maybeSingle();
@@ -524,7 +526,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
       const isBlocked = action === 'block';
       const { data: updated, error: blockErr } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .update({ is_blocked: isBlocked, updated_at: new Date().toISOString() })
         .eq('id', userId)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
@@ -583,7 +585,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
       const { userId } = payload || {};
       const { data: targetUser } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, role_id')
         .eq('id', userId)
         .maybeSingle();
@@ -604,7 +606,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { error: delErr } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .delete()
         .eq('id', userId);
 
@@ -632,7 +634,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
 
       const { userId, newPassword } = payload || {};
       const { data: targetUser } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, role_id, department')
         .eq('id', userId)
         .maybeSingle();
@@ -674,7 +676,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .update({ must_change_pin: true, updated_at: new Date().toISOString() })
         .eq('id', userId);
 
@@ -710,7 +712,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       const targetRoleId = Number(roleId);
 
       const { data: targetRoleData } = await supabaseAdmin
-        .from('roles')
+        .from(TABLES.roles)
         .select('id, permissions')
         .eq('id', targetRoleId)
         .maybeSingle();
@@ -727,7 +729,7 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
       }
 
       const { data: updated, error: setRoleErr } = await supabaseAdmin
-        .from('users')
+        .from(TABLES.users)
         .update({ role_id: targetRoleId, updated_at: new Date().toISOString() })
         .eq('id', userId)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')

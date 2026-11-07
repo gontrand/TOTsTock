@@ -4,6 +4,12 @@ import { useApp } from '../context/AppContext';
 import { formatDate, formatCurrency } from '../utils/crypto';
 import { MaterialOrder, MaterialOrderItem } from '../types';
 import {
+  isTransferMovement,
+  getMovementSourceDepot,
+  getMovementDestDepot,
+  groupMovementsByTransferBatch,
+} from '../services/stockMovementService';
+import {
   ArrowLeftRight,
   Download,
   Search,
@@ -43,6 +49,8 @@ export const MovementsView: React.FC = () => {
     canApproveOrder,
     approveOrder,
     rejectOrder,
+    canTransferBetweenDepots,
+    openStockTransferModal,
     language,
     t,
   } = useApp();
@@ -66,6 +74,7 @@ export const MovementsView: React.FC = () => {
   const [siteSearch, setSiteSearch] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'ALL' | 'IN' | 'OUT' | 'TRANSFER'>('ALL');
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(new Set());
 
   const toggleExpandOrder = (orderId: string) => {
@@ -146,6 +155,14 @@ export const MovementsView: React.FC = () => {
         if (endDate && mDate > endDate) return false;
       }
 
+      if (typeFilter === 'TRANSFER') {
+        if (!isTransferMovement(m)) return false;
+      } else if (typeFilter === 'IN') {
+        if ((m.type || m.movement_type) !== 'IN') return false;
+      } else if (typeFilter === 'OUT') {
+        if ((m.type || m.movement_type) !== 'OUT') return false;
+      }
+
       return true;
     });
 
@@ -162,8 +179,14 @@ export const MovementsView: React.FC = () => {
     siteSearch,
     startDate,
     endDate,
+    typeFilter,
     products,
   ]);
+
+  const groupedMovements = useMemo(
+    () => groupMovementsByTransferBatch(filteredMovements),
+    [filteredMovements]
+  );
 
   // Filtered orders for the dedicated ORDERS tab
   const filteredOrders = useMemo(() => {
@@ -236,6 +259,8 @@ export const MovementsView: React.FC = () => {
       'Date',
       'Type',
       'Type_Origine',
+      'Depot_Source',
+      'Depot_Destination',
       'Numero_Commande',
       'Reference Produit',
       'Designation',
@@ -243,23 +268,30 @@ export const MovementsView: React.FC = () => {
       'Chantier_Projet',
       'Operateur',
       'Departement',
+      'Motif',
       'Cout_Total_EUR',
     ];
 
     const rows = filteredMovements.map((m) => {
       const prod = products.find((p) => p.id === m.product_id);
       const title = prod ? `${prod.brand} ${prod.model}` : m.product_ref || '';
+      const isTrans = isTransferMovement(m);
+      const srcDepot = getMovementSourceDepot(m) || (prod?.store_name ?? '');
+      const dstDepot = getMovementDestDepot(m);
       return [
         m.created_at ? new Date(m.created_at).toLocaleString('fr-FR') : '',
-        m.movement_type === 'OUT' ? 'SORTIE' : 'ENTREE',
-        m.order_number ? 'COMMANDE' : 'MOUVEMENT_DIRECT_UNIQUE',
+        isTrans ? 'TRANSFERT' : (m.type || m.movement_type) === 'OUT' ? 'SORTIE' : 'ENTREE',
+        isTrans ? 'TRANSFERT_INTER_DEPOT' : m.order_number ? 'COMMANDE' : 'MOUVEMENT_DIRECT_UNIQUE',
+        `"${srcDepot.replace(/"/g, '""')}"`,
+        `"${dstDepot.replace(/"/g, '""')}"`,
         `"${(m.order_number || 'N/A').replace(/"/g, '""')}"`,
         `"${(m.product_ref || '').replace(/"/g, '""')}"`,
         `"${title.replace(/"/g, '""')}"`,
-        m.quantity_changed,
+        m.quantity ?? m.quantity_changed ?? 0,
         `"${(m.site_number || 'N/A').replace(/"/g, '""')}"`,
         `"${(m.user_name || '').replace(/"/g, '""')}"`,
         `"${(m.department_name || '').replace(/"/g, '""')}"`,
+        `"${(m.reason || '').replace(/"/g, '""')}"`,
         (m.total_cost || 0).toFixed(2),
       ].join(';');
     });
@@ -357,23 +389,43 @@ export const MovementsView: React.FC = () => {
           </p>
         </div>
 
-        {canExportCSV && (
-          <button
-            onClick={subTab === 'ORDERS' ? handleExportOrdersCSV : handleExportCSV}
-            className={`py-1.5 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer shrink-0 relative z-20 overflow-hidden ${
-              subTab === 'ORDERS'
-                ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 border border-purple-200 dark:border-purple-800'
-                : 'bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 hover:bg-orange-100 border border-orange-200 dark:border-orange-800'
-            }`}
-          >
-            <Download className="w-3.5 h-3.5 shrink-0 relative z-20" />
-            <span className="truncate relative z-10">
-              {subTab === 'ORDERS'
-                ? tr(language, 'Exporter les Commandes (CSV)', 'Export Orders (CSV)')
-                : t('mov_export_csv')}
-            </span>
-          </button>
-        )}
+        <div className="flex items-center gap-1.5 shrink-0 relative z-20">
+          {canTransferBetweenDepots && (
+            <button
+              type="button"
+              data-testid="movements-transfer-btn"
+              onClick={() => openStockTransferModal({})}
+              className="py-1.5 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer shrink-0 bg-sky-600 hover:bg-sky-700 text-white"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">
+                {tr(
+                  language,
+                  'Transfert entre dépôts',
+                  'Inter-depot transfer',
+                  'Overdracht tussen depots'
+                )}
+              </span>
+            </button>
+          )}
+          {canExportCSV && (
+            <button
+              onClick={subTab === 'ORDERS' ? handleExportOrdersCSV : handleExportCSV}
+              className={`py-1.5 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer shrink-0 relative z-20 overflow-hidden ${
+                subTab === 'ORDERS'
+                  ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 border border-purple-200 dark:border-purple-800'
+                  : 'bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 hover:bg-orange-100 border border-orange-200 dark:border-orange-800'
+              }`}
+            >
+              <Download className="w-3.5 h-3.5 shrink-0 relative z-20" />
+              <span className="truncate relative z-10">
+                {subTab === 'ORDERS'
+                  ? tr(language, 'Exporter les Commandes (CSV)', 'Export Orders (CSV)')
+                  : t('mov_export_csv')}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tabs: My Movements vs Assigned Depots vs All vs Projects vs Department Orders */}
@@ -522,6 +574,35 @@ export const MovementsView: React.FC = () => {
             />
           </div>
         </div>
+
+        {subTab !== 'ORDERS' && (
+          <div className="flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 gap-1">
+            {(
+              [
+                ['ALL', tr(language, 'Tous', 'All', 'Alle')],
+                ['IN', tr(language, 'Entrées', 'Inflows', 'Innames')],
+                ['OUT', tr(language, 'Sorties', 'Outflows', 'Uitgiftes')],
+                ['TRANSFER', tr(language, 'Transferts', 'Transfers', 'Overdrachten')],
+              ] as const
+            ).map(([tf, label]) => (
+              <button
+                key={tf}
+                type="button"
+                data-testid={`movements-type-filter-${tf.toLowerCase()}`}
+                onClick={() => setTypeFilter(tf)}
+                className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                  typeFilter === tf
+                    ? tf === 'TRANSFER'
+                      ? 'bg-sky-600 text-white shadow-2xs'
+                      : 'bg-white dark:bg-slate-900 text-orange-600 shadow-2xs'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Main Content: Orders Tab View vs Movements List View */}
@@ -832,105 +913,189 @@ export const MovementsView: React.FC = () => {
       ) : (
         /* Movements List */
         <div className="space-y-2">
-          {filteredMovements.length === 0 ? (
+          {groupedMovements.length === 0 ? (
             <div className="p-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-slate-400 text-xs">
               {t('mov_no_records')}
             </div>
           ) : (
-            filteredMovements.map((m) => {
-              const isOut = m.movement_type === 'OUT';
-              const prod = products.find((p) => p.id === m.product_id);
-              const title = prod ? `${prod.brand} ${prod.model}` : m.product_ref;
-
+            groupedMovements.map((group) => {
+              const isMultiLineBatch = Boolean(group.batchId && group.items.length > 1);
               return (
                 <div
-                  key={m.id}
-                  onClick={() => setActiveProductId(m.product_id)}
-                  className={`p-3 rounded-2xl border transition cursor-pointer active:scale-[0.99] shadow-sm overflow-hidden ${
-                    isOut
-                      ? 'bg-rose-50/40 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/50 hover:border-rose-400'
-                      : 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50 hover:border-emerald-400'
-                  }`}
+                  key={group.key}
+                  data-testid={group.batchId ? `transfer-batch-group-${group.batchId}` : undefined}
+                  className={
+                    isMultiLineBatch
+                      ? 'rounded-2xl border-2 border-sky-300 dark:border-sky-800 bg-sky-50/30 dark:bg-sky-950/20 p-2.5 space-y-2'
+                      : ''
+                  }
                 >
-                  <div className="flex items-center justify-between gap-2 relative overflow-hidden">
-                    <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1 relative z-10">
-                      <span
-                        className={`inline-flex items-center gap-1 text-xs font-black px-2 py-0.5 rounded-lg shrink-0 ${
-                          isOut
-                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-400'
-                            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+                  {isMultiLineBatch && (
+                    <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-black text-sky-800 dark:text-sky-200">
+                      <span className="flex items-center gap-1.5">
+                        <ArrowLeftRight className="w-3.5 h-3.5 text-sky-600" />
+                        {tr(
+                          language,
+                          `Lot de transfert (${group.items.length} articles, ${group.totalQuantity} pces)`,
+                          `Transfer batch (${group.items.length} items, ${group.totalQuantity} pcs)`,
+                          `Overdrachtsbatch (${group.items.length} artikelen, ${group.totalQuantity} st.)`
+                        )}
+                      </span>
+                      <span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-300">
+                        {group.sourceDepot} → {group.destDepot}
+                      </span>
+                    </div>
+                  )}
+
+                  {group.items.map((m) => {
+                    const isTrans = isTransferMovement(m);
+                    const isOut = (m.type || m.movement_type) === 'OUT';
+                    const prod = products.find((p) => String(p.id) === String(m.product_id));
+                    const title = prod ? `${prod.brand} ${prod.model}` : m.product_ref;
+                    const srcDepot = getMovementSourceDepot(m);
+                    const dstDepot = getMovementDestDepot(m);
+                    const qty = Number(m.quantity ?? m.quantity_changed ?? 0);
+
+                    return (
+                      <div
+                        key={m.id}
+                        onClick={() => setActiveProductId(String(m.product_id))}
+                        className={`p-3 rounded-2xl border transition cursor-pointer active:scale-[0.99] shadow-sm overflow-hidden ${
+                          isTrans
+                            ? 'bg-sky-50/50 dark:bg-sky-950/25 border-sky-200 dark:border-sky-900/60 hover:border-sky-400'
+                            : isOut
+                            ? 'bg-rose-50/40 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/50 hover:border-rose-400'
+                            : 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50 hover:border-emerald-400'
                         }`}
                       >
-                        {isOut ? <ArrowDownCircle className="w-3 h-3 shrink-0 relative z-20" /> : <ArrowUpCircle className="w-3 h-3 shrink-0 relative z-20" />}
-                        <span className="relative z-10">{isOut ? t('mov_type_out').toUpperCase() : t('mov_type_in').toUpperCase()}</span>
-                      </span>
+                        <div className="flex items-center justify-between gap-2 relative overflow-hidden">
+                          <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1 relative z-10">
+                            {isTrans ? (
+                              <span className="inline-flex items-center gap-1 text-xs font-black px-2 py-0.5 rounded-lg shrink-0 bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                                <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                                <span>
+                                  {tr(language, 'TRANSFERT', 'TRANSFER', 'OVERDRACHT')}
+                                </span>
+                              </span>
+                            ) : (
+                              <span
+                                className={`inline-flex items-center gap-1 text-xs font-black px-2 py-0.5 rounded-lg shrink-0 ${
+                                  isOut
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-400'
+                                    : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+                                }`}
+                              >
+                                {isOut ? (
+                                  <ArrowDownCircle className="w-3 h-3 shrink-0 relative z-20" />
+                                ) : (
+                                  <ArrowUpCircle className="w-3 h-3 shrink-0 relative z-20" />
+                                )}
+                                <span className="relative z-10">
+                                  {isOut
+                                    ? t('mov_type_out').toUpperCase()
+                                    : t('mov_type_in').toUpperCase()}
+                                </span>
+                              </span>
+                            )}
 
-                      {/* Distinguish Single vs Order Movement (User Requested) */}
-                      {m.order_number ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-lg bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-200 dark:border-purple-800 shadow-2xs min-w-0 overflow-hidden">
-                          <ShoppingBag className="w-3 h-3 text-purple-600 shrink-0 relative z-20" />
-                          <span className="truncate relative z-10">{tr(language, `Commande N° ${m.order_number}`, `Order #${m.order_number}`)}</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 min-w-0 overflow-hidden">
-                          <span className="truncate relative z-10">⚡ {tr(language, 'Mouvement Unique (Direct)', 'Single Movement')}</span>
-                        </span>
-                      )}
-                    </div>
+                            {isTrans && srcDepot && dstDepot ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-lg bg-white dark:bg-slate-800 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 min-w-0 overflow-hidden">
+                                <span className="truncate">
+                                  {srcDepot} → {dstDepot}
+                                </span>
+                              </span>
+                            ) : m.order_number ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-lg bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-200 dark:border-purple-800 shadow-2xs min-w-0 overflow-hidden">
+                                <ShoppingBag className="w-3 h-3 text-purple-600 shrink-0 relative z-20" />
+                                <span className="truncate relative z-10">
+                                  {tr(
+                                    language,
+                                    `Commande N° ${m.order_number}`,
+                                    `Order #${m.order_number}`
+                                  )}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 min-w-0 overflow-hidden">
+                                <span className="truncate relative z-10">
+                                  ⚡{' '}
+                                  {tr(
+                                    language,
+                                    'Mouvement Unique (Direct)',
+                                    'Single Movement'
+                                  )}
+                                </span>
+                              </span>
+                            )}
+                          </div>
 
-                    <span className="font-extrabold text-sm text-slate-900 dark:text-white shrink-0 relative z-20">
-                      {isOut ? '-' : '+'}
-                      {m.quantity_changed} <span className="text-xs font-medium text-slate-400">{t('mov_units')}</span>
-                    </span>
-                  </div>
+                          <span className="font-extrabold text-sm text-slate-900 dark:text-white shrink-0 relative z-20">
+                            {isTrans ? '' : isOut ? '-' : '+'}
+                            {qty}{' '}
+                            <span className="text-xs font-medium text-slate-400">
+                              {t('mov_units')}
+                            </span>
+                          </span>
+                        </div>
 
-                  <div className="mt-1.5 font-bold text-xs text-slate-900 dark:text-white leading-tight truncate relative z-10">
-                    {title} <span className="text-orange-600 font-semibold">({m.product_ref})</span>
-                  </div>
+                        <div className="mt-1.5 font-bold text-xs text-slate-900 dark:text-white leading-tight truncate relative z-10">
+                          {title}{' '}
+                          <span className="text-orange-600 font-semibold">
+                            ({m.product_ref})
+                          </span>
+                        </div>
 
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400 relative z-10">
-                    <span>📅 {formatDate(m.created_at)}</span>
-                    <span>•</span>
-                    <span className="truncate">
-                      {tr(language, 'Par', 'By')} : <strong>{m.user_name || (tr(language, 'Opérateur', 'Operator'))}</strong>
-                    </span>
-                    {m.site_number && (
-                      <>
-                        <span>•</span>
-                        <span className="font-bold text-orange-600 truncate">🏗️ {m.site_number}</span>
-                      </>
-                    )}
-                    {m.department_name && (
-                      <>
-                        <span>•</span>
-                        <span className="truncate">🏢 {m.department_name}</span>
-                      </>
-                    )}
-                    {m.depot_name && (
-                      <>
-                        <span>•</span>
-                        <span className="font-semibold text-emerald-700 dark:text-emerald-400 truncate">
-                          📦 {m.depot_name}
-                        </span>
-                      </>
-                    )}
-                    {((m as any).dest_depot_name || (m.metadata as any)?.dest_depot_name) && (
-                      <>
-                        <span>➜</span>
-                        <span className="font-semibold text-teal-700 dark:text-teal-400 truncate">
-                          📦 {(m as any).dest_depot_name || (m.metadata as any)?.dest_depot_name}
-                        </span>
-                      </>
-                    )}
-                    {m.order_number && (
-                      <>
-                        <span>•</span>
-                        <span className="font-mono text-purple-700 dark:text-purple-300 font-bold shrink-0">
-                          N° {m.order_number}
-                        </span>
-                      </>
-                    )}
-                  </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400 relative z-10">
+                          <span>📅 {formatDate(m.created_at)}</span>
+                          <span>•</span>
+                          <span className="truncate">
+                            {tr(language, 'Par', 'By')} :{' '}
+                            <strong>
+                              {m.user_name || tr(language, 'Opérateur', 'Operator')}
+                            </strong>
+                          </span>
+                          {m.site_number && (
+                            <>
+                              <span>•</span>
+                              <span className="font-bold text-orange-600 truncate">
+                                🏗️ {m.site_number}
+                              </span>
+                            </>
+                          )}
+                          {m.department_name && (
+                            <>
+                              <span>•</span>
+                              <span className="truncate">🏢 {m.department_name}</span>
+                            </>
+                          )}
+                          {srcDepot && (
+                            <>
+                              <span>•</span>
+                              <span className="font-semibold text-emerald-700 dark:text-emerald-400 truncate">
+                                📦 {srcDepot}
+                              </span>
+                            </>
+                          )}
+                          {dstDepot && (
+                            <>
+                              <span>→</span>
+                              <span className="font-semibold text-sky-700 dark:text-sky-400 truncate">
+                                📦 {dstDepot}
+                              </span>
+                            </>
+                          )}
+                          {m.reason && (
+                            <>
+                              <span>•</span>
+                              <span className="italic text-slate-600 dark:text-slate-300 truncate">
+                                « {m.reason} »
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })

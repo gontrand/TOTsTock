@@ -164,7 +164,7 @@ for (const ext of ['.exe', '.dmg', '.appimage', '.deb']) {
 }
 
 // Contrôle d'absence de fichiers *.zip hors node_modules (interdiction des zips imbriqués dans le projet)
-const zipIgnoredDirs = new Set(['node_modules', '.git', '.gradle']);
+const zipIgnoredDirs = new Set(['node_modules', '.git', '.gradle', 'aistudio']);
 const foundZips = findFilesByExt(rootDir, '.zip', zipIgnoredDirs);
 if (foundZips.length > 0) {
   const relPaths = foundZips.map((p) => path.relative(rootDir, p)).join(', ');

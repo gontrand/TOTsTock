@@ -41,7 +41,9 @@ export interface StockMovement {
   depot_name?: string | null;
   dest_depot_name?: string | null;
   dest_rack?: string | null;
+  batch_id?: string | null;
   type?: MovementType | string;
+  action?: string;
   quantity?: number;
   reason?: string | null;
   project_name?: string | null;
@@ -109,6 +111,7 @@ export interface StockLevel {
   quantity: number;
   min_alert?: number;
   rack_location?: string;
+  version?: number;
   created_at?: string;
   updated_at?: string;
 }

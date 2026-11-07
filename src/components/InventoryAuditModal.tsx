@@ -3,6 +3,12 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { Product } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
+import {
+  buildDepotAuditCountingRows,
+  buildAuditAdjustmentsFromSession,
+  buildAuditReportCsvContent,
+  buildAuditPrintableReportHtml,
+} from '../services/inventoryAuditLogic';
 import jsQR from 'jsqr';
 import {
   decodeBarcodeFromCanvas,
@@ -48,6 +54,7 @@ export const InventoryAuditModal: React.FC = () => {
     setInventoryAuditModalOpen,
     products,
     depots,
+    stockLevels,
     subCategories,
     currentUser,
     applyInventoryAdjustments,
@@ -151,60 +158,25 @@ export const InventoryAuditModal: React.FC = () => {
     };
   }, [inventoryAuditModalOpen, stopCameraStream]);
 
-  // Products within the audit scope
-  const scopeProducts = useMemo(() => {
-    return products.filter((p) => {
-      if (selectedDepot !== 'ALL') {
-        const depotName = (p.store_name || '').toLowerCase().trim();
-        if (depotName !== selectedDepot.toLowerCase().trim()) return false;
-      }
-      if (selectedCategory !== 'ALL') {
-        if (String(p.sub_category_id) !== selectedCategory) return false;
-      }
-      return true;
-    });
-  }, [products, selectedDepot, selectedCategory]);
+  // Shared audit counting logic (exact stock_levels per depot)
+  const { scopeRows, filteredRows, stats } = useMemo(
+    () =>
+      buildDepotAuditCountingRows({
+        products,
+        stockLevels,
+        subCategories,
+        currentUser,
+        selectedDepot,
+        selectedCategory,
+        searchQuery,
+        tableFilter,
+        counts,
+      }),
+    [products, stockLevels, subCategories, currentUser, selectedDepot, selectedCategory, searchQuery, tableFilter, counts]
+  );
 
-  // Products filtered for the table
-  const filteredProducts = useMemo(() => {
-    return scopeProducts.filter((p) => {
-      // Text search
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const matchesRef = p.reference.toLowerCase().includes(q);
-        const matchesBrand = p.brand.toLowerCase().includes(q);
-        const matchesModel = p.model.toLowerCase().includes(q);
-        const matchesOem = (p.manufacturer_ref || '').toLowerCase().includes(q);
-        const matchesBarcode = (p.barcode || '').toLowerCase().includes(q);
-        if (!matchesRef && !matchesBrand && !matchesModel && !matchesOem && !matchesBarcode) {
-          return false;
-        }
-      }
-
-      const isCounted = p.id in counts;
-      const physical = isCounted ? counts[p.id] : null;
-      const theoretical = p.quantity;
-      const diff = physical !== null ? physical - theoretical : null;
-
-      if (tableFilter === 'DIFF_ONLY') {
-        return isCounted && diff !== 0;
-      }
-      if (tableFilter === 'MATCHED') {
-        return isCounted && diff === 0;
-      }
-      if (tableFilter === 'MISSING') {
-        return isCounted && diff !== null && diff < 0;
-      }
-      if (tableFilter === 'SURPLUS') {
-        return isCounted && diff !== null && diff > 0;
-      }
-      if (tableFilter === 'UNCOUNTED') {
-        return !isCounted;
-      }
-
-      return true;
-    });
-  }, [scopeProducts, searchQuery, tableFilter, counts]);
+  const scopeProducts = useMemo(() => scopeRows.map((r) => r.product), [scopeRows]);
+  const filteredProducts = useMemo(() => filteredRows.map((r) => r.product), [filteredRows]);
 
   // Pagination for high fluency & instant rendering
   const [currentPage, setCurrentPage] = useState(1);
@@ -221,66 +193,6 @@ export const InventoryAuditModal: React.FC = () => {
     const start = (currentPage - 1) * pageSize;
     return filteredProducts.slice(start, start + pageSize);
   }, [filteredProducts, currentPage, pageSize]);
-
-  // Global KPIs for the current scope
-  const stats = useMemo(() => {
-    let totalTheoreticalCount = scopeProducts.length;
-    let countedCount = 0;
-    let matchedCount = 0;
-    let missingCount = 0;
-    let surplusCount = 0;
-    let uncountedCount = 0;
-
-    let theoreticalVal = 0;
-    let physicalVal = 0;
-    let varianceVal = 0;
-    let lossVal = 0;
-
-    for (const p of scopeProducts) {
-      const price = p.unit_price || 0;
-      const theo = p.quantity;
-      theoreticalVal += theo * price;
-
-      if (p.id in counts) {
-        countedCount++;
-        const phys = counts[p.id];
-        physicalVal += phys * price;
-        const diff = phys - theo;
-        varianceVal += diff * price;
-
-        if (diff === 0) {
-          matchedCount++;
-        } else if (diff < 0) {
-          missingCount++;
-          lossVal += Math.abs(diff) * price;
-        } else {
-          surplusCount++;
-        }
-      } else {
-        uncountedCount++;
-        // If uncounted, for physical valuation we assume unverified (not counted yet)
-      }
-    }
-
-    const progressPct =
-      totalTheoreticalCount > 0 ? Math.round((countedCount / totalTheoreticalCount) * 100) : 0;
-    const accuracyRate = countedCount > 0 ? Math.round((matchedCount / countedCount) * 100) : 0;
-
-    return {
-      totalTheoreticalCount,
-      countedCount,
-      matchedCount,
-      missingCount,
-      surplusCount,
-      uncountedCount,
-      theoreticalVal,
-      physicalVal,
-      varianceVal,
-      lossVal,
-      progressPct,
-      accuracyRate,
-    };
-  }, [scopeProducts, counts]);
 
   // Count a specific product by id
   const recordCount = useCallback(
@@ -495,57 +407,9 @@ export const InventoryAuditModal: React.FC = () => {
     }
   };
 
-  // Export CSV of variance report
+  // Export CSV of variance report (shared logic with formula injection protection)
   const handleExportCsv = () => {
-    const rows = [
-      [
-        'Référence',
-        'Code-barres',
-        'Marque',
-        'Modèle',
-        'Dépôt',
-        'Emplacement',
-        'Stock Théorique',
-        'Stock Physique',
-        'Écart Unités',
-        'Prix Unitaire HT',
-        'Écart Valeur HT (€)',
-        'Statut',
-      ],
-    ];
-
-    scopeProducts.forEach((p) => {
-      const isCounted = p.id in counts;
-      const phys = isCounted ? counts[p.id] : '';
-      const theo = p.quantity;
-      const numDiff = isCounted ? counts[p.id] - theo : null;
-      const price = p.unit_price || 0;
-      const valDiff = numDiff !== null ? numDiff * price : '';
-      const status = numDiff === null
-        ? 'Non compté'
-        : numDiff === 0
-        ? 'Conforme'
-        : numDiff < 0
-        ? 'Manquant / Perte'
-        : 'Surplus';
-
-      rows.push([
-        `"${p.reference}"`,
-        `"${p.barcode || ''}"`,
-        `"${p.brand}"`,
-        `"${p.model}"`,
-        `"${p.store_name || ''}"`,
-        `"${[p.room_name, p.shelf_name].filter(Boolean).join(' - ')}"`,
-        String(theo),
-        String(phys),
-        numDiff !== null ? String(numDiff) : '',
-        price.toFixed(2),
-        typeof valDiff === 'number' ? valDiff.toFixed(2) : '',
-        `"${status}"`,
-      ]);
-    });
-
-    const csvContent = '\uFEFF' + rows.map((e) => e.join(';')).join('\n');
+    const csvContent = buildAuditReportCsvContent(scopeRows, canViewPrices);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -586,283 +450,24 @@ export const InventoryAuditModal: React.FC = () => {
 
     const depotLabel =
       selectedDepot === 'ALL'
-        ? tr(language, 'Tous les magasins & dépôts', 'All Warehouses')
+        ? tr(language, 'Tous les magasins & dépôts', 'All Warehouses', 'Alle magazijnen')
         : selectedDepot;
 
-    const itemsWithDiff = scopeProducts.filter((p) => p.id in counts && counts[p.id] !== p.quantity);
-    const itemsMatched = scopeProducts.filter((p) => p.id in counts && counts[p.id] === p.quantity);
-    const itemsUncounted = scopeProducts.filter((p) => !(p.id in counts));
+    const html = buildAuditPrintableReportHtml({
+      title: t('audit_report_title'),
+      subtitle: t('audit_report_subtitle'),
+      dateStr,
+      auditorName: currentUser?.name || 'Administrateur',
+      depotLabel,
+      rows: scopeRows,
+      stats,
+      canViewPrices,
+      sigAuditorLabel: t('audit_report_sig_auditor'),
+      sigManagerLabel: t('audit_report_sig_manager'),
+    });
 
     doc.open();
-    doc.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>${t('audit_report_title')} - TOT</title>
-        <meta charset="utf-8" />
-        <style>
-          @page { size: A4 portrait; margin: 12mm 10mm; }
-          * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            color: #0f172a;
-            font-size: 10.5px;
-            background: #fff;
-          }
-          .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            border-bottom: 2px solid #ea580c;
-            padding-bottom: 10px;
-            margin-bottom: 12px;
-          }
-          .logo-title {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-          }
-          .logo-badge {
-            background: #ea580c;
-            color: #fff;
-            font-weight: 900;
-            font-size: 14px;
-            padding: 4px 8px;
-            border-radius: 6px;
-            letter-spacing: 1px;
-          }
-          .title {
-            font-size: 16px;
-            font-weight: 900;
-            color: #0f172a;
-            margin: 0;
-          }
-          .subtitle {
-            font-size: 10px;
-            color: #64748b;
-            margin-top: 2px;
-          }
-          .meta-box {
-            text-align: right;
-            font-size: 9.5px;
-            color: #475569;
-          }
-          .kpi-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-            margin-bottom: 16px;
-          }
-          .kpi-card {
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 8px;
-            background: #f8fafc;
-          }
-          .kpi-label {
-            font-size: 8.5px;
-            text-transform: uppercase;
-            font-weight: 800;
-            color: #64748b;
-          }
-          .kpi-val {
-            font-size: 14px;
-            font-weight: 900;
-            margin-top: 3px;
-          }
-          .section-title {
-            font-size: 12px;
-            font-weight: 900;
-            color: #0f172a;
-            margin: 14px 0 6px 0;
-            display: flex;
-            justify-content: space-between;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 9.5px;
-            margin-bottom: 14px;
-          }
-          th {
-            background-color: #f1f5f9;
-            border: 1px solid #cbd5e1;
-            padding: 5px 6px;
-            text-align: left;
-            font-weight: 800;
-          }
-          td {
-            border: 1px solid #e2e8f0;
-            padding: 5px 6px;
-            vertical-align: middle;
-          }
-          .badge-diff-neg {
-            color: #dc2626;
-            font-weight: 800;
-          }
-          .badge-diff-pos {
-            color: #2563eb;
-            font-weight: 800;
-          }
-          .badge-diff-zero {
-            color: #16a34a;
-            font-weight: 800;
-          }
-          .signatures {
-            margin-top: 24px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            page-break-inside: avoid;
-          }
-          .sig-box {
-            border: 1px dashed #94a3b8;
-            border-radius: 8px;
-            height: 75px;
-            padding: 8px;
-            font-size: 9px;
-            color: #64748b;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <div class="logo-title">
-            <span class="logo-badge">TOT</span>
-            <div>
-              <h1 class="title">${t('audit_report_title')}</h1>
-              <div class="subtitle">${t('audit_report_subtitle')}</div>
-            </div>
-          </div>
-          <div class="meta-box">
-            <div><strong>${t('audit_report_date')} :</strong> ${dateStr}</div>
-            <div><strong>${t('audit_report_auditor')} :</strong> ${currentUser?.name || 'Administrateur'}</div>
-            <div><strong>Périmètre :</strong> ${depotLabel}</div>
-          </div>
-        </div>
-
-        <!-- KPIs Executive Summary -->
-        <div class="kpi-grid">
-          <div class="kpi-card">
-            <div class="kpi-label">Articles Audités</div>
-            <div class="kpi-val">${stats.countedCount} / ${stats.totalTheoreticalCount} (${stats.progressPct}%)</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Taux d'Exactitude</div>
-            <div class="kpi-val" style="color: ${stats.accuracyRate >= 85 ? '#16a34a' : '#d97706'}">
-              ${stats.accuracyRate}%
-            </div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Écarts Identifiés</div>
-            <div class="kpi-val" style="color: ${itemsWithDiff.length > 0 ? '#dc2626' : '#16a34a'}">
-              ${itemsWithDiff.length} réf. (${stats.missingCount} déficit, ${stats.surplusCount} surplus)
-            </div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Impact Financier Net</div>
-            <div class="kpi-val" style="color: ${stats.varianceVal < 0 ? '#dc2626' : stats.varianceVal > 0 ? '#2563eb' : '#16a34a'}">
-              ${canViewPrices ? `${stats.varianceVal >= 0 ? '+' : ''}${formatCurrency(stats.varianceVal)}` : 'Confidentiel'}
-            </div>
-          </div>
-        </div>
-
-        <!-- Table des écarts prioritaires -->
-        <div class="section-title">
-          <span>1. Tableau des Écarts & Anomalies constatées (${itemsWithDiff.length})</span>
-          ${canViewPrices ? `<span style="font-size: 10px; color: #dc2626; font-weight: normal;">Pertes brutes : -${formatCurrency(stats.lossVal)}</span>` : ''}
-        </div>
-
-        ${
-          itemsWithDiff.length === 0
-            ? '<p style="color: #16a34a; font-weight: 700; margin: 8px 0 16px 0;">✓ Aucun écart constaté sur les articles comptés ! Le stock physique est 100% conforme au stock théorique.</p>'
-            : `
-            <table>
-              <thead>
-                <tr>
-                  <th style="width: 14%;">Réf. TOT</th>
-                  <th style="width: 28%;">Désignation Article</th>
-                  <th style="width: 16%;">Emplacement</th>
-                  <th style="width: 10%; text-align: center;">Théorique</th>
-                  <th style="width: 10%; text-align: center;">Physique</th>
-                  <th style="width: 10%; text-align: center;">Écart</th>
-                  <th style="width: 12%; text-align: right;">Val. Écart HT</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${itemsWithDiff
-                  .map((p) => {
-                    const phys = counts[p.id];
-                    const theo = p.quantity;
-                    const diff = phys - theo;
-                    const diffVal = diff * (p.unit_price || 0);
-                    return `
-                      <tr>
-                        <td><strong>${p.reference}</strong></td>
-                        <td>${p.brand} ${p.model}</td>
-                        <td>${p.store_name || ''} ${p.shelf_name ? `(${p.shelf_name})` : ''}</td>
-                        <td style="text-align: center;">${theo}</td>
-                        <td style="text-align: center; font-weight: 800;">${phys}</td>
-                        <td style="text-align: center;" class="${diff < 0 ? 'badge-diff-neg' : 'badge-diff-pos'}">
-                          ${diff > 0 ? '+' : ''}${diff}
-                        </td>
-                        <td style="text-align: right; font-weight: 800;" class="${diffVal < 0 ? 'badge-diff-neg' : 'badge-diff-pos'}">
-                          ${canViewPrices ? (diffVal > 0 ? '+' : '') + formatCurrency(diffVal) : '—'}
-                        </td>
-                      </tr>
-                    `;
-                  })
-                  .join('')}
-              </tbody>
-            </table>
-          `
-        }
-
-        <!-- Articles conformes (résumé) -->
-        <div class="section-title">
-          <span>2. Articles Conformes Vérifiés (${itemsMatched.length})</span>
-        </div>
-        <div style="font-size: 9px; color: #475569; margin-bottom: 12px;">
-          ${
-            itemsMatched.length > 0
-              ? itemsMatched.map((p) => `<strong>${p.reference}</strong> (${p.quantity} unités)`).join(' • ')
-              : 'Aucun article conforme compté à ce stade.'
-          }
-        </div>
-
-        ${
-          itemsUncounted.length > 0
-            ? `
-            <div class="section-title">
-              <span>3. Articles Non Encore Vérifiés (${itemsUncounted.length})</span>
-            </div>
-            <div style="font-size: 8.5px; color: #94a3b8; margin-bottom: 16px;">
-              ${itemsUncounted.map((p) => p.reference).join(', ')}
-            </div>
-          `
-            : ''
-        }
-
-        <!-- Signatures & Visas -->
-        <div class="signatures">
-          <div class="sig-box">
-            <strong>${t('audit_report_sig_auditor')}</strong><br/>
-            Nom : ${currentUser?.name || 'Administrateur'}<br/>
-            Date : ${dateStr.split(' ')[0]}<br/>
-            Signature :
-          </div>
-          <div class="sig-box">
-            <strong>${t('audit_report_sig_manager')}</strong><br/>
-            Nom : ___________________________<br/>
-            Date : ____ / ____ / ________<br/>
-            Signature & Cachet :
-          </div>
-        </div>
-      </body>
-      </html>
-    `);
+    doc.write(html);
     doc.close();
 
     setTimeout(() => {
@@ -876,37 +481,34 @@ export const InventoryAuditModal: React.FC = () => {
     }, 400);
   };
 
-  // Apply Reconciliation to Database
+  // Apply Reconciliation to Database (per depot via process_stock_movement INVENTORY)
   const handleApplyReconciliation = async () => {
     setIsApplying(true);
-    const adjustments = Object.keys(counts).map((prodId) => {
-      const p = products.find((item) => item.id === prodId);
-      const theo = p ? p.quantity : 0;
-      const phys = counts[prodId];
-      return {
-        productId: prodId,
-        physicalCount: phys,
-        theoreticalQty: theo,
-        difference: phys - theo,
-        reason: 'Régularisation Inventaire Physique TOT',
-      };
-    });
+    const adjustments = buildAuditAdjustmentsFromSession(
+      scopeRows,
+      counts,
+      selectedDepot,
+      'Régularisation Inventaire Physique TOT'
+    );
 
-    const res = await applyInventoryAdjustments(adjustments);
+    const targetDepotOverride = selectedDepot !== 'ALL' ? selectedDepot : undefined;
+    const res = await applyInventoryAdjustments(adjustments, targetDepotOverride);
     setIsApplying(false);
     setShowApplyConfirm(false);
 
     if (res.success) {
-      setApplyResultMsg(res.message);
-      // Clean up session after successful reconciliation
+      const msg = res.warningMessage
+        ? `${res.warningMessage} (${res.message})`
+        : res.message;
+      setApplyResultMsg(msg);
       setCounts({});
       localStorage.removeItem(AUDIT_STORAGE_KEY);
       setTimeout(() => {
         setApplyResultMsg(null);
         setInventoryAuditModalOpen(false);
-      }, 2000);
+      }, res.warningMessage ? 3500 : 2000);
     } else {
-      alert("Erreur lors de l'application de la régularisation.");
+      alert(res.message || "Erreur lors de l'application de la régularisation.");
     }
   };
 

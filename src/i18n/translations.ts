@@ -839,6 +839,59 @@ export const translations = {
     sql_script_08_copied_btn: 'Script 08 Copié !',
     diag_schema_1_0_0_upgrade_hint:
       "Pour passer le schéma de 1.0.0 à 1.1.0 (Poste d'impression à distance), exécutez uniquement le script 08 (08_print_jobs.sql) dans l'Éditeur SQL Supabase.",
+    sql_legacy_db_auto_fix_notice:
+      'À exécuter sur une base ancienne : colonnes manquantes, règles RLS, déclencheurs hérités et identifiants numériques sont corrigés automatiquement',
+    // v42 — Préfixes core_ / stk_ & Vues de compatibilité
+    diag_prefixed_tables_label: 'Tables préfixées (core_ / stk_)',
+    diag_compat_views_present_label: "Vues de compatibilité d'anciens noms",
+    diag_prefixed_tables_error_hint:
+      'Certaines tables utilisent encore les anciens noms non préfixés. Exécutez 09_core_prefixes.sql ou dist/install.sql pour renommer les tables vers core_* et stk_*.',
+    diag_compat_views_warning_hint:
+      'Des vues de compatibilité pour les anciens noms de tables sont actives. Une fois toutes les applications de la suite TOT mises à jour (schéma 2.0.0), exécutez 10_drop_compat_views.sql pour les supprimer.',
+    sql_script_09_title: '🗂️ Script 09 : Préfixes Suite TOT core_ & stk_ (09_core_prefixes.sql)',
+    sql_script_09_badge: 'Schéma 2.0.0 • Base commune',
+    sql_script_09_desc:
+      "Renomme de façon idempotente les tables existantes vers core_* (partagé) et stk_* (Stock), ajoute la colonne app ('stock') sur core_audit_logs et core_processed_operations, et crée les vues de compatibilité security_invoker.",
+    sql_script_09_copy_btn: 'Copier le script 09_core_prefixes.sql',
+    sql_script_09_copied_btn: 'Script 09 Copié !',
+    sql_script_10_title: '🧹 Script 10 : Suppression des vues de compatibilité (10_drop_compat_views.sql)',
+    sql_script_10_badge: 'Maintenance • Fin de transition',
+    sql_script_10_desc:
+      "À exécuter manuellement une seule fois lorsque toutes les applications clientes ont migré vers les tables préfixées core_* et stk_* : supprime uniquement les vues d'anciens noms sans toucher aux tables.",
+    sql_script_10_copy_btn: 'Copier le script 10_drop_compat_views.sql',
+    sql_script_10_copied_btn: 'Script 10 Copié !',
+    // v45 — Script 11 (schéma 2.1.0 : tables de la suite TOT et fichiers partagés)
+    sql_script_11_title: 'Script 11 — Tables de la suite TOT et fichiers',
+    sql_script_11_badge: 'Schéma 2.1.0 • Suite TOT & Fichiers',
+    sql_script_11_desc:
+      'Crée le journal de préparation, les catégories, les lignes de commande et le stockage privé des fichiers (tot-files). À lancer après le script 08 et avant le script 07.',
+    sql_script_11_copy_btn: 'Copier le script 11_suite_tables.sql',
+    sql_script_11_copied_btn: 'Script 11 Copié !',
+    // v48 — Script 12 (schéma 2.2.0 : préférences utilisateur en base)
+    sql_script_12_title: 'Script 12 — Préférences utilisateur (12_user_preferences.sql)',
+    sql_script_12_badge: 'Schéma 2.2.0 • Préférences synchronisées',
+    sql_script_12_desc:
+      'Crée la table public.core_user_preferences (JSONB <= 16 Ko, cascade à la suppression utilisateur et 4 politiques RLS) pour synchroniser les préférences entre appareils. À lancer après le script 11 et avant le script 13.',
+    sql_script_12_copy_btn: 'Copier le script 12_user_preferences.sql',
+    sql_script_12_copied_btn: 'Script 12 Copié !',
+    // v49 — Script 13 (schéma 2.3.0 : transfert inter-dépôts par lot)
+    sql_script_13_title: 'Script 13 — Transfert inter-dépôts par lot (13_transfer_stock_batch.sql)',
+    sql_script_13_badge: 'Schéma 2.3.0 • Transfert multi-articles',
+    sql_script_13_desc:
+      'Ajoute la permission perm_stock_transfer à process_stock_movement et crée la RPC transactionnelle et idempotente public.transfer_stock_batch (1 à 200 articles, tout ou rien). À lancer après le script 12 et avant le script 14.',
+    sql_script_13_copy_btn: 'Copier le script 13_transfer_stock_batch.sql',
+    sql_script_13_copied_btn: 'Script 13 Copié !',
+    // v51 — Script 14 (schéma 2.4.1 : mailing multi-fournisseurs, Microsoft 365 Graph & expéditeur par application)
+    sql_script_14_title: 'Script 14 — Mailing multi-fournisseurs, Microsoft 365 (Graph) & expéditeurs par application (14_mailing.sql)',
+    sql_script_14_badge: 'Schéma 2.4.1 • Mailing & Microsoft 365 Graph',
+    sql_script_14_desc:
+      'Crée les tables core_mail_accounts (dont Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) et core_mail_log, les RPC sécurisées Vault (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) et migre automatiquement la configuration Brevo existante. À lancer après le script 13 et avant le script 07.',
+    sql_script_14_copy_btn: 'Copier le script 14_mailing.sql',
+    sql_script_14_copied_btn: 'Script 14 Copié !',
+    desktop_export_csv: 'Exporter en CSV',
+    desktop_new_movement: 'Nouveau mouvement',
+    desktop_new_order: 'Nouvelle commande',
+    desktop_new_order_material: 'Nouvelle commande matériel',
   },
   en: {
     // Navigation
@@ -1667,6 +1720,59 @@ export const translations = {
     sql_script_08_copied_btn: 'Script 08 Copied!',
     diag_schema_1_0_0_upgrade_hint:
       'To upgrade the schema from 1.0.0 to 1.1.0 (Remote Print Station), run only script 08 (08_print_jobs.sql) in the Supabase SQL Editor.',
+    sql_legacy_db_auto_fix_notice:
+      'To run on a legacy database: missing columns, RLS policies, legacy triggers and numeric IDs are automatically fixed',
+    // v42 — core_ / stk_ Prefixes & Compatibility Views
+    diag_prefixed_tables_label: 'Prefixed tables (core_ / stk_)',
+    diag_compat_views_present_label: 'Legacy table name compatibility views',
+    diag_prefixed_tables_error_hint:
+      'Some tables still use legacy unprefixed names. Run 09_core_prefixes.sql or dist/install.sql to rename tables to core_* and stk_*.',
+    diag_compat_views_warning_hint:
+      'Compatibility views for legacy table names are active. Once all TOT suite applications are updated (schema 2.0.0), run 10_drop_compat_views.sql to drop them.',
+    sql_script_09_title: '🗂️ Script 09: TOT Suite Prefixes core_ & stk_ (09_core_prefixes.sql)',
+    sql_script_09_badge: 'Schema 2.0.0 • Shared DB',
+    sql_script_09_desc:
+      "Idempotently renames existing tables to core_* (shared) and stk_* (Stock), adds the app ('stock') column on core_audit_logs and core_processed_operations, and creates security_invoker compatibility views.",
+    sql_script_09_copy_btn: 'Copy 09_core_prefixes.sql',
+    sql_script_09_copied_btn: 'Script 09 Copied!',
+    sql_script_10_title: '🧹 Script 10: Drop Compatibility Views (10_drop_compat_views.sql)',
+    sql_script_10_badge: 'Maintenance • End of transition',
+    sql_script_10_desc:
+      'Run manually once all client applications have migrated to core_* and stk_* prefixed tables: drops only the legacy compatibility views without touching base tables.',
+    sql_script_10_copy_btn: 'Copy 10_drop_compat_views.sql',
+    sql_script_10_copied_btn: 'Script 10 Copied!',
+    // v45 — Script 11 (schema 2.1.0: TOT Suite tables and shared files)
+    sql_script_11_title: 'Script 11 — TOT Suite tables and files',
+    sql_script_11_badge: 'Schema 2.1.0 • TOT Suite & Files',
+    sql_script_11_desc:
+      'Creates the order preparation log, product categories, order items and private file storage (tot-files). Run after script 08 and before script 07.',
+    sql_script_11_copy_btn: 'Copy 11_suite_tables.sql',
+    sql_script_11_copied_btn: 'Script 11 Copied!',
+    // v48 — Script 12 (schema 2.2.0: user preferences in database)
+    sql_script_12_title: 'Script 12 — User Preferences (12_user_preferences.sql)',
+    sql_script_12_badge: 'Schema 2.2.0 • Synced Preferences',
+    sql_script_12_desc:
+      'Creates table public.core_user_preferences (JSONB <= 16 KB, cascade on user deletion and 4 RLS policies) to sync preferences across devices. Run after script 11 and before script 13.',
+    sql_script_12_copy_btn: 'Copy 12_user_preferences.sql',
+    sql_script_12_copied_btn: 'Script 12 Copied!',
+    // v49 — Script 13 (schema 2.3.0: batch inter-depot stock transfer)
+    sql_script_13_title: 'Script 13 — Batch Inter-Depot Stock Transfer (13_transfer_stock_batch.sql)',
+    sql_script_13_badge: 'Schema 2.3.0 • Multi-Item Transfer',
+    sql_script_13_desc:
+      'Patches process_stock_movement for perm_stock_transfer and creates the transactional idempotent RPC public.transfer_stock_batch (1 to 200 items, all-or-nothing). Run after script 12 and before script 14.',
+    sql_script_13_copy_btn: 'Copy 13_transfer_stock_batch.sql',
+    sql_script_13_copied_btn: 'Script 13 Copied!',
+    // v51 — Script 14 (schema 2.4.1: multi-provider mailing, Microsoft 365 Graph & per-app sender)
+    sql_script_14_title: 'Script 14 — Multi-Provider Mailing, Microsoft 365 (Graph) & Per-App Senders (14_mailing.sql)',
+    sql_script_14_badge: 'Schema 2.4.1 • Mailing & Microsoft 365 Graph',
+    sql_script_14_desc:
+      'Creates tables core_mail_accounts (including Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) and core_mail_log, Vault-backed RPCs (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) and migrates legacy Brevo configuration automatically. Run after script 13 and before script 07.',
+    sql_script_14_copy_btn: 'Copy 14_mailing.sql',
+    sql_script_14_copied_btn: 'Script 14 Copied!',
+    desktop_export_csv: 'Export CSV',
+    desktop_new_movement: 'New movement',
+    desktop_new_order: 'New order',
+    desktop_new_order_material: 'New material order',
   },
   nl: {
     // Navigation
@@ -2495,6 +2601,59 @@ export const translations = {
     sql_script_08_copied_btn: 'Script 08 Gekopieerd!',
     diag_schema_1_0_0_upgrade_hint:
       'Om het schema bij te werken van 1.0.0 naar 1.1.0 (Afdrukstation op afstand), voert u alleen script 08 (08_print_jobs.sql) uit in de Supabase SQL Editor.',
+    sql_legacy_db_auto_fix_notice:
+      "Uit te voeren op een oudere database: ontbrekende kolommen, RLS-regels, overgeërfde triggers en numerieke ID's worden automatisch gecorrigeerd",
+    // v42 — core_ / stk_ Voorvoegsels & Compatibiliteitsweergaven
+    diag_prefixed_tables_label: 'Tabellen met voorvoegsel (core_ / stk_)',
+    diag_compat_views_present_label: 'Compatibiliteitsweergaven voor oude tabelnamen',
+    diag_prefixed_tables_error_hint:
+      'Sommige tabellen gebruiken nog oude namen zonder voorvoegsel. Voer 09_core_prefixes.sql of dist/install.sql uit om tabellen te hernoemen naar core_* en stk_*.',
+    diag_compat_views_warning_hint:
+      'Compatibiliteitsweergaven voor oude tabelnamen zijn actief. Zodra alle applicaties van de TOT-suite zijn bijgewerkt (schema 2.0.0), voert u 10_drop_compat_views.sql uit om ze te verwijderen.',
+    sql_script_09_title: '🗂️ Script 09: TOT Suite Voorvoegsels core_ & stk_ (09_core_prefixes.sql)',
+    sql_script_09_badge: 'Schema 2.0.0 • Gedeelde DB',
+    sql_script_09_desc:
+      "Hernoemt bestaande tabellen idempotent naar core_* (gedeeld) en stk_* (Stock), voegt de kolom app ('stock') toe aan core_audit_logs en core_processed_operations, en maakt security_invoker compatibiliteitsweergaven.",
+    sql_script_09_copy_btn: 'Script 09_core_prefixes.sql kopiëren',
+    sql_script_09_copied_btn: 'Script 09 Gekopieerd!',
+    sql_script_10_title: '🧹 Script 10: Compatibiliteitsweergaven verwijderen (10_drop_compat_views.sql)',
+    sql_script_10_badge: 'Onderhoud • Einde overgang',
+    sql_script_10_desc:
+      'Eenmalig handmatig uit te voeren zodra alle clientapplicaties zijn gemigreerd naar core_* en stk_* tabellen: verwijdert alleen de oude weergaven zonder de tabellen aan te raken.',
+    sql_script_10_copy_btn: 'Script 10_drop_compat_views.sql kopiëren',
+    sql_script_10_copied_btn: 'Script 10 Gekopieerd!',
+    // v45 — Script 11 (schema 2.1.0: TOT Suite-tabellen en gedeelde bestanden)
+    sql_script_11_title: 'Script 11 — TOT Suite-tabellen en bestanden',
+    sql_script_11_badge: 'Schema 2.1.0 • TOT Suite & Bestanden',
+    sql_script_11_desc:
+      'Maakt het orderpicklogboek, productcategorieën, bestelregels en privébestandsopslag (tot-files) aan. Uitvoeren na script 08 en vóór script 07.',
+    sql_script_11_copy_btn: 'Script 11_suite_tables.sql kopiëren',
+    sql_script_11_copied_btn: 'Script 11 Gekopieerd!',
+    // v48 — Script 12 (schema 2.2.0: gebruikersvoorkeuren in database)
+    sql_script_12_title: 'Script 12 — Gebruikersvoorkeuren (12_user_preferences.sql)',
+    sql_script_12_badge: 'Schema 2.2.0 • Gesynchroniseerde voorkeuren',
+    sql_script_12_desc:
+      'Maakt tabel public.core_user_preferences aan (JSONB <= 16 KB, cascade bij verwijderen gebruiker en 4 RLS-beleidsregels) om voorkeuren tussen apparaten te synchroniseren. Uitvoeren na script 11 en vóór script 13.',
+    sql_script_12_copy_btn: 'Script 12_user_preferences.sql kopiëren',
+    sql_script_12_copied_btn: 'Script 12 Gekopieerd!',
+    // v49 — Script 13 (schema 2.3.0: bulkmateriaaloverdracht tussen depots)
+    sql_script_13_title: 'Script 13 — Bulkoverdracht tussen depots (13_transfer_stock_batch.sql)',
+    sql_script_13_badge: 'Schema 2.3.0 • Multi-artikel overdracht',
+    sql_script_13_desc:
+      'Voegt perm_stock_transfer toe aan process_stock_movement en maakt de transactionele, idempotente RPC public.transfer_stock_batch aan (1 tot 200 artikelen, alles-of-niets). Uitvoeren na script 12 en vóór script 14.',
+    sql_script_13_copy_btn: 'Script 13_transfer_stock_batch.sql kopiëren',
+    sql_script_13_copied_btn: 'Script 13 Gekopieerd!',
+    // v51 — Script 14 (schema 2.4.1: multi-provider mailing, Microsoft 365 Graph & afzender per applicatie)
+    sql_script_14_title: 'Script 14 — Multi-provider mailing, Microsoft 365 (Graph) & afzenders per applicatie (14_mailing.sql)',
+    sql_script_14_badge: 'Schema 2.4.1 • Mailing & Microsoft 365 Graph',
+    sql_script_14_desc:
+      'Maakt de tabellen core_mail_accounts (incl. Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) en core_mail_log aan, beveiligde Vault-RPC’s (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) en migreert automatisch bestaande Brevo-instellingen. Uitvoeren na script 13 en vóór script 07.',
+    sql_script_14_copy_btn: 'Script 14_mailing.sql kopiëren',
+    sql_script_14_copied_btn: 'Script 14 Gekopieerd!',
+    desktop_export_csv: 'CSV exporteren',
+    desktop_new_movement: 'Nieuwe beweging',
+    desktop_new_order: 'Nieuwe bestelling',
+    desktop_new_order_material: 'Nieuwe materiaalbestelling',
   },
 } as const;
 

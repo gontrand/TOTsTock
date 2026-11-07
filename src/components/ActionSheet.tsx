@@ -11,6 +11,7 @@ import {
   ShoppingCart,
   Package,
   CheckCircle2,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 export const ActionSheet: React.FC = () => {
@@ -28,6 +29,8 @@ export const ActionSheet: React.FC = () => {
     currentUser,
     depots,
     departments,
+    canTransferBetweenDepots,
+    openStockTransferModal,
     language,
     t,
   } = useApp();
@@ -238,6 +241,43 @@ export const ActionSheet: React.FC = () => {
                 </div>
               </div>
               <Camera className="w-5 h-5 text-white/80 shrink-0 relative z-20" />
+            </button>
+          )}
+
+          {canTransferBetweenDepots && (
+            <button
+              type="button"
+              data-testid="action-sheet-transfer-btn"
+              onClick={() => {
+                setActionSheetOpen(false);
+                openStockTransferModal({});
+              }}
+              className="w-full p-4 rounded-2xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-extrabold text-sm flex items-center justify-between gap-2 shadow-lg shadow-sky-500/25 transition active:scale-[0.98] cursor-pointer relative overflow-hidden"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1 relative z-10 overflow-hidden">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0 relative z-20">
+                  <ArrowLeftRight className="w-6 h-6 shrink-0 relative z-20" />
+                </div>
+                <div className="text-left min-w-0 flex-1 relative z-0 overflow-hidden">
+                  <div className="leading-tight">
+                    {tr(
+                      language,
+                      'Transfert entre dépôts',
+                      'Inter-depot transfer',
+                      'Overdracht tussen depots'
+                    )}
+                  </div>
+                  <div className="text-[11px] font-medium text-sky-100">
+                    {tr(
+                      language,
+                      'Déplacer un ou plusieurs articles vers un autre magasin ou camionnette',
+                      'Move one or more items to another warehouse or vehicle',
+                      'Verplaats een of meer artikelen naar een ander magazijn of voertuig'
+                    )}
+                  </div>
+                </div>
+              </div>
+              <ArrowLeftRight className="w-5 h-5 text-white/80 shrink-0 relative z-20" />
             </button>
           )}
 

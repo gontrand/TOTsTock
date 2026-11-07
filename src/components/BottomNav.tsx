@@ -1,6 +1,7 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
 import { Home, Search, ArrowLeftRight, MoreHorizontal, Plus } from 'lucide-react';
+import { requestGuardedNavigation } from '../services/unsavedChangesGuard';
 
 export const BottomNav: React.FC = () => {
   const {
@@ -17,6 +18,13 @@ export const BottomNav: React.FC = () => {
   } = useApp();
 
   if (!currentUser) return null;
+
+  const handleSelectTab = (tab: typeof activeTab) => {
+    if (tab === activeTab) return;
+    requestGuardedNavigation(() => {
+      setActiveTab(tab);
+    });
+  };
 
   const canHomeTab = userHasPermission('perm_tab_dashboard') || userHasPermission('perm_dash_kpi');
   const canSearchTab = userHasPermission('perm_tab_inventory') || userHasPermission('perm_prod_view');
@@ -39,7 +47,7 @@ export const BottomNav: React.FC = () => {
       {canHomeTab && (
         <button
           type="button"
-          onClick={() => setActiveTab('home')}
+          onClick={() => handleSelectTab('home')}
           className={`flex flex-col items-center justify-center flex-1 min-w-0 overflow-hidden relative h-full py-1 transition-all cursor-pointer active:scale-95 ${
             activeTab === 'home'
               ? 'text-orange-600 dark:text-orange-500 font-extrabold'
@@ -57,7 +65,7 @@ export const BottomNav: React.FC = () => {
       {canSearchTab && (
         <button
           type="button"
-          onClick={() => setActiveTab('search')}
+          onClick={() => handleSelectTab('search')}
           className={`flex flex-col items-center justify-center flex-1 min-w-0 overflow-hidden relative h-full py-1 transition-all cursor-pointer active:scale-95 ${
             activeTab === 'search'
               ? 'text-orange-600 dark:text-orange-500 font-extrabold'
@@ -82,7 +90,11 @@ export const BottomNav: React.FC = () => {
             />
             <button
               type="button"
-              onClick={() => setActionSheetOpen(!actionSheetOpen)}
+              onClick={() =>
+                requestGuardedNavigation(() => {
+                  setActionSheetOpen(!actionSheetOpen);
+                })
+              }
               title={t('nav_scan_movement')}
               data-haptic="heavy"
               className={`group relative z-30 shrink-0 w-[52px] h-[52px] rounded-2xl bg-gradient-to-tr from-orange-600 via-orange-500 to-amber-400 hover:from-orange-500 hover:to-amber-300 text-white flex items-center justify-center shadow-lg shadow-orange-500/40 border-[3px] border-white dark:border-[#1e293b] hover:scale-105 active:scale-90 transition-all duration-300 cursor-pointer ring-2 ring-orange-500/25 overflow-visible animate-center-fab ${
@@ -115,7 +127,7 @@ export const BottomNav: React.FC = () => {
       {canMovementsTab && (
         <button
           type="button"
-          onClick={() => setActiveTab('movements')}
+          onClick={() => handleSelectTab('movements')}
           className={`flex flex-col items-center justify-center flex-1 min-w-0 overflow-hidden relative h-full py-1 transition-all cursor-pointer active:scale-95 ${
             activeTab === 'movements'
               ? 'text-orange-600 dark:text-orange-500 font-extrabold'
@@ -133,7 +145,7 @@ export const BottomNav: React.FC = () => {
       {canPlusTab && (
         <button
           type="button"
-          onClick={() => setActiveTab('plus')}
+          onClick={() => handleSelectTab('plus')}
           className={`flex flex-col items-center justify-center flex-1 min-w-0 overflow-hidden relative h-full py-1 transition-all cursor-pointer active:scale-95 ${
             activeTab === 'plus'
               ? 'text-orange-600 dark:text-orange-500 font-extrabold'

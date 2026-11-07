@@ -1,6 +1,15 @@
 import { MaterialOrder, Product } from '../types';
 import { getSyncMetadata, setSyncMetadata } from './offline/indexedDb';
 import { isNetworkOrFetchError } from './clientSupabase';
+import {
+  isEnvelopeString,
+  encryptStringValue,
+  decryptStringValue,
+  isLocalEncryptionActive,
+  hasActiveCryptoKeyInMemory,
+  readSensitiveLocalStorage,
+  writeSensitiveLocalStorage,
+} from './localCrypto';
 
 export const SCANNER_QUEUE_META_KEY = 'scanner_offline_queue_v1';
 export const SCANNER_QUEUE_STORAGE_KEY = 'tot_scanner_offline_queue_v1';
@@ -61,7 +70,7 @@ export interface ReplayScannerQueueResult {
 let memoryQueueFallback: ScannerOfflineAction[] = [];
 
 function notifyScannerQueueChanged(): void {
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('tot-scanner-queue-changed'));
   }
 }
@@ -105,14 +114,25 @@ function sanitizePayload(payload: ScannerOfflineActionPayload): ScannerOfflineAc
 
 /**
  * Lit la file d'attente persistante du Mode Scanner depuis IndexedDB (avec repli localStorage / mémoire).
+ * Si les données sont chiffrées et la clé active en mémoire, les déchiffre à la volée.
  */
 export async function loadScannerOfflineQueue(): Promise<ScannerOfflineAction[]> {
   try {
     if (typeof indexedDB !== 'undefined') {
-      const fromIdb = await getSyncMetadata<ScannerOfflineAction[]>(SCANNER_QUEUE_META_KEY);
+      const fromIdb = await getSyncMetadata<unknown>(SCANNER_QUEUE_META_KEY);
       if (Array.isArray(fromIdb)) {
-        memoryQueueFallback = [...fromIdb];
-        return [...fromIdb];
+        memoryQueueFallback = [...(fromIdb as ScannerOfflineAction[])];
+        return [...(fromIdb as ScannerOfflineAction[])];
+      }
+      if (typeof fromIdb === 'string' && isEnvelopeString(fromIdb)) {
+        const plain = await decryptStringValue(fromIdb);
+        if (plain) {
+          const parsed = JSON.parse(plain);
+          if (Array.isArray(parsed)) {
+            memoryQueueFallback = [...parsed];
+            return [...parsed];
+          }
+        }
       }
     }
   } catch {
@@ -121,7 +141,7 @@ export async function loadScannerOfflineQueue(): Promise<ScannerOfflineAction[]>
 
   if (typeof localStorage !== 'undefined') {
     try {
-      const raw = localStorage.getItem(SCANNER_QUEUE_STORAGE_KEY);
+      const raw = await readSensitiveLocalStorage(SCANNER_QUEUE_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
@@ -148,7 +168,7 @@ export async function saveScannerOfflineQueue(queue: ScannerOfflineAction[]): Pr
       if (queue.length === 0) {
         localStorage.removeItem(SCANNER_QUEUE_STORAGE_KEY);
       } else {
-        localStorage.setItem(SCANNER_QUEUE_STORAGE_KEY, JSON.stringify(queue));
+        await writeSensitiveLocalStorage(SCANNER_QUEUE_STORAGE_KEY, JSON.stringify(queue));
       }
     } catch {
       // Ignore
@@ -157,7 +177,12 @@ export async function saveScannerOfflineQueue(queue: ScannerOfflineAction[]): Pr
 
   try {
     if (typeof indexedDB !== 'undefined') {
-      await setSyncMetadata(SCANNER_QUEUE_META_KEY, queue);
+      if (queue.length > 0 && isLocalEncryptionActive() && hasActiveCryptoKeyInMemory()) {
+        const encrypted = await encryptStringValue(JSON.stringify(queue));
+        await setSyncMetadata(SCANNER_QUEUE_META_KEY, encrypted);
+      } else {
+        await setSyncMetadata(SCANNER_QUEUE_META_KEY, queue);
+      }
     }
   } catch {
     // Ignore

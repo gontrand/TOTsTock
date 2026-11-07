@@ -98,4 +98,4 @@ Si vous souhaitez garantir l'application stricte du `pin-set` par la pile native
    - connexion et rafraîchissement de session Supabase,
    - synchronisation du catalogue, des mouvements et des commandes,
    - scan code-barres / QR code,
-   - appel des Edge Functions (`admin-users`, `sync-license`, `send-report-email`).
+   - appel des Edge Functions (`APP_TOT-Stock_admin-users`, `APP_TOT-Stock_licenses_sync-license`, `APP_TOT-Stock_send-report-email`).

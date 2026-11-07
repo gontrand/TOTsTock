@@ -9,6 +9,12 @@ import {
 } from '../types';
 export { plan_limits };
 import { SupabaseClient } from '@supabase/supabase-js';
+import { TABLES } from '../constants/tables';
+import {
+  getResolvedEdgeFunctionName,
+  loadEdgeFunctionOverridesFromClientDb,
+  extractEdgeFunctionErrorDetails,
+} from '../constants/edgeFunctions';
 
 // Public asymmetric verification key for TOT Stock License (Ed25519 SPKI format)
 // Client CANNOT forge signatures with this key: only the server private key (ED25519_PRIVATE_KEY_B64) can sign.
@@ -350,38 +356,99 @@ export async function verifySignedLicenseToken(
 }
 
 /**
- * Synchronizes the active Signed License Token to Client Supabase DB via Edge Function sync-license
+ * Synchronizes the active Signed License Token to Client Supabase DB via the client license Edge Function
  */
 export async function syncLicenseTokenToClientDb(
   client: SupabaseClient,
   signedToken: SignedLicenseToken
-): Promise<{ success: boolean; message: string }> {
+): Promise<{
+  success: boolean;
+  status?: number;
+  code?: string;
+  isNotFound?: boolean;
+  message: string;
+}> {
+  await loadEdgeFunctionOverridesFromClientDb(client);
+  const fnName = getResolvedEdgeFunctionName('syncLicense');
+
   try {
-    const { data, error } = await client.functions.invoke('sync-license', {
+    const { data, error } = await client.functions.invoke(fnName, {
       body: { signed_token: signedToken },
     });
 
-    if (!error && data?.success) {
-      return { success: true, message: data.message || 'Jeton de licence signé synchronisé avec succès.' };
+    if (!error && data?.success === true) {
+      return {
+        success: true,
+        status: 200,
+        message: data.message || `Jeton de licence signé synchronisé avec succès via ${fnName}.`,
+      };
+    }
+
+    const parsed = await extractEdgeFunctionErrorDetails(error, data);
+    const status = parsed.status || (error ? 500 : 400);
+    const rawMsg = parsed.message;
+
+    if (
+      parsed.isNotFound ||
+      (!error?.context?.status && (error as any)?.name === 'FunctionsFetchError')
+    ) {
+      return {
+        success: false,
+        status: 404,
+        code: 'NOT_FOUND',
+        isNotFound: true,
+        message: `Fonction Edge "${fnName}" introuvable (404) : vérifiez le nom exact déployé sur votre projet Supabase client.`,
+      };
+    }
+
+    if (status === 403 || status === 401) {
+      return {
+        success: false,
+        status,
+        code: parsed.code || 'FORBIDDEN',
+        isNotFound: false,
+        message: rawMsg
+          ? `Refusé par ${fnName} (${status}) : ${rawMsg}`
+          : `Refusé par ${fnName} (${status}) : signature Ed25519 invalide, permission insuffisante ou projet non concordant.`,
+      };
+    }
+
+    if (status >= 500) {
+      return {
+        success: false,
+        status,
+        code: parsed.code || 'SERVER_ERROR',
+        isNotFound: false,
+        message: rawMsg
+          ? `Erreur d'écriture ${fnName} (${status}) : ${rawMsg}`
+          : `Erreur d'écriture ${fnName} (${status}) : impossible d'écrire dans core_license_config.`,
+      };
     }
 
     return {
       success: false,
-      message: error?.message || data?.error || 'Échec de synchronisation via Edge Function sync-license',
+      status,
+      code: parsed.code,
+      isNotFound: false,
+      message: rawMsg || `Échec de synchronisation via ${fnName}`,
     };
   } catch (err: any) {
-    return { success: false, message: `Erreur communication sync-license : ${err?.message || err}` };
+    return {
+      success: false,
+      status: 500,
+      message: `Erreur communication ${fnName} : ${err?.message || err}`,
+    };
   }
 }
 
 /**
- * Generates SQL migration for Model B (read-only license_config table for client, managed by sync-license,
+ * Generates SQL migration for Model B (read-only license_config table for client, managed by the license sync Edge Function,
  * technical ceilings computed via plan_limits(plan), never stored per client)
  */
 export function generateModelBSqlMigration(): string {
   return `-- =========================================================================
 -- TOT STOCK PRO - MIGRATION MODÈLE B : CONFIGURATION LICENCE & FONCTION plan_limits(plan)
--- Table license_config en lecture seule pour les clients (écriture via Edge Function sync-license)
+-- Table license_config en lecture seule pour les clients (écriture via Edge Function de synchronisation)
 -- =========================================================================
 
 CREATE OR REPLACE FUNCTION public.plan_limits(p_plan TEXT)
@@ -431,7 +498,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.plan_limits(TEXT) TO anon, authenticated, service_role;
 
-CREATE TABLE IF NOT EXISTS public.license_config (
+CREATE TABLE IF NOT EXISTS public.${TABLES.licenseConfig} (
   id TEXT PRIMARY KEY DEFAULT 'active_license',
   license_key TEXT NOT NULL,
   plan_type TEXT NOT NULL DEFAULT 'free',
@@ -443,17 +510,17 @@ CREATE TABLE IF NOT EXISTS public.license_config (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE public.license_config
+ALTER TABLE public.${TABLES.licenseConfig}
   ADD COLUMN IF NOT EXISTS modules TEXT[] NOT NULL DEFAULT ARRAY['stock']::TEXT[];
 
-ALTER TABLE public.license_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.${TABLES.licenseConfig} ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Allow read license_config" ON public.license_config;
-CREATE POLICY "Allow read license_config" ON public.license_config 
+DROP POLICY IF EXISTS "Allow read license_config" ON public.${TABLES.licenseConfig};
+CREATE POLICY "Allow read license_config" ON public.${TABLES.licenseConfig} 
   FOR SELECT TO authenticated, anon 
   USING (true);
 
-INSERT INTO public.license_config (id, license_key, plan_type, modules, max_depots, organization_name)
+INSERT INTO public.${TABLES.licenseConfig} (id, license_key, plan_type, modules, max_depots, organization_name)
 VALUES ('active_license', 'TOT-STOCK-FREE', 'free', ARRAY['stock']::TEXT[], 1, 'Organisation Locale')
 ON CONFLICT (id) DO NOTHING;
 `;

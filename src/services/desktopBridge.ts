@@ -152,6 +152,12 @@ export interface TotDesktopBridge {
   }) => Promise<{ ok: boolean }>;
   setMenuLocale?: (locale: 'fr' | 'en' | 'nl') => Promise<{ ok: boolean }>;
   onMenuCommand?: (callback: (command: DesktopMenuCommandId) => void) => () => void;
+  getOrCreateSafeStorageKey?: () => Promise<{
+    ok: boolean;
+    keyBase64?: string;
+    errorMessage?: string;
+  }>;
+  clearSafeStorageKey?: () => Promise<{ ok: boolean }>;
 }
 
 declare global {
@@ -617,6 +623,35 @@ export async function quitAndInstallDesktopUpdate(): Promise<boolean> {
   }
   try {
     const res = await bridge.quitAndInstallUpdate();
+    return Boolean(res?.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function getOrCreateDesktopSafeStorageKey(): Promise<string | null> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.getOrCreateSafeStorageKey !== 'function') {
+    return null;
+  }
+  try {
+    const res = await bridge.getOrCreateSafeStorageKey();
+    if (res?.ok && typeof res.keyBase64 === 'string' && res.keyBase64.length > 0) {
+      return res.keyBase64;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearDesktopSafeStorageKey(): Promise<boolean> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.clearSafeStorageKey !== 'function') {
+    return false;
+  }
+  try {
+    const res = await bridge.clearSafeStorageKey();
     return Boolean(res?.ok);
   } catch {
     return false;

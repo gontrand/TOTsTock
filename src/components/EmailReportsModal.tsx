@@ -4,6 +4,8 @@ import DOMPurify from 'dompurify';
 import { useApp } from '../context/AppContext';
 import { formatDate } from '../utils/crypto';
 import { getClientSupabase } from '../services/clientSupabase';
+import { getResolvedEdgeFunctionName } from '../constants/edgeFunctions';
+import { extractEdgeFunctionError } from '../services/mailingService';
 import {
   X,
   Mail,
@@ -295,20 +297,23 @@ export const EmailReportsModal: React.FC = () => {
       let success = false;
       let errorMsg = '';
 
+      const sendEmailFn = getResolvedEdgeFunctionName('sendReportEmail');
       if (client && typeof client.functions?.invoke === 'function') {
-        const { data, error } = await client.functions.invoke('send-report-email', {
+        const { data, error } = await client.functions.invoke(sendEmailFn, {
           body: {
+            app_code: 'stk',
             to: previewData.recipient,
             subject: previewData.subject,
             htmlContent: previewData.htmlContent,
-            sender_name: senderName,
-            sender_email: senderEmail,
             user_permissions: ['perm_report_view'],
           },
         });
 
         if (error) {
-          errorMsg = error.message;
+          const parsed = await extractEdgeFunctionError(error, data);
+          errorMsg = parsed.statusCode
+            ? `${parsed.message} (HTTP ${parsed.statusCode})`
+            : parsed.message;
         } else if (data?.configured === false || data?.status === 'non configuré') {
           try {
             localStorage.setItem('tot_email_service_configured', 'false');
@@ -331,7 +336,7 @@ export const EmailReportsModal: React.FC = () => {
         }
       } else {
         // Fallback HTTP call to function endpoint
-        const endpoint = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/send-report-email` : '/api/send-report-email';
+        const endpoint = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/${sendEmailFn}` : '/api/send-report-email';
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: {
@@ -339,11 +344,10 @@ export const EmailReportsModal: React.FC = () => {
             ...(supabaseKey ? { Authorization: `Bearer ${supabaseKey}`, apikey: supabaseKey } : {}),
           },
           body: JSON.stringify({
+            app_code: 'stk',
             to: previewData.recipient,
             subject: previewData.subject,
             htmlContent: previewData.htmlContent,
-            sender_name: senderName,
-            sender_email: senderEmail,
             user_permissions: ['perm_report_view'],
           }),
         });

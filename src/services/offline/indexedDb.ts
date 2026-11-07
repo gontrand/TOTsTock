@@ -1,12 +1,19 @@
 import { openDB, IDBPDatabase } from 'idb';
 import { Product, StockMovement, MaterialOrder, Depot, User, Role, Department, Project, SubCategory } from '../../types';
+import { TableName } from '../../constants/tables';
+import {
+  encryptRecordForIndexedDb,
+  decryptRecordFromIndexedDb,
+} from '../localCrypto';
 
 export const DB_NAME = 'tot_stock_offline_db';
 export const DB_VERSION = 1;
 
 export interface SyncOperation {
+  id?: string;
   operation_id: string; // UUID unique
   entity:
+    | TableName
     | 'products'
     | 'stock_movements'
     | 'material_orders'
@@ -15,8 +22,16 @@ export interface SyncOperation {
     | 'roles'
     | 'departments'
     | 'projects'
-    | 'sub_categories';
-  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'RPC_STOCK_MOVEMENT' | 'RPC_ORDER_TRANSITION';
+    | 'sub_categories'
+    | 'inventory_audits';
+  action:
+    | 'INSERT'
+    | 'UPDATE'
+    | 'DELETE'
+    | 'RPC_STOCK_MOVEMENT'
+    | 'RPC_STOCK_TRANSFER_BATCH'
+    | 'RPC_ORDER_TRANSITION'
+    | 'RECORD_INVENTORY_AUDIT';
   payload: any;
   created_at: string;
   status: 'pending' | 'syncing' | 'synced' | 'failed' | 'rejected';
@@ -168,13 +183,51 @@ export function getDb(): Promise<IDBPDatabase> {
 }
 
 // -----------------------------------------------------------------------------
-// Generic CRUD operations
+// Generic CRUD operations (with transparent AES-GCM encryption for sync_queue & stock_movements)
 // -----------------------------------------------------------------------------
+
+const ENCRYPTED_IDB_STORES = new Set<StoreName>(['sync_queue', 'stock_movements']);
+
+function getPreserveFieldsForStore(storeName: StoreName): string[] {
+  if (storeName === 'sync_queue') {
+    return ['operation_id', 'id', 'status', 'created_at', 'action', 'entity', 'retry_count', 'last_error'];
+  }
+  return ['id', 'created_at'];
+}
+
+async function prepareItemForWrite<T>(storeName: StoreName, item: T): Promise<any> {
+  if (!item || typeof item !== 'object' || !ENCRYPTED_IDB_STORES.has(storeName)) {
+    return item;
+  }
+  return encryptRecordForIndexedDb(
+    item as unknown as Record<string, unknown>,
+    getPreserveFieldsForStore(storeName)
+  );
+}
+
+async function unwrapItemAfterRead<T>(storeName: StoreName, raw: any): Promise<T | undefined> {
+  if (!raw || typeof raw !== 'object') return raw as T | undefined;
+  if (!ENCRYPTED_IDB_STORES.has(storeName)) return raw as T;
+  const decrypted = await decryptRecordFromIndexedDb<Record<string, any>>(raw as Record<string, any>);
+  // Never lose or delete a record if the encryption key is temporarily locked; return raw envelope metadata if locked
+  return (decrypted as unknown as T) ?? (raw as unknown as T);
+}
 
 export async function getAllFromStore<T>(storeName: StoreName): Promise<T[]> {
   try {
     const db = await getDb();
-    return (await db.getAll(storeName)) as T[];
+    const rawItems = await db.getAll(storeName);
+    if (!ENCRYPTED_IDB_STORES.has(storeName)) {
+      return rawItems as T[];
+    }
+    const results: T[] = [];
+    for (const raw of rawItems) {
+      const unwrapped = await unwrapItemAfterRead<T>(storeName, raw);
+      if (unwrapped !== undefined) {
+        results.push(unwrapped);
+      }
+    }
+    return results;
   } catch (err) {
     console.warn(`[IndexedDB] Error reading store ${storeName}:`, err);
     return [];
@@ -184,7 +237,8 @@ export async function getAllFromStore<T>(storeName: StoreName): Promise<T[]> {
 export async function getByIdFromStore<T>(storeName: StoreName, id: string | number): Promise<T | undefined> {
   try {
     const db = await getDb();
-    return (await db.get(storeName, id as any)) as T | undefined;
+    const raw = await db.get(storeName, id as any);
+    return await unwrapItemAfterRead<T>(storeName, raw);
   } catch (err) {
     console.warn(`[IndexedDB] Error reading ID ${id} from ${storeName}:`, err);
     return undefined;
@@ -194,7 +248,8 @@ export async function getByIdFromStore<T>(storeName: StoreName, id: string | num
 export async function putToStore<T>(storeName: StoreName, item: T): Promise<void> {
   try {
     const db = await getDb();
-    await db.put(storeName, item);
+    const prepared = await prepareItemForWrite(storeName, item);
+    await db.put(storeName, prepared);
   } catch (err) {
     console.error(`[IndexedDB] Error writing to ${storeName}:`, err);
     throw err;
@@ -204,11 +259,15 @@ export async function putToStore<T>(storeName: StoreName, item: T): Promise<void
 export async function putManyToStore<T>(storeName: StoreName, items: T[]): Promise<void> {
   if (!items || items.length === 0) return;
   try {
+    const preparedItems: any[] = [];
+    for (const item of items) {
+      preparedItems.push(await prepareItemForWrite(storeName, item));
+    }
     const db = await getDb();
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
-    for (const item of items) {
-      await store.put(item);
+    for (const prepared of preparedItems) {
+      await store.put(prepared);
     }
     await tx.done;
   } catch (err) {
@@ -314,6 +373,7 @@ export async function enqueueSyncOperation(
 ): Promise<SyncOperation> {
   const operation_id = explicitOperationId || generateOperationId();
   const op: SyncOperation = {
+    id: operation_id,
     operation_id,
     entity,
     action,
@@ -327,21 +387,144 @@ export async function enqueueSyncOperation(
   return op;
 }
 
+export async function enqueueRejectedSyncOperation(
+  entity: SyncOperation['entity'],
+  action: SyncOperation['action'],
+  payload: any,
+  lastError: string,
+  explicitOperationId?: string
+): Promise<SyncOperation> {
+  const operation_id = explicitOperationId || generateOperationId();
+  const op: SyncOperation = {
+    id: operation_id,
+    operation_id,
+    entity,
+    action,
+    payload,
+    created_at: new Date().toISOString(),
+    status: 'rejected',
+    retry_count: 0,
+    last_error: lastError,
+  };
+
+  await putToStore('sync_queue', op);
+  return op;
+}
+
 export async function getPendingSyncOperations(): Promise<SyncOperation[]> {
   try {
     const db = await getDb();
     const tx = db.transaction('sync_queue', 'readonly');
     const index = tx.store.index('by_status');
-    const pending = await index.getAll('pending');
-    const failed = await index.getAll('failed');
+    const pendingRaw = await index.getAll('pending');
+    const failedRaw = await index.getAll('failed');
     await tx.done;
 
+    const all: SyncOperation[] = [];
+    for (const raw of [...pendingRaw, ...failedRaw]) {
+      const op = await unwrapItemAfterRead<SyncOperation>('sync_queue', raw);
+      if (op) {
+        all.push({
+          ...op,
+          id: op.id || op.operation_id,
+        });
+      }
+    }
     // Sort by created_at ascending to maintain chronological order
-    const all = [...pending, ...failed];
     return all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   } catch (err) {
     console.warn('[IndexedDB] Error fetching pending sync operations:', err);
     return [];
+  }
+}
+
+export async function getRejectedSyncOperations(): Promise<SyncOperation[]> {
+  try {
+    const db = await getDb();
+    const tx = db.transaction('sync_queue', 'readonly');
+    const index = tx.store.index('by_status');
+    const rejectedRaw = await index.getAll('rejected');
+    await tx.done;
+
+    const unwrapped: SyncOperation[] = [];
+    for (const raw of rejectedRaw) {
+      const op = await unwrapItemAfterRead<SyncOperation>('sync_queue', raw);
+      if (op) {
+        unwrapped.push({
+          ...op,
+          id: op.id || op.operation_id,
+        });
+      }
+    }
+    return unwrapped.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  } catch (err) {
+    console.warn('[IndexedDB] Error fetching rejected sync operations:', err);
+    return [];
+  }
+}
+
+export async function getQueuedInventoryAudits(): Promise<SyncOperation[]> {
+  try {
+    const all = await getAllFromStore<SyncOperation>('sync_queue');
+    return all
+      .filter(
+        (op) =>
+          op.action === 'RECORD_INVENTORY_AUDIT' &&
+          (op.status === 'pending' || op.status === 'failed' || op.status === 'rejected')
+      )
+      .map((op) => ({
+        ...op,
+        id: op.id || op.operation_id,
+      }))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  } catch (err) {
+    console.warn('[IndexedDB] Error fetching queued inventory audits:', err);
+    return [];
+  }
+}
+
+export async function retryRejectedSyncOperation(
+  operation_id: string
+): Promise<SyncOperation | null> {
+  try {
+    const op = await getByIdFromStore<SyncOperation>('sync_queue', operation_id);
+    if (!op) {
+      return null;
+    }
+    const updated: SyncOperation = {
+      ...op,
+      status: 'pending',
+      retry_count: (op.retry_count || 0) + 1,
+    };
+    delete updated.last_error;
+    await putToStore('sync_queue', updated);
+    return updated;
+  } catch (err) {
+    console.error(`[IndexedDB] Error retrying rejected operation ${operation_id}:`, err);
+    return null;
+  }
+}
+
+export async function discardSyncOperation(operation_id: string): Promise<void> {
+  try {
+    const op = await getByIdFromStore<SyncOperation>('sync_queue', operation_id);
+    await deleteFromStore('sync_queue', operation_id);
+    const movId =
+      op?.payload?.local_movement_id ||
+      op?.payload?.metadata?.id ||
+      op?.payload?.movement_snapshot?.id;
+    if (movId) {
+      await deleteFromStore('stock_movements', String(movId)).catch(() => {});
+    }
+    if (Array.isArray(op?.payload?.local_movement_ids)) {
+      for (const id of op.payload.local_movement_ids) {
+        if (id) {
+          await deleteFromStore('stock_movements', String(id)).catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[IndexedDB] Error discarding operation ${operation_id}:`, err);
   }
 }
 
@@ -351,20 +534,16 @@ export async function updateSyncOperationStatus(
   last_error?: string
 ): Promise<void> {
   try {
-    const db = await getDb();
-    const tx = db.transaction('sync_queue', 'readwrite');
-    const op = await tx.store.get(operation_id);
+    const op = await getByIdFromStore<SyncOperation>('sync_queue', operation_id);
     if (op) {
-      op.status = status;
-      if (status === 'failed') {
-        op.retry_count = (op.retry_count || 0) + 1;
-      }
-      if (last_error) {
-        op.last_error = last_error;
-      }
-      await tx.store.put(op);
+      const updated: SyncOperation = {
+        ...op,
+        status,
+        retry_count: status === 'failed' ? (op.retry_count || 0) + 1 : op.retry_count,
+        ...(last_error ? { last_error } : {}),
+      };
+      await putToStore('sync_queue', updated);
     }
-    await tx.done;
   } catch (err) {
     console.error(`[IndexedDB] Error updating operation ${operation_id}:`, err);
   }
@@ -542,12 +721,16 @@ export async function migrateFromLocalStorageToIndexedDb(): Promise<{
  */
 export async function replaceStoreContents<T>(storeName: StoreName, items: T[]): Promise<void> {
   try {
+    const preparedItems: any[] = [];
+    for (const item of items || []) {
+      preparedItems.push(await prepareItemForWrite(storeName, item));
+    }
     const db = await getDb();
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
     await store.clear();
-    for (const item of items || []) {
-      await store.put(item);
+    for (const prepared of preparedItems) {
+      await store.put(prepared);
     }
     await tx.done;
   } catch (err) {

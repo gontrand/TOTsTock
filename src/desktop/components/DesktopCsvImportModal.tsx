@@ -8,6 +8,7 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { tr } from '../../i18n/dutchTranslator';
 import {
   CSV_IMPORT_MAX_BYTES,
   CsvColumnMapping,
@@ -26,21 +27,89 @@ interface DesktopCsvImportModalProps {
   onClose: () => void;
 }
 
-const TARGET_FIELDS: Array<{ field: CsvImportTargetField; label: string; required?: boolean }> = [
-  { field: 'reference', label: 'Référence article', required: true },
-  { field: 'brand', label: 'Marque' },
-  { field: 'model', label: 'Modèle / Désignation', required: true },
-  { field: 'category_name', label: 'Catégorie / Sous-catégorie' },
-  { field: 'store_name', label: 'Dépôt' },
-  { field: 'rack_location', label: 'Emplacement (Casier)' },
-  { field: 'quantity', label: 'Stock initial' },
-  { field: 'min_stock_alert', label: "Seuil d'alerte" },
-  { field: 'unit_price', label: 'Prix unitaire HT' },
-  { field: 'barcode', label: 'Code-barres 1D' },
-  { field: 'manufacturer_ref', label: 'Réf fabricant (OEM)' },
-  { field: 'supplier_1_name', label: 'Fournisseur principal' },
-  { field: 'ref_supplier_1', label: 'Réf fournisseur' },
-  { field: 'description', label: 'Description' },
+const TARGET_FIELDS: Array<{
+  field: CsvImportTargetField;
+  labelFr: string;
+  labelEn: string;
+  labelNl: string;
+  required?: boolean;
+}> = [
+  {
+    field: 'reference',
+    labelFr: 'Référence article',
+    labelEn: 'Item reference',
+    labelNl: 'Artikelreferentie',
+    required: true,
+  },
+  { field: 'brand', labelFr: 'Marque', labelEn: 'Brand', labelNl: 'Merk' },
+  {
+    field: 'model',
+    labelFr: 'Modèle / Désignation',
+    labelEn: 'Model / Designation',
+    labelNl: 'Model / Omschrijving',
+    required: true,
+  },
+  {
+    field: 'category_name',
+    labelFr: 'Catégorie / Sous-catégorie',
+    labelEn: 'Category / Sub-category',
+    labelNl: 'Categorie / Subcategorie',
+  },
+  { field: 'store_name', labelFr: 'Dépôt', labelEn: 'Depot', labelNl: 'Depot' },
+  {
+    field: 'rack_location',
+    labelFr: 'Emplacement (Casier)',
+    labelEn: 'Location (Bin)',
+    labelNl: 'Locatie (Vak)',
+  },
+  {
+    field: 'quantity',
+    labelFr: 'Stock initial',
+    labelEn: 'Initial stock',
+    labelNl: 'Initiële voorraad',
+  },
+  {
+    field: 'min_stock_alert',
+    labelFr: "Seuil d'alerte",
+    labelEn: 'Min stock alert',
+    labelNl: 'Waarschuwingsdrempel',
+  },
+  {
+    field: 'unit_price',
+    labelFr: 'Prix unitaire HT',
+    labelEn: 'Unit price (excl. VAT)',
+    labelNl: 'Eenheidsprijs (excl. btw)',
+  },
+  {
+    field: 'barcode',
+    labelFr: 'Code-barres 1D',
+    labelEn: '1D Barcode',
+    labelNl: '1D-streepjescode',
+  },
+  {
+    field: 'manufacturer_ref',
+    labelFr: 'Réf fabricant (OEM)',
+    labelEn: 'Manufacturer ref (OEM)',
+    labelNl: 'Fabrikantreferentie (OEM)',
+  },
+  {
+    field: 'supplier_1_name',
+    labelFr: 'Fournisseur principal',
+    labelEn: 'Main supplier',
+    labelNl: 'Hoofdleverancier',
+  },
+  {
+    field: 'ref_supplier_1',
+    labelFr: 'Réf fournisseur',
+    labelEn: 'Supplier reference',
+    labelNl: 'Leveranciersreferentie',
+  },
+  {
+    field: 'description',
+    labelFr: 'Description',
+    labelEn: 'Description',
+    labelNl: 'Beschrijving',
+  },
 ];
 
 export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
@@ -53,6 +122,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
     license,
     userHasPermission,
     saveProduct,
+    language,
   } = useApp();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -99,7 +169,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
         separator: ';',
         headers: [],
         rows: [],
-        error: 'Le fichier dépasse la taille maximale autorisée de 5 Mo.',
+        error: tr(
+          language,
+          'Le fichier dépasse la taille maximale autorisée de 5 Mo.',
+          'The file exceeds the maximum allowed size of 5 MB.',
+          'Het bestand overschrijdt de maximaal toegestane grootte van 5 MB.'
+        ),
       });
       return;
     }
@@ -163,14 +238,22 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
             rowIndex: row.rowIndex,
             reference: row.productDraft.reference,
             outcome: row.status === 'update' ? 'updated' : 'created',
-            message: row.status === 'update' ? 'Mis à jour' : 'Créé',
+            message:
+              row.status === 'update'
+                ? tr(language, 'Mis à jour', 'Updated', 'Bijgewerkt')
+                : tr(language, 'Créé', 'Created', 'Aangemaakt'),
           });
         } else {
           results.push({
             rowIndex: row.rowIndex,
             reference: row.productDraft.reference,
             outcome: 'error',
-            message: 'Refusé par les règles de gestion',
+            message: tr(
+              language,
+              'Refusé par les règles de gestion',
+              'Rejected by business rules',
+              'Geweigerd door beheersregels'
+            ),
           });
         }
       } catch (err: any) {
@@ -178,7 +261,14 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
           rowIndex: row.rowIndex,
           reference: row.productDraft.reference,
           outcome: 'error',
-          message: err?.message || "Erreur d'écriture en base",
+          message:
+            err?.message ||
+            tr(
+              language,
+              "Erreur d'écriture en base",
+              'Database write error',
+              'Database-schrijffout'
+            ),
         });
       }
     }
@@ -211,15 +301,35 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-black text-slate-900 dark:text-white">
-                Assistant d'import CSV du catalogue articles
+                {tr(
+                  language,
+                  "Assistant d'import CSV du catalogue articles",
+                  'Catalog CSV Import Wizard',
+                  'CSV-importassistent voor de artikelcatalogus'
+                )}
               </h2>
               <p className="text-xs text-slate-500">
-                Étape {step}/3 —{' '}
+                {tr(language, 'Étape', 'Step', 'Stap')} {step}/3 —{' '}
                 {step === 1
-                  ? 'Sélection du fichier et correspondance des colonnes'
+                  ? tr(
+                      language,
+                      'Sélection du fichier et correspondance des colonnes',
+                      'File selection and column mapping',
+                      'Bestandsselectie en kolomtoewijzing'
+                    )
                   : step === 2
-                  ? 'Aperçu, contrôle des doublons et vérification du quota licence'
-                  : "Rapport d'exécution de l'import"}
+                  ? tr(
+                      language,
+                      'Aperçu, contrôle des doublons et vérification du quota licence',
+                      'Preview, duplicate check and license quota verification',
+                      'Voorbeeld, duplicaatcontrole en licentiequotumverificatie'
+                    )
+                  : tr(
+                      language,
+                      "Rapport d'exécution de l'import",
+                      'Import execution report',
+                      'Uitvoeringsrapport van de import'
+                    )}
               </p>
             </div>
           </div>
@@ -235,7 +345,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
         <div className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
           {!canCreateProduct && (
             <div className="p-4 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 font-bold">
-              Vous ne disposez pas de la permission « Créer un article » (`perm_action_create_prod`).
+              {tr(
+                language,
+                'Vous ne disposez pas de la permission « Créer un article » (`perm_action_create_prod`).',
+                'You do not have the "Create product" permission (`perm_action_create_prod`).',
+                'U beschikt niet over de machtiging "Artikel aanmaken" (`perm_action_create_prod`).'
+              )}
             </div>
           )}
 
@@ -244,10 +359,20 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                 <div>
                   <div className="font-bold text-slate-900 dark:text-white">
-                    1. Choisissez votre fichier CSV (UTF-8 ou Windows-1252, séparateur `;` ou `,`)
+                    {tr(
+                      language,
+                      '1. Choisissez votre fichier CSV (UTF-8 ou Windows-1252, séparateur `;` ou `,`)',
+                      '1. Choose your CSV file (UTF-8 or Windows-1252, separator `;` or `,`)',
+                      '1. Kies uw CSV-bestand (UTF-8 of Windows-1252, scheidingsteken `;` of `,`)'
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    Maximum 5 Mo et 5 000 lignes par import. Protection anti-formules tableur active.
+                    {tr(
+                      language,
+                      'Maximum 5 Mo et 5 000 lignes par import. Protection anti-formules tableur active.',
+                      'Maximum 5 MB and 5,000 rows per import. Spreadsheet formula injection protection active.',
+                      'Maximaal 5 MB en 5.000 rijen per import. Bescherming tegen spreadsheetformules actief.'
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -257,11 +382,21 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100"
                   >
                     <Download className="w-3.5 h-3.5 text-orange-600" />
-                    Télécharger un fichier modèle
+                    {tr(
+                      language,
+                      'Télécharger un fichier modèle',
+                      'Download template file',
+                      'Voorbeeldbestand downloaden'
+                    )}
                   </button>
                   <label className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-bold bg-orange-600 hover:bg-orange-700 text-white cursor-pointer">
                     <Upload className="w-3.5 h-3.5" />
-                    Choisir un fichier CSV
+                    {tr(
+                      language,
+                      'Choisir un fichier CSV',
+                      'Choose CSV file',
+                      'CSV-bestand kiezen'
+                    )}
                     <input
                       type="file"
                       accept=".csv,text/csv"
@@ -282,12 +417,25 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="font-bold text-slate-800 dark:text-slate-200">
-                      Fichier chargé : <span className="font-mono">{fileName}</span> (
-                      {parsedSheet.rows.length} lignes détectées, séparateur «{' '}
+                      {tr(language, 'Fichier chargé :', 'Loaded file:', 'Geladen bestand:')}{' '}
+                      <span className="font-mono">{fileName}</span> ({parsedSheet.rows.length}{' '}
+                      {tr(
+                        language,
+                        'lignes détectées, séparateur «',
+                        'rows detected, separator "',
+                        'rijen gedetecteerd, scheidingsteken «'
+                      )}{' '}
                       {parsedSheet.separator} »)
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-slate-500">Doublons de référence :</span>
+                      <span className="text-slate-500">
+                        {tr(
+                          language,
+                          'Doublons de référence :',
+                          'Duplicate references:',
+                          'Dubbele referenties:'
+                        )}
+                      </span>
                       <select
                         value={duplicateStrategy}
                         onChange={(e) =>
@@ -295,8 +443,22 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                         }
                         className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
                       >
-                        <option value="update">Mettre à jour les articles existants</option>
-                        <option value="skip">Ignorer les références déjà présentes</option>
+                        <option value="update">
+                          {tr(
+                            language,
+                            'Mettre à jour les articles existants',
+                            'Update existing items',
+                            'Bestaande artikelen bijwerken'
+                          )}
+                        </option>
+                        <option value="skip">
+                          {tr(
+                            language,
+                            'Ignorer les références déjà présentes',
+                            'Skip existing references',
+                            'Reeds aanwezige referenties negeren'
+                          )}
+                        </option>
                       </select>
                     </div>
                   </div>
@@ -305,7 +467,8 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                     {TARGET_FIELDS.map((tf) => (
                       <div key={tf.field} className="flex items-center justify-between gap-2">
                         <label className="font-semibold text-slate-700 dark:text-slate-300">
-                          {tf.label} {tf.required && <span className="text-rose-500">*</span>}
+                          {tr(language, tf.labelFr, tf.labelEn, tf.labelNl)}{' '}
+                          {tf.required && <span className="text-rose-500">*</span>}
                         </label>
                         <select
                           value={mapping[tf.field] || ''}
@@ -317,7 +480,9 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                           }
                           className="w-48 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
                         >
-                          <option value="">-- Non mappé --</option>
+                          <option value="">
+                            {tr(language, '-- Non mappé --', '-- Unmapped --', '-- Niet gekoppeld --')}
+                          </option>
                           {parsedSheet.headers.map((h) => (
                             <option key={h} value={h}>
                               {h}
@@ -337,7 +502,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
               <div className="grid grid-cols-4 gap-3">
                 <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
                   <div className="text-[10px] font-bold uppercase text-emerald-700">
-                    Nouveaux articles
+                    {tr(language, 'Nouveaux articles', 'New items', 'Nieuwe artikelen')}
                   </div>
                   <div className="font-mono text-xl font-black text-emerald-700 dark:text-emerald-300">
                     {validation.toCreateCount}
@@ -345,7 +510,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800">
                   <div className="text-[10px] font-bold uppercase text-sky-700">
-                    Mises à jour
+                    {tr(language, 'Mises à jour', 'Updates', 'Updates')}
                   </div>
                   <div className="font-mono text-xl font-black text-sky-700 dark:text-sky-300">
                     {validation.toUpdateCount}
@@ -353,7 +518,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800">
                   <div className="text-[10px] font-bold uppercase text-amber-700">
-                    Doublons ignorés
+                    {tr(language, 'Doublons ignorés', 'Skipped duplicates', 'Genegeerde duplicaten')}
                   </div>
                   <div className="font-mono text-xl font-black text-amber-700 dark:text-amber-300">
                     {validation.duplicateInFileCount}
@@ -361,7 +526,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 </div>
                 <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800">
                   <div className="text-[10px] font-bold uppercase text-rose-700">
-                    Lignes en erreur
+                    {tr(language, 'Lignes en erreur', 'Rows with errors', 'Rijen met fouten')}
                   </div>
                   <div className="font-mono text-xl font-black text-rose-700 dark:text-rose-300">
                     {validation.errorCount}
@@ -374,11 +539,20 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                   <AlertTriangle className="w-5 h-5 shrink-0" />
                   <div>
                     <div className="font-black">
-                      Plafond de références de votre licence dépassé ({validation.projectedTotalReferences} /{' '}
-                      {validation.maxReferencesAllowed} max)
+                      {tr(
+                        language,
+                        `Plafond de références de votre licence dépassé (${validation.projectedTotalReferences} / ${validation.maxReferencesAllowed} max)`,
+                        `License reference limit exceeded (${validation.projectedTotalReferences} / ${validation.maxReferencesAllowed} max)`,
+                        `Referentielimiet van uw licentie overschreden (${validation.projectedTotalReferences} / ${validation.maxReferencesAllowed} max)`
+                      )}
                     </div>
                     <p className="text-[11px]">
-                      Réduisez le nombre de nouveaux articles dans le fichier ou passez à une formule supérieure dans Paramètres &gt; Licence.
+                      {tr(
+                        language,
+                        'Réduisez le nombre de nouveaux articles dans le fichier ou passez à une formule supérieure dans Paramètres > Licence.',
+                        'Reduce the number of new items in the file or upgrade your plan in Settings > License.',
+                        'Verlaag het aantal nieuwe artikelen in het bestand of upgrade uw abonnement in Instellingen > Licentie.'
+                      )}
                     </p>
                   </div>
                 </div>
@@ -388,12 +562,22 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase text-slate-500">
                     <tr>
-                      <th className="py-2 px-3">Ligne</th>
-                      <th className="py-2 px-3">Référence</th>
-                      <th className="py-2 px-3">Désignation</th>
-                      <th className="py-2 px-3 text-right">Stock</th>
-                      <th className="py-2 px-3 text-right">Prix HT</th>
-                      <th className="py-2 px-3">Action / Contrôle</th>
+                      <th className="py-2 px-3">{tr(language, 'Ligne', 'Row', 'Rij')}</th>
+                      <th className="py-2 px-3">
+                        {tr(language, 'Référence', 'Reference', 'Referentie')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {tr(language, 'Désignation', 'Designation', 'Omschrijving')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {tr(language, 'Stock', 'Stock', 'Voorraad')}
+                      </th>
+                      <th className="py-2 px-3 text-right">
+                        {tr(language, 'Prix HT', 'Unit Price', 'Prijs excl.')}
+                      </th>
+                      <th className="py-2 px-3">
+                        {tr(language, 'Action / Contrôle', 'Action / Check', 'Actie / Controle')}
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -414,10 +598,20 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                         </td>
                         <td className="py-2 px-3">
                           {r.status === 'create' && (
-                            <span className="text-emerald-600 font-bold">Création</span>
+                            <span className="text-emerald-600 font-bold">
+                              {tr(language, 'Création', 'Create', 'Aanmaken')}
+                            </span>
                           )}
                           {r.status === 'update' && (
-                            <span className="text-sky-600 font-bold">Mise à jour</span>
+                            <span className="text-sky-600 font-bold">
+                              {tr(language, 'Mise à jour', 'Update', 'Bijwerken')}
+                            </span>
+                          )}
+                          {r.status === 'add_depot' && (
+                            <span className="text-orange-600 font-bold">
+                              {tr(language, 'Ajout dépôt', 'Add depot', 'Depot toevoegen')} (
+                              {r.productDraft.store_name})
+                            </span>
                           )}
                           {r.status === 'duplicate_in_file' && (
                             <span className="text-amber-600 font-bold">{r.errors[0]}</span>
@@ -436,7 +630,9 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
 
               {importing && (
                 <div className="p-3 rounded-xl bg-orange-50 text-orange-800 font-bold text-center">
-                  Import en cours : {progressIndex} / {validation.rows.length} lignes traitées...
+                  {tr(language, 'Import en cours :', 'Importing:', 'Importeren bezig:')}{' '}
+                  {progressIndex} / {validation.rows.length}{' '}
+                  {tr(language, 'lignes traitées...', 'rows processed...', 'rijen verwerkt...')}
                 </div>
               )}
             </div>
@@ -446,22 +642,27 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
             <div className="space-y-4 text-center py-6">
               <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
               <h3 className="text-base font-black text-slate-900 dark:text-white">
-                Import CSV terminé ({importResults.length} lignes analysées)
+                {tr(
+                  language,
+                  `Import CSV terminé (${importResults.length} lignes analysées)`,
+                  `CSV Import completed (${importResults.length} rows analyzed)`,
+                  `CSV-import voltooid (${importResults.length} rijen geanalyseerd)`
+                )}
               </h3>
               <p className="text-slate-500">
-                Créés :{' '}
+                {tr(language, 'Créés :', 'Created:', 'Aangemaakt:')}{' '}
                 <strong>
                   {importResults.filter((r) => r.outcome === 'created').length}
                 </strong>{' '}
-                • Mis à jour :{' '}
+                • {tr(language, 'Mis à jour :', 'Updated:', 'Bijgewerkt:')}{' '}
                 <strong>
                   {importResults.filter((r) => r.outcome === 'updated').length}
                 </strong>{' '}
-                • Ignorés :{' '}
+                • {tr(language, 'Ignorés :', 'Skipped:', 'Genegeerd:')}{' '}
                 <strong>
                   {importResults.filter((r) => r.outcome === 'skipped').length}
                 </strong>{' '}
-                • Erreurs :{' '}
+                • {tr(language, 'Erreurs :', 'Errors:', 'Fouten:')}{' '}
                 <strong>
                   {importResults.filter((r) => r.outcome === 'error').length}
                 </strong>
@@ -472,7 +673,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold bg-slate-900 text-white hover:bg-slate-800"
               >
                 <Download className="w-4 h-4" />
-                Télécharger le rapport CSV détaillé
+                {tr(
+                  language,
+                  'Télécharger le rapport CSV détaillé',
+                  'Download detailed CSV report',
+                  'Gedetailleerd CSV-rapport downloaden'
+                )}
               </button>
             </div>
           )}
@@ -484,7 +690,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
             onClick={onClose}
             className="px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100"
           >
-            Fermer
+            {tr(language, 'Fermer', 'Close', 'Sluiten')}
           </button>
 
           <div className="flex items-center gap-2">
@@ -494,7 +700,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 onClick={() => setStep(1)}
                 className="px-4 py-2 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700"
               >
-                Retour au mappage
+                {tr(
+                  language,
+                  'Retour au mappage',
+                  'Back to mapping',
+                  'Terug naar kolomkoppeling'
+                )}
               </button>
             )}
             {step === 1 && (
@@ -504,7 +715,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 onClick={() => setStep(2)}
                 className="px-4 py-2 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white"
               >
-                Suivant : Aperçu & Validation
+                {tr(
+                  language,
+                  'Suivant : Aperçu & Validation',
+                  'Next: Preview & Validation',
+                  'Volgende: Voorbeeld & Validatie'
+                )}
               </button>
             )}
             {step === 2 && validation && (
@@ -519,7 +735,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                 onClick={handleExecuteImport}
                 className="px-5 py-2 rounded-lg text-xs font-black bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white"
               >
-                Lancer l'import ({validation.toCreateCount + validation.toUpdateCount} articles)
+                {tr(
+                  language,
+                  `Lancer l'import (${validation.toCreateCount + validation.toUpdateCount} articles)`,
+                  `Run import (${validation.toCreateCount + validation.toUpdateCount} items)`,
+                  `Import starten (${validation.toCreateCount + validation.toUpdateCount} artikelen)`
+                )}
               </button>
             )}
           </div>

@@ -7,6 +7,9 @@ import {
   DEFAULT_PUBLIC_KEY_B64,
   LEGACY_PUBLIC_KEY_B64,
   readRuntimeConfig,
+  TABLES,
+  CLIENT_EDGE_FUNCTIONS,
+  MASTER_EDGE_FUNCTIONS,
 } from "./config.ts";
 
 export const CURRENT_KEY_ID = DEFAULT_KEY_ID;
@@ -172,6 +175,11 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
       isSuperAdmin,
     } = authRes.ctx;
 
+    const body = await req.json().catch(() => ({}));
+    if (body?.action === 'ping' || body?.action === 'status') {
+      return jsonResponse({ success: true, function: CLIENT_EDGE_FUNCTIONS.syncLicense, status: 'ok' }, 200);
+    }
+
     const canManageLicense =
       isSuperAdmin ||
       callerPerms.includes('*') ||
@@ -188,11 +196,6 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
       );
     }
 
-    const body = await req.json().catch(() => ({}));
-    if (body?.action === 'ping' || body?.action === 'status') {
-      return jsonResponse({ success: true, function: 'sync-license', status: 'ok' }, 200);
-    }
-
     // Read runtime configuration from app_settings with fallback to embedded key / env vars
     const runtimeCfg = await readRuntimeConfig(supabaseAdmin);
 
@@ -201,7 +204,7 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
     // Optional binding by license_key when master_license_url is configured (used by tot-install step 6)
     if (!token && body?.license_key && runtimeCfg.masterLicenseUrl) {
       try {
-        const masterFnName = (runtimeCfg.masterLicenseFunction || 'APP_TOT-Stock_licenses').trim();
+        const masterFnName = (runtimeCfg.masterLicenseFunction || MASTER_EDGE_FUNCTIONS.licenses).trim();
         const masterEndpoint = `${runtimeCfg.masterLicenseUrl.replace(/\/+$/, '')}/functions/v1/${encodeURIComponent(masterFnName)}`;
         const masterResp = await fetch(masterEndpoint, {
           method: 'POST',
@@ -405,7 +408,7 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
       maxDepots > 0 ? Math.min(maxDepots, canonicalLimits.max_depots) : canonicalLimits.max_depots;
 
     const { data: updatedConfig, error: writeErr } = await supabaseAdmin
-      .from('license_config')
+      .from(TABLES.licenseConfig)
       .upsert(
         {
           id: 'active_license',

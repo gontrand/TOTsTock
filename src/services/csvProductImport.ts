@@ -30,7 +30,7 @@ export interface ParsedCsvSheet {
   error?: string;
 }
 
-export type CsvRowValidationStatus = 'create' | 'update' | 'duplicate_in_file' | 'error';
+export type CsvRowValidationStatus = 'create' | 'update' | 'add_depot' | 'duplicate_in_file' | 'error';
 
 export interface ValidatedCsvProductRow {
   rowIndex: number; // 1-based data row index
@@ -45,6 +45,7 @@ export interface CsvValidationSummary {
   rows: ValidatedCsvProductRow[];
   toCreateCount: number;
   toUpdateCount: number;
+  toAddDepotCount?: number;
   duplicateInFileCount: number;
   errorCount: number;
   quotaExceeded: boolean;
@@ -258,11 +259,13 @@ export function validateCsvProductImport(params: {
     }
   }
 
-  const seenRefsInFile = new Set<string>();
+  const seenRefsInFile = new Map<string, ValidatedCsvProductRow>();
+  const seenRefDepotsInFile = new Set<string>();
   const validatedRows: ValidatedCsvProductRow[] = [];
 
   let toCreateCount = 0;
   let toUpdateCount = 0;
+  let toAddDepotCount = 0;
   let duplicateInFileCount = 0;
   let errorCount = 0;
 
@@ -285,10 +288,16 @@ export function validateCsvProductImport(params: {
     const supplier1Name = neutralizeFormulaInjectionOnImport(getCell('supplier_1_name'));
     const refSupplier1 = neutralizeFormulaInjectionOnImport(getCell('ref_supplier_1'));
 
+    const normRef = reference.toLowerCase();
+    const normStore = storeName.trim().toLowerCase();
+    const refDepotKey = `${normRef}::${normStore}`;
+    const existingProduct = existingByRef.get(normRef);
+    const firstRowInFile = seenRefsInFile.get(normRef);
+
     if (!reference) {
       errors.push('Référence obligatoire manquante');
     }
-    if (!model && !brand) {
+    if (!model && !brand && !existingProduct && !firstRowInFile) {
       errors.push('Désignation (Modèle ou Marque) obligatoire manquante');
     }
 
@@ -305,28 +314,37 @@ export function validateCsvProductImport(params: {
       errors.push('Prix unitaire HT invalide (nombre >= 0 attendu)');
     }
 
-    const normRef = reference.toLowerCase();
     let status: CsvRowValidationStatus = 'create';
-    let existingProduct: Product | undefined;
 
     if (errors.length > 0) {
       status = 'error';
       errorCount++;
-    } else if (seenRefsInFile.has(normRef)) {
+    } else if (seenRefDepotsInFile.has(refDepotKey)) {
       status = 'duplicate_in_file';
-      errors.push(`Référence "${reference}" en doublon dans le fichier CSV`);
+      errors.push(`Référence "${reference}" en doublon pour le dépôt "${storeName}" dans le fichier CSV`);
       duplicateInFileCount++;
     } else {
-      seenRefsInFile.add(normRef);
-      existingProduct = existingByRef.get(normRef);
-      if (existingProduct) {
+      seenRefDepotsInFile.add(refDepotKey);
+      if (firstRowInFile) {
+        // Même référence sur une autre ligne avec un dépôt différent -> affectation multi-dépôt (ne compte pas dans max_references)
+        status = 'add_depot';
+        toAddDepotCount++;
+        toUpdateCount++;
+      } else if (existingProduct) {
         if (duplicateStrategy === 'skip') {
           status = 'duplicate_in_file';
           errors.push(`Référence "${reference}" déjà présente au catalogue (ignorée)`);
           duplicateInFileCount++;
         } else {
-          status = 'update';
-          toUpdateCount++;
+          const existingStore = (existingProduct.store_name || defaultDepotName).trim().toLowerCase();
+          if (existingStore !== normStore) {
+            status = 'add_depot';
+            toAddDepotCount++;
+            toUpdateCount++;
+          } else {
+            status = 'update';
+            toUpdateCount++;
+          }
         }
       } else {
         status = 'create';
@@ -335,37 +353,46 @@ export function validateCsvProductImport(params: {
     }
 
     const matchedSubCatId = categoryName
-      ? subCatByName.get(categoryName.toLowerCase()) ?? existingProduct?.sub_category_id ?? null
-      : existingProduct?.sub_category_id ?? null;
+      ? subCatByName.get(categoryName.toLowerCase()) ??
+        existingProduct?.sub_category_id ??
+        firstRowInFile?.productDraft.sub_category_id ??
+        null
+      : existingProduct?.sub_category_id ?? firstRowInFile?.productDraft.sub_category_id ?? null;
 
     const productDraft: Omit<Product, 'id'> = {
       reference,
-      brand: brand || existingProduct?.brand || 'Générique',
-      model: model || existingProduct?.model || reference,
-      description: description || existingProduct?.description || '',
+      brand: brand || existingProduct?.brand || firstRowInFile?.productDraft.brand || 'Générique',
+      model: model || existingProduct?.model || firstRowInFile?.productDraft.model || reference,
+      description: description || existingProduct?.description || firstRowInFile?.productDraft.description || '',
       sub_category_id: matchedSubCatId,
-      unit_price: priceRes.value,
+      unit_price: priceRes.value || existingProduct?.unit_price || firstRowInFile?.productDraft.unit_price || 0,
       quantity: Math.trunc(qtyRes.value),
       min_stock_alert: Math.trunc(minAlertRes.value),
       store_name: storeName,
       room_name: existingProduct?.room_name || '',
       shelf_name: existingProduct?.shelf_name || '',
       rack_location: rackLocation || existingProduct?.rack_location || '',
-      barcode: barcode || existingProduct?.barcode || reference,
+      barcode: barcode || existingProduct?.barcode || firstRowInFile?.productDraft.barcode || reference,
       qr_code: existingProduct?.qr_code || reference,
       manufacturer_ref: manufacturerRef || existingProduct?.manufacturer_ref || '',
       supplier_1_name: supplier1Name || existingProduct?.supplier_1_name || '',
       ref_supplier_1: refSupplier1 || existingProduct?.ref_supplier_1 || '',
     };
 
-    validatedRows.push({
+    const validatedRow: ValidatedCsvProductRow = {
       rowIndex: index + 1,
       status,
       errors,
       existingProductId: existingProduct?.id,
       productDraft,
       categoryName: categoryName || undefined,
-    });
+    };
+
+    if (!firstRowInFile && status !== 'error') {
+      seenRefsInFile.set(normRef, validatedRow);
+    }
+
+    validatedRows.push(validatedRow);
   });
 
   const maxReferencesAllowed = getPlanMaxReferences(license?.plan_type);
@@ -376,6 +403,7 @@ export function validateCsvProductImport(params: {
     rows: validatedRows,
     toCreateCount,
     toUpdateCount,
+    toAddDepotCount,
     duplicateInFileCount,
     errorCount,
     quotaExceeded,

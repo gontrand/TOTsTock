@@ -87,12 +87,34 @@ export const DiagnosticModal: React.FC = () => {
         (r.check_key === 'app_compat' || r.check_key === 'schema_version') &&
         r.details.includes('1.0.0') &&
         !r.details.includes('schema_version = 1.1.0') &&
-        !r.details.includes('1.1.0 (attendu')
+        !r.details.includes('1.1.0 (attendu') &&
+        !r.details.includes('schema_version = 1.1.1') &&
+        !r.details.includes('1.1.1 (attendu') &&
+        !r.details.includes('schema_version = 2.0.0') &&
+        !r.details.includes('schema_version=2.0.0')
     );
 
   const permissiveRlsRow = rows.find(
     (r) => r.check_key === 'permissive_rls_policies' && r.status === 'ERREUR'
   );
+
+  const prefixedTablesErrorRow = rows.find(
+    (r) => r.check_key === 'prefixed_tables' && r.status === 'ERREUR'
+  );
+
+  const compatViewsWarningRow = rows.find(
+    (r) => r.check_key === 'compat_views_present' && r.status === 'ATTENTION'
+  );
+
+  const resolveCheckLabel = (row: DiagnosticCheckRow): string => {
+    if (row.check_key === 'prefixed_tables') {
+      return t('diag_prefixed_tables_label');
+    }
+    if (row.check_key === 'compat_views_present') {
+      return t('diag_compat_views_present_label');
+    }
+    return row.check_label;
+  };
 
   const buildPlainTextReport = (): string => {
     const nowIso = new Date().toISOString();
@@ -112,12 +134,18 @@ export const DiagnosticModal: React.FC = () => {
       lines.push('[ATTENTION] Aucun résultat retourné par public.diagnostic_installation().');
     } else {
       for (const r of rows) {
-        lines.push(`[${r.status}] ${r.check_label} (${r.check_key}) : ${r.details}`);
+        lines.push(`[${r.status}] ${resolveCheckLabel(r)} (${r.check_key}) : ${r.details}`);
       }
       if (permissiveRlsRow) {
         lines.push(
           '[ALERTE SÉCURITÉ RLS] Des règles RLS permissives héritées (public/anon USING true) subsistent. Ré-exécutez 02_rls_hardening.sql et 05_rpc_admin_users.sql (ou dist/install.sql) pour les purger.'
         );
+      }
+      if (prefixedTablesErrorRow) {
+        lines.push(`[ERREUR PRÉFIXES] ${t('diag_prefixed_tables_error_hint')}`);
+      }
+      if (compatViewsWarningRow) {
+        lines.push(`[INFO VUES COMPATIBILITÉ] ${t('diag_compat_views_warning_hint')}`);
       }
       if (isSchema100) {
         lines.push(`[INFO] ${t('diag_schema_1_0_0_upgrade_hint')}`);
@@ -279,6 +307,22 @@ export const DiagnosticModal: React.FC = () => {
                   </p>
                 </div>
               )}
+              {prefixedTablesErrorRow && (
+                <div
+                  data-testid="diag-prefixed-tables-alert"
+                  className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-[11px] font-bold text-rose-800 dark:text-rose-200"
+                >
+                  {t('diag_prefixed_tables_error_hint')}
+                </div>
+              )}
+              {compatViewsWarningRow && (
+                <div
+                  data-testid="diag-compat-views-hint"
+                  className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] font-bold text-amber-800 dark:text-amber-200"
+                >
+                  {t('diag_compat_views_warning_hint')}
+                </div>
+              )}
               {isSchema100 && (
                 <div
                   data-testid="diag-schema-1-0-0-hint"
@@ -295,7 +339,7 @@ export const DiagnosticModal: React.FC = () => {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100">
-                      {item.check_label}
+                      {resolveCheckLabel(item)}
                     </span>
                     {renderStatusBadge(item.status)}
                   </div>

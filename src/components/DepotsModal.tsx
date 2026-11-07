@@ -1,5 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { tr } from '../i18n/dutchTranslator';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../services/unsavedChangesGuard';
 import { useApp } from '../context/AppContext';
 import {
   X,
@@ -152,6 +157,9 @@ export const DepotsModal: React.FC = () => {
     );
   }, [depots, searchQuery]);
 
+  const depotFormRef = useRef<HTMLFormElement | null>(null);
+  const depotNameInputRef = useRef<HTMLInputElement | null>(null);
+
   const resetForm = () => {
     setName('');
     setCode('');
@@ -192,7 +200,14 @@ export const DepotsModal: React.FC = () => {
     setNewZoneInput('');
     setErrorMessage(null);
     setIsFormOpen(true);
+    scrollToAndFocusForm(depotFormRef.current, depotNameInputRef.current);
   };
+
+  useEffect(() => {
+    if (depotsModalOpen && isFormOpen) {
+      scrollToAndFocusForm(depotFormRef.current, depotNameInputRef.current);
+    }
+  }, [depotsModalOpen, isFormOpen, editingDepotId]);
 
   const handleToggleStatus = async (d: Depot) => {
     if (!canDeactivateDepots && d.is_active !== false) {
@@ -214,8 +229,7 @@ export const DepotsModal: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performSaveDepot = async (): Promise<boolean> => {
     setErrorMessage(null);
     setSuccessMessage(null);
 
@@ -224,7 +238,7 @@ export const DepotsModal: React.FC = () => {
       setErrorMessage(
         tr(language, 'Le nom du magasin / dépôt est obligatoire.', 'Depot / store name is required.')
       );
-      return;
+      return false;
     }
 
     const selectedUser = users.find((u) => String(u.id) === String(managerId));
@@ -256,7 +270,7 @@ export const DepotsModal: React.FC = () => {
         setErrorMessage(
           tr(language, 'Veuillez sélectionner un Chauffeur / Responsable du véhicule avant d’associer des binômes.', 'Please select a driver before pairing binômes.')
         );
-        return;
+        return false;
       }
       if (selectedUser?.department && selectedUser.department !== 'Général') {
         const driverDept = selectedUser.department.toLowerCase().trim();
@@ -267,7 +281,7 @@ export const DepotsModal: React.FC = () => {
           setErrorMessage(
             tr(language, `Le binôme doit obligatoirement faire partie du même département que le Chauffeur (« ${selectedUser.department} »). Collaborateur non conforme : ${invalidBinomes.map((u) => u.name).join(', ')}.`, `Binôme must belong to the same department as the driver (${selectedUser.department}).`)
           );
-          return;
+          return false;
         }
       }
     }
@@ -297,18 +311,54 @@ export const DepotsModal: React.FC = () => {
 
     if (!result.success) {
       setErrorMessage(result.message);
-    } else {
-      setSuccessMessage(result.message);
-      resetForm();
-      setTimeout(() => setSuccessMessage(null), 6000);
-      if (managerChangedOnVehicle) {
-        setVehicleManagerChangeAuditPrompt({
-          depotName: cleanName,
-          oldManagerName,
-          newManagerName,
-        });
-      }
+      return false;
     }
+
+    setSuccessMessage(result.message);
+    resetForm();
+    setTimeout(() => setSuccessMessage(null), 6000);
+    if (managerChangedOnVehicle) {
+      setVehicleManagerChangeAuditPrompt({
+        depotName: cleanName,
+        oldManagerName,
+        newManagerName,
+      });
+    }
+    return true;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSaveDepot();
+  };
+
+  const isDepotFormDirty = Boolean(
+    depotsModalOpen &&
+      isFormOpen &&
+      (editingDepotId !== null || name.trim() || address.trim() || description.trim())
+  );
+
+  useRegisterUnsavedForm({
+    id: 'mobile-depots-modal',
+    isDirty: isDepotFormDirty,
+    label: editingDepotId
+      ? tr(language, `Modification du dépôt (${name || 'Dépôt'})`, `Editing depot (${name || 'Depot'})`, `Depot bewerken (${name || 'Depot'})`)
+      : tr(language, 'Nouveau Magasin / Dépôt', 'Create New Depot', 'Nieuw depot'),
+    onSave: performSaveDepot,
+    onDiscard: resetForm,
+  });
+
+  const handleRequestBackToDepots = () => {
+    requestGuardedNavigation(() => {
+      resetForm();
+    }, ['mobile-depots-modal']);
+  };
+
+  const handleRequestCloseModal = () => {
+    requestGuardedNavigation(() => {
+      resetForm();
+      setDepotsModalOpen(false);
+    }, ['mobile-depots-modal']);
   };
 
   // Trigger delete dialog
@@ -635,8 +685,8 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
       if (e.key === 'Escape' && depotsModalOpen) {
         if (depotToDelete) {
           setDepotToDelete(null);
-        } else if (editingDepotId) {
-          resetForm();
+        } else if (isFormOpen) {
+          handleRequestBackToDepots();
         } else {
           setDepotsModalOpen(false);
         }
@@ -644,7 +694,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [depotsModalOpen, depotToDelete, editingDepotId, setDepotsModalOpen]);
+  }, [depotsModalOpen, depotToDelete, isFormOpen, isDepotFormDirty]);
 
   if (!depotsModalOpen) return null;
 
@@ -652,7 +702,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setDepotsModalOpen(false);
+          handleRequestCloseModal();
         }
       }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/75 backdrop-blur-sm animate-fadeIn"
@@ -667,7 +717,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
               <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={handleRequestBackToDepots}
                   className="py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 font-black text-xs flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-2xs shrink-0"
                 >
                   <ArrowLeft className="w-4 h-4 stroke-[2.5]" />
@@ -687,10 +737,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
 
               <button
                 type="button"
-                onClick={() => {
-                  resetForm();
-                  setDepotsModalOpen(false);
-                }}
+                onClick={handleRequestCloseModal}
                 className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white transition cursor-pointer shrink-0"
                 title={t('common_close')}
               >
@@ -730,7 +777,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                   </button>
                 </div>
               ) : (
-                <form onSubmit={handleSubmit} className="space-y-3.5">
+                <form ref={depotFormRef} onSubmit={handleSubmit} className="space-y-3.5">
                   {/* Type de Dépôt : Fixe vs Véhicule */}
                   <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5">
                     <label className="text-[11px] font-black text-slate-700 dark:text-slate-300 block">
@@ -855,6 +902,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                           : tr(language, 'Nom du magasin / dépôt *', 'Store / Depot Name *')}
                       </label>
                       <input
+                        ref={depotNameInputRef}
                         type="text"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
@@ -1221,7 +1269,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                   <div className="sticky bottom-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xs py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2.5 z-20">
                     <button
                       type="button"
-                      onClick={resetForm}
+                      onClick={handleRequestBackToDepots}
                       className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-black text-xs hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                     >
                       {tr(language, 'Annuler', 'Cancel')}

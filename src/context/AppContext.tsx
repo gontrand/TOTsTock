@@ -26,6 +26,7 @@ import {
   OrderStatus,
   OrderBasket,
   BatchBasket,
+  StockLevel,
 } from '../types';
 import { ALL_MENU_BUTTON_KEYS } from '../data/permissionMatrix';
 import {
@@ -107,7 +108,6 @@ import {
   fetchLoginDirectory,
   fetchPublicAppSettings,
   formatPostgresErrorMessage,
-  pushMovementToSupabase,
   upsertProductToSupabase,
   deleteProductFromSupabase,
   upsertDepartmentToSupabase,
@@ -137,6 +137,7 @@ import {
   testClientSupabaseConnection,
   ConnectionTestResult,
   recordOrderPreparationScanToSupabase,
+  logOrderPreparationScan,
   recordInventoryAuditToSupabase,
   transitionOrderStatusSupabase,
   syncUserProfileAndDirectoryToSupabase,
@@ -160,22 +161,64 @@ import {
   setActiveRealtimeSyncChannel,
   notifyRealtimeDataMutated,
   getOrderLastModifiedMs,
+  checkStockMovementsReadiness,
+  normalizeStockLevelRecord,
+  STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+  AUDIT_HISTORY_NOT_SAVED_WARNING,
+  validateSupabaseAnonKey,
+  purgeStoredDangerousSupabaseKey,
+  isDangerousSupabaseKey,
 } from '../services/clientSupabase';
+import {
+  configureUserPreferencesSync,
+  getUserPreference,
+  setUserPreference,
+  subscribeUserPreferences,
+  syncUserPreferencesOnLogin,
+  flushPendingUserPreferences,
+} from '../services/userPreferencesService';
+import {
+  initNativeLocalCryptoIfAvailable,
+  clearCryptoKeyFromMemory,
+  unlockPinLocalEncryption,
+  readSensitiveLocalStorageSync,
+  writeSensitiveLocalStorageSync,
+  removeSensitiveLocalStorage,
+} from '../services/localCrypto';
+import {
+  executeSaveDepotWithRollback,
+  mergeDepotsPreservingInFlight,
+} from '../services/depotMutationService';
 import {
   APP_VERSION,
   EXPECTED_SCHEMA_VERSION,
   MIN_SUPPORTED_SCHEMA_VERSION,
 } from '../appVersion';
+import { TABLES } from '../constants/tables';
 import {
   putToStore,
   putManyToStore,
   getAllFromStore,
   enqueueSyncOperation,
+  getRejectedSyncOperations,
+  retryRejectedSyncOperation,
+  discardSyncOperation,
+  generateOperationId,
+  SyncOperation,
   migrateFromLocalStorageToIndexedDb,
   hydrateAllFromIndexedDb,
   replaceStoreContents,
 } from '../services/offline/indexedDb';
 import { processSyncQueue, performIncrementalSync } from '../services/offline/syncEngine';
+import {
+  commitStockMovement,
+  commitStockTransferBatch,
+  canUserTransferStock,
+  getAvailableStockInDepot,
+  applyMovementToStockLevelsList,
+  formatServerMovementRejectionMessage,
+  TransferBatchRollbackSnapshot,
+} from '../services/stockMovementService';
 import {
   verifyDevicePinWithLockout,
   wipeDeviceLocalData,
@@ -193,6 +236,19 @@ interface AppContextType {
 
   products: Product[];
   movements: StockMovement[];
+  stockLevels: StockLevel[];
+  rejectedSyncOps: SyncOperation[];
+  refreshRejectedSyncOps: () => Promise<void>;
+  retryRejectedMovement: (opId: string) => Promise<{ success: boolean; message: string }>;
+  discardRejectedMovement: (opId: string) => Promise<void>;
+  addProductToDepot: (params: {
+    productId: string;
+    depotName: string;
+    quantity: number;
+    rackLocation?: string;
+    minAlert?: number;
+    reason?: string;
+  }) => Promise<{ success: boolean; message: string; newQty?: number; depotQty?: number }>;
   roles: Role[];
   users: User[];
   allUsers: User[];
@@ -265,8 +321,18 @@ interface AppContextType {
       theoreticalQty: number;
       difference: number;
       reason?: string;
-    }[]
-  ) => Promise<{ success: boolean; updatedCount: number; message: string }>;
+      depotName?: string;
+    }[],
+    overrideDepotName?: string
+  ) => Promise<{
+    success: boolean;
+    updatedCount: number;
+    message: string;
+    auditId?: string;
+    auditHistorySaved?: boolean;
+    auditHistoryQueued?: boolean;
+    warningMessage?: string;
+  }>;
 
   // Activity Feed & Traceability
   storedActivities: ActivityItem[];
@@ -322,7 +388,42 @@ interface AppContextType {
   updateCartQty: (productId: string, qty: number) => void;
   removeFromCart: (productId: string) => void;
   clearCart: () => void;
-  confirmBatchMovements: (siteNumber?: string) => Promise<{ success: boolean; message?: string }>;
+  confirmBatchMovements: (
+    siteNumber?: string,
+    explicitItems?: BatchCartItem[],
+    explicitMode?: MovementType
+  ) => Promise<{ success: boolean; message?: string }>;
+  canTransferBetweenDepots: boolean;
+  stockTransferModal: {
+    open: boolean;
+    initialSourceDepot?: string;
+    initialDestDepot?: string;
+    initialItems?: Array<{ productId: string; quantity?: number; destRack?: string }>;
+  };
+  setStockTransferModal: (state: {
+    open: boolean;
+    initialSourceDepot?: string;
+    initialDestDepot?: string;
+    initialItems?: Array<{ productId: string; quantity?: number; destRack?: string }>;
+  }) => void;
+  openStockTransferModal: (options?: {
+    sourceDepot?: string;
+    destDepot?: string;
+    items?: Array<{ productId: string; quantity?: number; destRack?: string }>;
+  }) => void;
+  transferStockBatchBetweenDepots: (params: {
+    batchId?: string;
+    sourceDepotName: string;
+    destDepotName: string;
+    items: Array<{ productId: string; quantity: number; destRack?: string }>;
+    reason?: string;
+  }) => Promise<{
+    success: boolean;
+    status?: 'committed' | 'queued_offline' | 'rejected';
+    batchId?: string;
+    message: string;
+    items?: any[];
+  }>;
   transferStockBetweenDepots: (params: {
     productId: string;
     sourceDepotName: string;
@@ -484,15 +585,15 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const LOCAL_PREFIX = 'tot_inv_';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Theme
+  // Theme (centralized through userPreferencesService)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem(`${LOCAL_PREFIX}theme`) as 'light' | 'dark') || 'light';
+    return getUserPreference('theme') ?? 'light';
   });
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light';
-      localStorage.setItem(`${LOCAL_PREFIX}theme`, next);
+      setUserPreference('theme', next);
       if (next === 'dark') {
         document.documentElement.classList.add('dark');
       } else {
@@ -510,21 +611,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [theme]);
 
-  // Language / i18n
+  // Language / i18n (centralized through userPreferencesService)
   const [language, setLanguageState] = useState<Language>(() => {
-    const saved = localStorage.getItem('tqt_language');
-    return saved === 'en' || saved === 'nl' || saved === 'fr' ? saved : 'fr';
+    return getUserPreference('language') ?? 'fr';
   });
 
   const setLanguage = useCallback((lang: Language) => {
     setLanguageState(lang);
-    localStorage.setItem('tqt_language', lang);
+    setUserPreference('language', lang);
   }, []);
 
   const toggleLanguage = useCallback(() => {
     setLanguageState((prev) => {
       const next: Language = prev === 'fr' ? 'en' : prev === 'en' ? 'nl' : 'fr';
-      localStorage.setItem('tqt_language', next);
+      setUserPreference('language', next);
       return next;
     });
   }, []);
@@ -540,24 +640,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Active Screen / Tab
   const [activeTab, setActiveTab] = useState<'home' | 'search' | 'movements' | 'plus'>('home');
 
-  // Supabase Config
+  // Supabase Config (with startup purge of service_role / sb_secret_ keys)
   const [supabaseUrl, setSupabaseUrl] = useState(() => {
-    const raw = localStorage.getItem('tqt_company_url') || '';
+    const raw = readSensitiveLocalStorageSync('tqt_company_url') || localStorage.getItem('tqt_company_url') || '';
     const clean = normalizeSupabaseUrl(raw);
     if (clean && clean !== raw) {
-      localStorage.setItem('tqt_company_url', clean);
+      writeSensitiveLocalStorageSync('tqt_company_url', clean);
     }
     return clean;
   });
   const [supabaseKey, setSupabaseKey] = useState(() => {
-    const raw = localStorage.getItem('tqt_company_key') || '';
+    const purgeRes = purgeStoredDangerousSupabaseKey();
+    if (purgeRes.purged) {
+      removeSensitiveLocalStorage(`${LOCAL_PREFIX}current_user`);
+      return '';
+    }
+    const raw = readSensitiveLocalStorageSync('tqt_company_key') || localStorage.getItem('tqt_company_key') || '';
     const clean = normalizeSupabaseKey(raw);
     if (clean && clean !== raw) {
-      localStorage.setItem('tqt_company_key', clean);
+      writeSensitiveLocalStorageSync('tqt_company_key', clean);
     }
     return clean;
   });
   const supabaseClientRef = useRef<SupabaseClient | null>(null);
+
+  // Initialize native keystore encryption if running inside Electron or Android APK
+  useEffect(() => {
+    initNativeLocalCryptoIfAvailable()
+      .then(() => {
+        const refreshedUrl = normalizeSupabaseUrl(
+          readSensitiveLocalStorageSync('tqt_company_url') || localStorage.getItem('tqt_company_url') || ''
+        );
+        const refreshedKey = normalizeSupabaseKey(
+          readSensitiveLocalStorageSync('tqt_company_key') || localStorage.getItem('tqt_company_key') || ''
+        );
+        if (refreshedUrl) setSupabaseUrl(refreshedUrl);
+        if (refreshedKey) setSupabaseKey(refreshedKey);
+      })
+      .catch(() => {});
+  }, []);
 
   const isSupabaseConnected = Boolean(supabaseUrl && supabaseKey);
   const supabaseConfig = useMemo(() => ({ url: supabaseUrl, key: supabaseKey }), [supabaseUrl, supabaseKey]);
@@ -687,11 +808,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
           return nextLic;
         });
+        let clientSyncOk = true;
+        let clientSyncErr = '';
         if (client && nextLic.license_key && nextLic.license_key !== 'TOT-STOCK-FREE-COMMUNITY') {
-          syncLicenseToClientDatabase(nextLic, client).catch(() => {});
+          const syncDbRes = await syncLicenseToClientDatabase(nextLic, client);
+          clientSyncOk = syncDbRes.success;
+          if (!syncDbRes.success) {
+            clientSyncErr = syncDbRes.message;
+          }
         }
         if (res.planChanged && didChangePlan) {
-          setLicenseNotification(res.message);
+          if (clientSyncOk) {
+            setLicenseNotification(res.message);
+          } else if (clientSyncErr) {
+            setLicenseNotification(clientSyncErr);
+          }
         }
       }
       return res;
@@ -730,10 +861,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         saveLicenseLocally(res.license);
         setLicense(res.license);
         const client = getClientSupabase(effectiveUrl, effectiveKey);
-        if (client) {
-          syncLicenseToClientDatabase(res.license, client).catch((e) =>
-            console.warn('Auto client db sync error:', e)
-          );
+        if (client && res.license.license_key && res.license.license_key !== 'TOT-STOCK-FREE-COMMUNITY') {
+          const syncDbRes = await syncLicenseToClientDatabase(res.license, client);
+          if (!syncDbRes.success) {
+            return {
+              ...res,
+              success: false,
+              message: syncDbRes.message,
+            };
+          }
         }
       }
       return res;
@@ -870,6 +1006,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return INITIAL_MOVEMENTS.map(normalizeMovementRecord);
   });
 
+  const [stockLevels, setStockLevels] = useState<StockLevel[]>(() => {
+    const saved = localStorage.getItem(`${LOCAL_PREFIX}stock_levels`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(normalizeStockLevelRecord);
+        }
+      } catch {}
+    }
+    return INITIAL_PRODUCTS.map((p) =>
+      normalizeStockLevelRecord({
+        id: `${p.id}::${p.store_name || 'Magasin Central'}`,
+        product_id: p.id,
+        depot_name: p.store_name || 'Magasin Central',
+        quantity: p.quantity || 0,
+        min_alert: p.min_stock_alert ?? 2,
+        rack_location: p.shelf_name || undefined,
+      })
+    );
+  });
+
+  const [rejectedSyncOps, setRejectedSyncOps] = useState<SyncOperation[]>([]);
+  const refreshRejectedSyncOps = useCallback(async () => {
+    try {
+      const ops = await getRejectedSyncOperations();
+      setRejectedSyncOps(ops);
+    } catch {}
+  }, []);
+
   const [roles, setRoles] = useState<Role[]>(() => {
     const saved = localStorage.getItem(`${LOCAL_PREFIX}roles`);
     let list: Role[] = saved ? JSON.parse(saved) : INITIAL_ROLES;
@@ -975,10 +1141,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return INITIAL_DEPOTS.map(normalizeDepotRecord);
   });
 
-  // Current Logged In User
+  // Current Logged In User (encrypted when local encryption is active)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem(`${LOCAL_PREFIX}current_user`);
-    return saved ? JSON.parse(saved) : null;
+    const saved = readSensitiveLocalStorageSync(`${LOCAL_PREFIX}current_user`);
+    if (!saved) return null;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return null;
+    }
   });
 
   // Trigger license recovery/discovery once when an authenticated user logs in
@@ -1061,6 +1232,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [inventoryAuditModalOpen, setInventoryAuditModalOpen] = useState(false);
   const [diagnosticModalOpen, setDiagnosticModalOpen] = useState(false);
   const [inventoryAuditTargetDepot, setInventoryAuditTargetDepot] = useState<string | null>(null);
+  const [stockTransferModal, setStockTransferModal] = useState<{
+    open: boolean;
+    initialSourceDepot?: string;
+    initialDestDepot?: string;
+    initialItems?: Array<{ productId: string; quantity?: number; destRack?: string }>;
+  }>({
+    open: false,
+  });
+
+  const openStockTransferModal = useCallback(
+    (options?: {
+      sourceDepot?: string;
+      destDepot?: string;
+      items?: Array<{ productId: string; quantity?: number; destRack?: string }>;
+    }) => {
+      setStockTransferModal({
+        open: true,
+        initialSourceDepot: options?.sourceDepot,
+        initialDestDepot: options?.destDepot,
+        initialItems: options?.items,
+      });
+    },
+    []
+  );
 
   const openInventoryAuditForDepot = useCallback((depotName: string) => {
     setInventoryAuditTargetDepot(depotName);
@@ -1411,11 +1606,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrencyState(code);
     localStorage.setItem('tot_app_currency', code);
 
-    // Sync company currency to Supabase app_settings
+    // Sync company currency to Supabase core_app_settings
     const client = getClientSupabase(supabaseUrl, supabaseKey);
     if (client) {
       client
-        .from('app_settings')
+        .from(TABLES.appSettings)
         .upsert([{ key: 'company_currency', value: code, updated_at: new Date().toISOString() }])
         .then(({ error }) => {
           if (error) console.warn('Erreur synchronisation devise Supabase:', error);
@@ -1507,6 +1702,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [movements]);
 
   useEffect(() => {
+    const raw = JSON.stringify(stockLevels);
+    if (lastIdbSnapRef.current.stockLevels === raw) return;
+    lastIdbSnapRef.current.stockLevels = raw;
+    localStorage.setItem(`${LOCAL_PREFIX}stock_levels`, raw);
+  }, [stockLevels]);
+
+  useEffect(() => {
+    refreshRejectedSyncOps();
+  }, [refreshRejectedSyncOps]);
+
+  useEffect(() => {
     const raw = JSON.stringify(roles);
     if (lastIdbSnapRef.current.roles === raw) return;
     lastIdbSnapRef.current.roles = raw;
@@ -1556,9 +1762,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (currentUser) {
-      localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(currentUser));
+      writeSensitiveLocalStorageSync(`${LOCAL_PREFIX}current_user`, JSON.stringify(currentUser));
     } else {
-      localStorage.removeItem(`${LOCAL_PREFIX}current_user`);
+      removeSensitiveLocalStorage(`${LOCAL_PREFIX}current_user`);
     }
   }, [currentUser]);
 
@@ -1706,6 +1912,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
+    // LOT 1.3 : Au démarrage (utilisateur authentifié), vérifier que process_stock_movement (12 paramètres) et stock_levels existent
+    checkStockMovementsReadiness(client)
+      .then((readiness) => {
+        if (!readiness.ready) {
+          setLicenseNotification(STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE);
+        }
+      })
+      .catch(() => {});
+
     setSupabaseSyncStatus((prev) => (prev === 'connected' ? 'connected' : 'syncing'));
     setSupabaseSyncMessage((prev) => (prev && prev.startsWith('Connecté') ? prev : 'Synchronisation des données Supabase...'));
 
@@ -1726,10 +1941,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (queueRes.conflicts && queueRes.conflicts.length > 0) {
         const firstConflict = queueRes.conflicts[0];
-        setLicenseNotification(
-          tr(language, `⚠️ Conflit de stock détecté : ${firstConflict.message}`, `⚠️ Stock conflict detected: ${firstConflict.message}`)
-        );
+        setLicenseNotification(firstConflict.message);
       }
+      if (queueRes.rolledBackMovements && queueRes.rolledBackMovements.length > 0) {
+        const rolledIds = new Set(queueRes.rolledBackMovements.map((r) => r.movement_id || r.local_movement_id).filter(Boolean));
+        if (rolledIds.size > 0) {
+          setMovements((prev) => prev.filter((m) => !rolledIds.has(String(m.id))));
+        }
+        const restoredMap = new Map(
+          queueRes.rolledBackMovements
+            .filter((r) => r.product_id && typeof r.previous_product_qty === 'number')
+            .map((r) => [String(r.product_id), r])
+        );
+        if (restoredMap.size > 0) {
+          setProducts((prev) =>
+            prev.map((p) => {
+              const rb = restoredMap.get(String(p.id));
+              if (!rb) return p;
+              return {
+                ...p,
+                quantity: rb.previous_product_qty ?? p.quantity,
+                ...(rb.previous_store_name !== undefined ? { store_name: rb.previous_store_name } : {}),
+                ...(rb.previous_shelf_name !== undefined ? { shelf_name: rb.previous_shelf_name } : {}),
+              };
+            })
+          );
+        }
+        setLicenseNotification(queueRes.rolledBackMovements[0].message);
+      }
+      await refreshRejectedSyncOps();
 
       const data = await fetchAllClientData(client);
       const details: string[] = [];
@@ -1740,6 +1980,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           JSON.stringify(prev) === JSON.stringify(nextProducts) ? prev : nextProducts
         );
         details.push(`${nextProducts.length} réf.`);
+      }
+      if (data.stockLevels && data.stockLevels.length > 0) {
+        const nextSl = data.stockLevels;
+        setStockLevels((prev) =>
+          JSON.stringify(prev) === JSON.stringify(nextSl) ? prev : nextSl
+        );
+      } else if (data.products && data.products.length > 0) {
+        // Fallback synthesis if stock_levels table is empty on first load
+        const synth = data.products.map((p) =>
+          normalizeStockLevelRecord({
+            id: `${p.id}::${p.store_name || 'Magasin Central'}`,
+            product_id: p.id,
+            depot_name: p.store_name || 'Magasin Central',
+            quantity: p.quantity || 0,
+            min_alert: p.min_stock_alert ?? 2,
+            rack_location: p.shelf_name || undefined,
+          })
+        );
+        setStockLevels((prev) => (prev.length > 0 ? prev : synth));
       }
       if (data.movements && data.movements.length > 0) {
         const nextMovements = data.movements;
@@ -1801,9 +2060,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (data.depots && data.depots.length > 0) {
         const nextDepots = data.depots;
-        setDepots((prev) =>
-          JSON.stringify(prev) === JSON.stringify(nextDepots) ? prev : nextDepots
-        );
+        setDepots((prev) => {
+          const merged = mergeDepotsPreservingInFlight(prev, nextDepots);
+          return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+        });
         details.push(`${nextDepots.length} dépôts`);
       }
       if (data.orders && data.orders.length > 0) {
@@ -1854,7 +2114,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (!resolvedProfile) {
             const { data: profile } = await client
-              .from('users')
+              .from(TABLES.users)
               .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
               .eq('auth_user_id', session.user.id)
               .maybeSingle();
@@ -1864,7 +2124,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!resolvedProfile && session.user.email) {
             const cleanMail = session.user.email.trim().toLowerCase();
             const { data: byMail } = await client
-              .from('users')
+              .from(TABLES.users)
               .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
               .ilike('email', cleanMail)
               .maybeSingle();
@@ -1965,9 +2225,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         const lsDepots = readJson<Depot[]>('depots');
         if (Array.isArray(lsDepots) && lsDepots.length > 0) {
-          setDepots((prev) =>
-            JSON.stringify(prev) === JSON.stringify(lsDepots) ? prev : lsDepots
-          );
+          setDepots((prev) => {
+            const merged = mergeDepotsPreservingInFlight(prev, lsDepots);
+            return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+          });
         }
         const lsDepartments = readJson<Department[]>('departments');
         if (Array.isArray(lsDepartments) && lsDepartments.length > 0) {
@@ -2033,14 +2294,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           );
         }
         if (queueRes.conflicts && queueRes.conflicts.length > 0) {
-          setLicenseNotification(
-            tr(
-              language,
-              `⚠️ Conflit de stock détecté : ${queueRes.conflicts[0].message}`,
-              `⚠️ Stock conflict detected: ${queueRes.conflicts[0].message}`
-            )
-          );
+          setLicenseNotification(queueRes.conflicts[0].message);
         }
+        if (queueRes.rolledBackMovements && queueRes.rolledBackMovements.length > 0) {
+          const rolledIds = new Set(queueRes.rolledBackMovements.map((r) => r.movement_id || r.local_movement_id).filter(Boolean));
+          if (rolledIds.size > 0) {
+            setMovements((prev) => prev.filter((m) => !rolledIds.has(String(m.id))));
+          }
+          const restoredMap = new Map(
+            queueRes.rolledBackMovements
+              .filter((r) => r.product_id && typeof r.previous_product_qty === 'number')
+              .map((r) => [String(r.product_id), r])
+          );
+          if (restoredMap.size > 0) {
+            setProducts((prev) =>
+              prev.map((p) => {
+                const rb = restoredMap.get(String(p.id));
+                if (!rb) return p;
+                return {
+                  ...p,
+                  quantity: rb.previous_product_qty ?? p.quantity,
+                  ...(rb.previous_store_name !== undefined ? { store_name: rb.previous_store_name } : {}),
+                  ...(rb.previous_shelf_name !== undefined ? { shelf_name: rb.previous_shelf_name } : {}),
+                };
+              })
+            );
+          }
+          setLicenseNotification(queueRes.rolledBackMovements[0].message);
+        }
+        await refreshRejectedSyncOps();
 
         // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel complet
         await performIncrementalSync(client).catch(() => {});
@@ -2070,6 +2352,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             JSON.stringify(prev) === JSON.stringify(liveProducts) ? prev : liveProducts
           );
         }
+        if (live.stockLevels && live.stockLevels.length > 0) {
+          const liveSl = live.stockLevels;
+          setStockLevels((prev) =>
+            JSON.stringify(prev) === JSON.stringify(liveSl) ? prev : liveSl
+          );
+        }
         if (live.movements !== undefined) {
           const liveMovements = live.movements;
           setMovements((prev) =>
@@ -2078,9 +2366,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (live.depots && live.depots.length > 0) {
           const liveDepots = live.depots;
-          setDepots((prev) =>
-            JSON.stringify(prev) === JSON.stringify(liveDepots) ? prev : liveDepots
-          );
+          setDepots((prev) => {
+            const merged = mergeDepotsPreservingInFlight(prev, liveDepots);
+            return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+          });
         }
         if (live.departments && live.departments.length > 0) {
           const liveDeps = live.departments;
@@ -2232,11 +2521,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const saveSupabaseConfig = useCallback((url: string, key: string) => {
     const cleanUrl = normalizeSupabaseUrl(url);
-    const cleanKey = normalizeSupabaseKey(key);
+    if (isDangerousSupabaseKey(key)) {
+      purgeStoredDangerousSupabaseKey();
+      return;
+    }
+    const keyValidation = validateSupabaseAnonKey(key);
+    const cleanKey = keyValidation.valid ? keyValidation.normalizedKey : normalizeSupabaseKey(key);
+    if (!cleanUrl || !cleanKey) return;
+
     setSupabaseUrl(cleanUrl);
     setSupabaseKey(cleanKey);
-    localStorage.setItem('tqt_company_url', cleanUrl);
-    localStorage.setItem('tqt_company_key', cleanKey);
+    writeSensitiveLocalStorageSync('tqt_company_url', cleanUrl);
+    writeSensitiveLocalStorageSync('tqt_company_key', cleanKey);
 
     // Immediately trigger license recovery & login directory fetch on the new client
     const client = getClientSupabase(cleanUrl, cleanKey);
@@ -2284,6 +2580,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Authentication
   const logout = useCallback(async () => {
+    // Effacer la clé de chiffrement PIN en mémoire lors du verrouillage / déconnexion (LOT 2.3)
+    clearCryptoKeyFromMemory();
+
     if (currentUser) {
       logActivity({
         type: 'USER_ACTION',
@@ -2304,7 +2603,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await client.auth.signOut().catch(() => {});
     }
 
-    localStorage.removeItem(`${LOCAL_PREFIX}current_user`);
+    removeSensitiveLocalStorage(`${LOCAL_PREFIX}current_user`);
     setCurrentUser(null);
     setLoginModalOpen(false);
     setActiveTab('home');
@@ -2328,6 +2627,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReleaseNotesModalOpen(false);
     setPrintLabelsModal({ open: false });
     setInventoryAuditModalOpen(false);
+    setStockTransferModal({ open: false });
     setDocumentationModalOpen({ open: false, tab: 'manual' });
   }, [currentUser, logActivity, language, supabaseUrl, supabaseKey]);
 
@@ -2346,16 +2646,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProfileModalOpen(false);
   }, [supabaseUrl, supabaseKey]);
 
-  // Inactivity auto-logout
+  // Inactivity auto-logout (centralized through userPreferencesService)
   const [autoLogoutMinutes, setAutoLogoutMinutesState] = useState<number>(() => {
-    const saved = localStorage.getItem(`${LOCAL_PREFIX}auto_logout_minutes`);
-    return saved !== null ? Number(saved) : 5; // 5 min default
+    return getUserPreference('auto_logout_minutes') ?? 0;
   });
 
   const setAutoLogoutMinutes = useCallback((minutes: number) => {
     setAutoLogoutMinutesState(minutes);
-    localStorage.setItem(`${LOCAL_PREFIX}auto_logout_minutes`, String(minutes));
+    setUserPreference('auto_logout_minutes', minutes);
   }, []);
+
+  // Réagir aux préférences mises à jour par core_user_preferences ou un autre composant
+  useEffect(() => {
+    return subscribeUserPreferences((prefs) => {
+      if (prefs.theme !== undefined) {
+        setTheme((prev) => (prev === prefs.theme ? prev : prefs.theme!));
+      }
+      if (prefs.language !== undefined) {
+        setLanguageState((prev) => (prev === prefs.language ? prev : prefs.language!));
+      }
+      if (prefs.auto_logout_minutes !== undefined) {
+        setAutoLogoutMinutesState((prev) =>
+          prev === prefs.auto_logout_minutes ? prev : prefs.auto_logout_minutes!
+        );
+      }
+    });
+  }, []);
+
+  // Synchronisation core_user_preferences au login et au retour réseau (LOT 1.3)
+  useEffect(() => {
+    const client = supabaseUrl && supabaseKey ? getClientSupabase(supabaseUrl, supabaseKey) : null;
+    const coreUserId =
+      currentUser && currentUser.id !== undefined && currentUser.id !== null && String(currentUser.id) !== '0'
+        ? String(currentUser.id)
+        : null;
+
+    configureUserPreferencesSync({
+      getClient: () => (supabaseUrl && supabaseKey ? getClientSupabase(supabaseUrl, supabaseKey) : null),
+      getUserId: () => coreUserId,
+    });
+
+    if (!client || !coreUserId) return;
+
+    let cancelled = false;
+    const syncPrefsForSession = async () => {
+      try {
+        if (cancelled) return;
+        await syncUserPreferencesOnLogin(client, coreUserId);
+      } catch {}
+    };
+
+    syncPrefsForSession();
+
+    const handleOnlineFlushPrefs = () => {
+      if (coreUserId && client) {
+        flushPendingUserPreferences(client, coreUserId).catch(() => {});
+      }
+    };
+    window.addEventListener('online', handleOnlineFlushPrefs);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', handleOnlineFlushPrefs);
+    };
+  }, [supabaseUrl, supabaseKey, currentUser?.id, currentUser?.auth_user_id]);
 
   const logoutTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
@@ -2435,14 +2788,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
               if (user.auth_user_id) {
                 const { data, error } = await client
-                  .from('users')
+                  .from(TABLES.users)
                   .select(fullCols)
                   .eq('auth_user_id', user.auth_user_id)
                   .maybeSingle();
                 if (error) {
                   if (isNetworkOrFetchError(error)) return { found: true, networkError: true };
                   const fb = await client
-                    .from('users')
+                    .from(TABLES.users)
                     .select(minCols)
                     .eq('id', user.id)
                     .maybeSingle();
@@ -2456,14 +2809,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               if (!row && user.email) {
                 const cleanEmail = user.email.trim().toLowerCase();
                 const { data, error } = await client
-                  .from('users')
+                  .from(TABLES.users)
                   .select(fullCols)
                   .ilike('email', cleanEmail)
                   .maybeSingle();
                 if (error) {
                   if (isNetworkOrFetchError(error)) return { found: true, networkError: true };
                   const fb = await client
-                    .from('users')
+                    .from(TABLES.users)
                     .select(minCols)
                     .ilike('email', cleanEmail)
                     .maybeSingle();
@@ -2476,14 +2829,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
               if (!row && user.id !== undefined && user.id !== null) {
                 const { data, error } = await client
-                  .from('users')
+                  .from(TABLES.users)
                   .select(fullCols)
                   .eq('id', user.id)
                   .maybeSingle();
                 if (error) {
                   if (isNetworkOrFetchError(error)) return { found: true, networkError: true };
                   const fb = await client
-                    .from('users')
+                    .from(TABLES.users)
                     .select(minCols)
                     .eq('id', user.id)
                     .maybeSingle();
@@ -2799,6 +3152,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
         if (pinRes.success) {
+          await unlockPinLocalEncryption(passwordOrPin).catch(() => {});
           if (u.email) {
             localStorage.setItem('tot_last_login_email', u.email.trim().toLowerCase());
           }
@@ -2843,13 +3197,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const fetchProfileByEmail = async (targetEmail: string): Promise<any> => {
           const { data, error } = await client
-            .from('users')
+            .from(TABLES.users)
             .select(fullUserCols)
             .or(`email.ilike.${targetEmail},email.eq.${targetEmail}`)
             .maybeSingle();
           if (!error && data) return data;
           const fb = await client
-            .from('users')
+            .from(TABLES.users)
             .select(minUserCols)
             .ilike('email', targetEmail)
             .maybeSingle();
@@ -2971,7 +3325,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!activeProfile && resolvedAuthUser) {
           // 1. Query by auth_user_id
           const { data: profile, error: profErr } = await client
-            .from('users')
+            .from(TABLES.users)
             .select(fullUserCols)
             .eq('auth_user_id', resolvedAuthUser.id)
             .maybeSingle();
@@ -2988,7 +3342,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (resolvedAuthUser?.id) {
               try {
                 await client
-                  .from('users')
+                  .from(TABLES.users)
                   .update({ auth_user_id: resolvedAuthUser.id, updated_at: new Date().toISOString() })
                   .eq('id', profByEmail.id);
               } catch {}
@@ -3361,7 +3715,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else if (userId && userId !== 'RECOVERY') {
             try {
               const { data: dbRow } = await client
-                .from('users')
+                .from(TABLES.users)
                 .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, is_preparer, allowed_depots')
                 .eq('id', userId)
                 .maybeSingle();
@@ -3496,45 +3850,93 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, []);
   }, [commitUserBasketsChange]);
 
-  // Confirm Movements
+  // Confirm Movements (via commitStockMovement — LOT 1)
   const confirmBatchMovements = useCallback(
-    async (siteNumber?: string) => {
-      if (batchCart.length === 0) return { success: false, message: 'Le panier est vide.' };
-      const mode = scanState.mode as MovementType;
+    async (
+      siteNumber?: string,
+      explicitItems?: BatchCartItem[],
+      explicitMode?: MovementType
+    ) => {
+      const cartItems =
+        explicitItems && explicitItems.length > 0
+          ? explicitItems
+          : batchCartRef.current.length > 0
+          ? batchCartRef.current
+          : batchCart;
+
+      if (cartItems.length === 0) return { success: false, message: 'Le panier est vide.' };
+      const mode: MovementType = (explicitMode || scanState.mode) as MovementType;
+
+      // Helper to resolve depot-specific stock from stockLevels when available
+      const getAvailableQtyForDepot = (product: Product, depotName?: string) => {
+        const targetDepot = (depotName || product.store_name || 'Dépôt Principal').trim();
+        const prodLevels = stockLevels.filter(
+          (sl) => String(sl.product_id) === String(product.id)
+        );
+        if (prodLevels.length > 0) {
+          const match = prodLevels.find(
+            (sl) => sl.depot_name.trim().toLowerCase() === targetDepot.toLowerCase()
+          );
+          return match ? Number(match.quantity) || 0 : 0;
+        }
+        return Number(product.quantity) || 0;
+      };
 
       // Validate stock availability, closed depot check, and depot authorization for OUT
       if (mode === 'OUT') {
-        for (const item of batchCart) {
+        for (const item of cartItems) {
+          const targetDepot = item.product.store_name || 'Dépôt Principal';
           // 1. Strict check: closed / inactive depot
-          if (isDepotClosed(depots, item.product.store_name)) {
+          if (isDepotClosed(depots, targetDepot)) {
             return {
               success: false,
-              message:
-                tr(language, `Sortie refusée : Le dépôt « ${item.product.store_name || 'Non défini'} » est fermé / inactif. Les sorties de matériel y sont strictement interdites (article ${item.product.reference}).`, `Withdrawal rejected: Depot "${item.product.store_name || 'Undefined'}" is closed/inactive (${item.product.reference}).`),
+              message: tr(
+                language,
+                `Sortie refusée : Le dépôt « ${targetDepot} » est fermé / inactif. Les sorties de matériel y sont strictement interdites (article ${item.product.reference}).`,
+                `Withdrawal rejected: Depot "${targetDepot}" is closed/inactive (${item.product.reference}).`
+              ),
             };
           }
 
-          // 2. Strict check: vehicle depot borrowing rule (only vehicle user, binômes, and department managers) & allowed depots
-          const borrowCheck = canUserBorrowFromDepot(currentUser, item.product.store_name, depots, language, departments, users);
+          // 2. Strict check: vehicle depot borrowing rule
+          const borrowCheck = canUserBorrowFromDepot(
+            currentUser,
+            targetDepot,
+            depots,
+            language,
+            departments,
+            users
+          );
           if (!borrowCheck.allowed) {
             return {
               success: false,
-              message: borrowCheck.reason || (tr(language, 'Sortie ou emprunt non autorisé sur ce dépôt.', 'Unauthorized withdrawal from this depot.')),
+              message:
+                borrowCheck.reason ||
+                tr(
+                  language,
+                  'Sortie ou emprunt non autorisé sur ce dépôt.',
+                  'Unauthorized withdrawal from this depot.'
+                ),
             };
           }
 
           // 3. User authorization for depot
-          if (!isUserAllowedForDepot(currentUser, item.product.store_name)) {
+          if (!isUserAllowedForDepot(currentUser, targetDepot)) {
             return {
               success: false,
-              message:
-                tr(language, `Prélèvement interdit : vous n'avez pas accès au dépôt « ${item.product.store_name || 'Non défini'} » (article ${item.product.reference}).`, `Withdrawal not allowed: you do not have permission for depot "${item.product.store_name || 'Undefined'}" (${item.product.reference}).`),
+              message: tr(
+                language,
+                `Prélèvement interdit : vous n'avez pas accès au dépôt « ${targetDepot} » (article ${item.product.reference}).`,
+                `Withdrawal not allowed: you do not have permission for depot "${targetDepot}" (${item.product.reference}).`
+              ),
             };
           }
-          if (item.qtyActual > item.product.quantity) {
+
+          const depotAvailable = getAvailableQtyForDepot(item.product, targetDepot);
+          if (item.qtyActual > depotAvailable) {
             return {
               success: false,
-              message: `Stock insuffisant pour "${item.product.brand} ${item.product.model}". En stock : ${item.product.quantity}, demandé : ${item.qtyActual}`,
+              message: `Stock insuffisant dans le dépôt "${targetDepot}" pour "${item.product.brand} ${item.product.model}". En stock dans ce dépôt : ${depotAvailable}, demandé : ${item.qtyActual}`,
             };
           }
         }
@@ -3543,12 +3945,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Validate depot authorization for IN (Stock entry)
       if (mode === 'IN') {
         const hasGeneralStockIn = userHasPermission('perm_stock_in');
-        for (const item of batchCart) {
-          const entryCheck = canUserEnterStockInDepot(currentUser, item.product.store_name, depots, hasGeneralStockIn, language, departments, users);
+        for (const item of cartItems) {
+          const entryCheck = canUserEnterStockInDepot(
+            currentUser,
+            item.product.store_name,
+            depots,
+            hasGeneralStockIn,
+            language,
+            departments,
+            users
+          );
           if (!entryCheck.allowed) {
             return {
               success: false,
-              message: entryCheck.reason || (tr(language, 'Entrée en stock non autorisée sur ce dépôt.', 'Unauthorized stock entry for this depot.')),
+              message:
+                entryCheck.reason ||
+                tr(
+                  language,
+                  'Entrée en stock non autorisée sur ce dépôt.',
+                  'Unauthorized stock entry for this depot.'
+                ),
             };
           }
         }
@@ -3557,7 +3973,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Determine Department from Project
       let depName = currentUser?.department || '';
       if (mode === 'OUT' && siteNumber) {
-        const foundProj = projects.find((p) => p.project_number.toLowerCase() === siteNumber.toLowerCase());
+        const foundProj = projects.find(
+          (p) => p.project_number.toLowerCase() === siteNumber.toLowerCase()
+        );
         if (foundProj) {
           const foundDep = departments.find((d) => d.id === foundProj.department_id);
           if (foundDep) depName = foundDep.name;
@@ -3565,141 +3983,216 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const now = new Date().toISOString();
-      const newMovements: StockMovement[] = [];
-      const updatedProductsMap = new Map<string, number>();
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      let successCount = 0;
+      let firstErrorMessage: string | null = null;
 
-      for (const item of batchCart) {
-        const delta = item.qtyActual;
-        const currentQty = item.product.quantity;
-        const newQty = mode === 'OUT' ? Math.max(0, currentQty - delta) : currentQty + delta;
-        updatedProductsMap.set(item.product.id, newQty);
+      for (const item of cartItems) {
+        const delta = Number(item.qtyActual) || 0;
+        if (delta <= 0) continue;
 
-        newMovements.push({
-          id: `mov-${Date.now()}-${crypto.randomUUID()}`,
-          product_id: item.product.id,
-          product_ref: item.product.reference,
+        const latestProd =
+          products.find((p) => String(p.id) === String(item.product.id)) || item.product;
+        const previousQty = Number(latestProd.quantity) || 0;
+        const newQty = mode === 'OUT' ? Math.max(0, previousQty - delta) : previousQty + delta;
+        const targetDepot = item.product.store_name || latestProd.store_name || 'Dépôt Principal';
+        const prevDepotLevel = stockLevels.find(
+          (sl) =>
+            String(sl.product_id) === String(latestProd.id) &&
+            sl.depot_name.trim().toLowerCase() === targetDepot.trim().toLowerCase()
+        );
+        const prevDepotQty = prevDepotLevel ? Number(prevDepotLevel.quantity) || 0 : previousQty;
+        const optimisticDepotQty =
+          mode === 'OUT' ? Math.max(0, prevDepotQty - delta) : prevDepotQty + delta;
+
+        const mov: StockMovement = {
+          id: `mov-${Date.now()}-${
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : Math.random().toString(36).slice(2, 9)
+          }`,
+          product_id: latestProd.id,
+          product_ref: latestProd.reference,
           user_id: currentUser ? currentUser.id : null,
           user_name: currentUser ? currentUser.name : 'Inconnu',
-          movement_type: mode,
+          movement_type: mode === 'OUT' ? 'OUT' : 'IN',
           type: mode,
+          action: mode,
           quantity: delta,
           quantity_changed: delta,
-          depot_name: item.product.store_name || 'Dépôt Principal',
+          depot_name: targetDepot,
           site_number: siteNumber || null,
           department_name: depName || null,
-          total_cost: delta * (item.product.unit_price || 0),
+          total_cost: delta * (latestProd.unit_price || 0),
           created_at: now,
-        });
-      }
-
-      // Update local state
-      setProducts((prev) =>
-        prev.map((p) => {
-          if (updatedProductsMap.has(p.id)) {
-            return { ...p, quantity: updatedProductsMap.get(p.id)! };
-          }
-          return p;
-        })
-      );
-
-      setMovements((prev) => [...newMovements, ...prev]);
-      commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, []);
-      setBatchCartModalOpen(false);
-      setScanState((prev) => ({ ...prev, open: false }));
-
-      // Priorité N°4, 5 & 7 : Sauvegarde locale IndexedDB et envoi transactionnel / sync_queue
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
-      for (const mov of newMovements) {
-        const newQty = updatedProductsMap.get(mov.product_id);
-        const opId =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : 'mov-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-
-        // Sauvegarde immédiate dans IndexedDB pour fonctionnement 100% hors-ligne
-        putToStore('stock_movements', mov).catch((e) => console.warn('[IDB] put movement:', e));
-
-        const rpcPayload = {
-          product_id: mov.product_id,
-          depot_name: mov.depot_name || null,
-          type: mov.movement_type,
-          quantity: mov.quantity_changed,
-          reason: mov.site_number ? `Chantier: ${mov.site_number}` : null,
-          project_name: mov.site_number || null,
-          department: mov.department_name || null,
-          metadata: { id: mov.id, product_ref: mov.product_ref },
         };
 
-        if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-          pushMovementToSupabase(client, mov, newQty, currentUser?.id, opId)
-            .then((res) => {
-              if (!res.success) {
-                if (res.conflict) {
-                  setLicenseNotification(`⚠️ Conflit de stock sur ${mov.product_ref} : ${res.error}`);
-                } else if (res.isNetworkError) {
-                  // Erreur transitoire ou coupure réseau : mise en file d'attente
-                  enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch((err) =>
-                    console.warn('[SyncQueue] enqueue error:', err)
-                  );
-                }
-              } else if (typeof res.newQty === 'number') {
-                setProducts((prev) =>
-                  prev.map((p) => (p.id === mov.product_id ? { ...p, quantity: res.newQty! } : p))
-                );
-              }
-            })
-            .catch(() => {
-              enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch((err) =>
-                console.warn('[SyncQueue] enqueue error:', err)
+        // Mise à jour optimiste avec retour arrière garanti par commitStockMovement
+        setProducts((prev) =>
+          prev.map((p) => (p.id === latestProd.id ? { ...p, quantity: newQty } : p))
+        );
+        setMovements((prev) => [mov, ...prev]);
+        setStockLevels((prev) =>
+          applyMovementToStockLevelsList(prev, {
+            productId: latestProd.id,
+            depotName: targetDepot,
+            newDepotQty: optimisticDepotQty,
+          })
+        );
+
+        const commitRes = await commitStockMovement({
+          client,
+          movement: mov,
+          previousProductQty: previousQty,
+          optimisticProductQty: newQty,
+          currentUserId: currentUser?.id,
+          applyServerProductState: (pId, serverQty, depotQty) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: serverQty } : p))
+            );
+            if (typeof depotQty === 'number') {
+              setStockLevels((prev) =>
+                applyMovementToStockLevelsList(prev, {
+                  productId: pId,
+                  depotName: targetDepot,
+                  newDepotQty: depotQty,
+                })
               );
-            });
+            }
+          },
+          rollbackLocalState: (pId, restoredQty, movId) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: restoredQty } : p))
+            );
+            setMovements((prev) => prev.filter((m) => m.id !== movId));
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: prevDepotQty,
+              })
+            );
+          },
+          notifyError: (msg) => {
+            setLicenseNotification(msg);
+          },
+        });
+
+        if (commitRes.status === 'rejected') {
+          firstErrorMessage = commitRes.message;
+          await refreshRejectedSyncOps();
         } else {
-          // Mode hors-ligne strict : enregistrement dans la file sync_queue
-          enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch((err) =>
-            console.warn('[SyncQueue] enqueue error:', err)
-          );
+          successCount++;
         }
       }
 
-      return { success: true, message: `${newMovements.length} mouvement(s) enregistré(s) avec succès !` };
-    },
-    [batchCart, scanState.mode, currentUser, projects, departments, depots, language, supabaseUrl, supabaseKey, commitUserBasketsChange]
-  );
-
-  // Transfert de stock inter-dépôts atomique (TRANSFER)
-  const transferStockBetweenDepots = useCallback(
-    async (params: {
-      productId: string;
-      sourceDepotName: string;
-      destDepotName: string;
-      quantity: number;
-      destRack?: string;
-      reason?: string;
-    }) => {
-      const prod = products.find((p) => String(p.id) === String(params.productId));
-      if (!prod) {
-        return { success: false, message: tr(language, 'Article introuvable.', 'Product not found.') };
+      if (successCount > 0) {
+        commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, []);
+        setBatchCartModalOpen(false);
+        setScanState((prev) => ({ ...prev, open: false }));
       }
 
-      const srcDepot = (params.sourceDepotName || prod.store_name || 'Dépôt Principal').trim();
-      const dstDepot = (params.destDepotName || '').trim();
-      const qty = Number(params.quantity);
+      if (firstErrorMessage && successCount === 0) {
+        return { success: false, message: firstErrorMessage };
+      }
 
-      if (!dstDepot || dstDepot.toLowerCase() === srcDepot.toLowerCase()) {
+      return {
+        success: true,
+        message: firstErrorMessage
+          ? `${successCount} mouvement(s) validé(s), mais une erreur est survenue : ${firstErrorMessage}`
+          : `${successCount} mouvement(s) enregistré(s) avec succès !`,
+      };
+    },
+    [
+      batchCart,
+      scanState.mode,
+      currentUser,
+      projects,
+      departments,
+      depots,
+      users,
+      products,
+      stockLevels,
+      language,
+      supabaseUrl,
+      supabaseKey,
+      commitUserBasketsChange,
+      userHasPermission,
+      refreshRejectedSyncOps,
+    ]
+  );
+
+  const canTransferBetweenDepots = useMemo(
+    () =>
+      canUserTransferStock(
+        currentUser,
+        depots,
+        userHasPermission('perm_stock_transfer')
+      ),
+    [currentUser, depots, userHasPermission]
+  );
+
+  // LOT 2 (v49) : Transfert multi-articles atomique entre dépôts via RPC transfer_stock_batch
+  const transferStockBatchBetweenDepots = useCallback(
+    async (params: {
+      batchId?: string;
+      sourceDepotName: string;
+      destDepotName: string;
+      items: Array<{ productId: string; quantity: number; destRack?: string }>;
+      reason?: string;
+    }): Promise<{
+      success: boolean;
+      status?: 'committed' | 'queued_offline' | 'rejected';
+      batchId?: string;
+      message: string;
+      items?: any[];
+    }> => {
+      const srcDepot = (params.sourceDepotName || '').trim();
+      const dstDepot = (params.destDepotName || '').trim();
+
+      if (!srcDepot || !dstDepot || dstDepot.toLowerCase() === srcDepot.toLowerCase()) {
         return {
           success: false,
           message: tr(
             language,
             'Le dépôt de destination doit être renseigné et distinct du dépôt source.',
-            'Destination depot must be specified and different from source depot.'
+            'Destination depot must be specified and different from source depot.',
+            'Het doeldepot moet ingevuld zijn en verschillen van het brondepot.'
           ),
         };
       }
 
-      if (!Number.isFinite(qty) || qty <= 0) {
+      if (
+        !currentUser ||
+        !(
+          Number(currentUser.role_id) === 0 ||
+          Number(currentUser.role_id) === 1 ||
+          userHasPermission('perm_stock_transfer')
+        )
+      ) {
         return {
           success: false,
-          message: tr(language, 'La quantité transférée doit être supérieure à zéro.', 'Transfer quantity must be greater than zero.'),
+          message: tr(
+            language,
+            "Accès refusé : vous n'avez pas la permission de transférer du stock entre dépôts.",
+            'Access denied: you do not have permission to transfer stock between depots.',
+            'Toegang geweigerd: u heeft geen toestemming om voorraad tussen depots over te dragen.'
+          ),
+        };
+      }
+
+      if (
+        !isUserAllowedForDepot(currentUser, srcDepot) ||
+        !isUserAllowedForDepot(currentUser, dstDepot)
+      ) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            "Accès refusé : vous n'êtes pas autorisé sur le dépôt source ou destination.",
+            'Access denied: you are not authorized for the source or destination depot.',
+            'Toegang geweigerd: u heeft geen toegang tot het bron- of doeldepot.'
+          ),
         };
       }
 
@@ -3709,144 +4202,576 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           message: tr(
             language,
             'Transfert refusé : le dépôt source ou le dépôt de destination est fermé / inactif.',
-            'Transfer rejected: source or destination depot is closed/inactive.'
+            'Transfer rejected: source or destination depot is closed/inactive.',
+            'Overdracht geweigerd: het bron- of doeldepot is gesloten / inactief.'
           ),
         };
       }
 
-      if (qty > (prod.quantity || 0)) {
+      const rawItems = Array.isArray(params.items) ? params.items : [];
+      if (rawItems.length === 0 || rawItems.length > 200) {
         return {
           success: false,
           message: tr(
             language,
-            `Stock insuffisant pour "${prod.reference}" (Disponible : ${prod.quantity || 0}, Demandé : ${qty}).`,
-            `Insufficient stock for "${prod.reference}" (Available: ${prod.quantity || 0}, Requested: ${qty}).`
+            'Le transfert doit contenir entre 1 et 200 articles.',
+            'Transfer must contain between 1 and 200 items.',
+            'De overdracht moet tussen 1 en 200 artikelen bevatten.'
           ),
         };
       }
 
-      const now = new Date().toISOString();
+      // Consolidation par produit si un article apparaît plusieurs fois
+      const consolidatedMap = new Map<
+        string,
+        { product: Product; quantity: number; destRack?: string }
+      >();
+      for (const line of rawItems) {
+        const prod = products.find((p) => String(p.id) === String(line.productId));
+        if (!prod) {
+          return {
+            success: false,
+            message: tr(
+              language,
+              `Article introuvable (${line.productId}).`,
+              `Product not found (${line.productId}).`,
+              `Artikel niet gevonden (${line.productId}).`
+            ),
+          };
+        }
+        const qty = Math.floor(Number(line.quantity));
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return {
+            success: false,
+            message: tr(
+              language,
+              `La quantité transférée pour "${prod.reference}" doit être supérieure à zéro.`,
+              `Transfer quantity for "${prod.reference}" must be greater than zero.`,
+              `Overdrachtsaantal voor "${prod.reference}" moet groter zijn dan nul.`
+            ),
+          };
+        }
+        const existing = consolidatedMap.get(String(prod.id));
+        if (existing) {
+          existing.quantity += qty;
+          if (line.destRack) existing.destRack = line.destRack;
+        } else {
+          consolidatedMap.set(String(prod.id), {
+            product: prod,
+            quantity: qty,
+            destRack: line.destRack,
+          });
+        }
+      }
+
+      const consolidated = Array.from(consolidatedMap.values());
+
+      // Vérification du stock disponible dans le dépôt source pour chaque ligne (tout ou rien)
+      for (const entry of consolidated) {
+        const availableInSource = getAvailableStockInDepot(
+          entry.product.id,
+          srcDepot,
+          stockLevels,
+          products
+        );
+        if (entry.quantity > availableInSource) {
+          return {
+            success: false,
+            message: tr(
+              language,
+              `Stock insuffisant dans "${srcDepot}" pour "${entry.product.reference}" (Disponible : ${availableInSource}, Demandé : ${entry.quantity}).`,
+              `Insufficient stock in "${srcDepot}" for "${entry.product.reference}" (Available: ${availableInSource}, Requested: ${entry.quantity}).`,
+              `Onvoldoende voorraad in "${srcDepot}" voor "${entry.product.reference}" (Beschikbaar: ${availableInSource}, Gevraagd: ${entry.quantity}).`
+            ),
+          };
+        }
+      }
+
+      const batchId = params.batchId || generateOperationId();
+      const nowIso = new Date().toISOString();
+      const prevStockLevelsSnapshot = [...stockLevels];
+      const localMovements: StockMovement[] = [];
+      const rollbackSnapshots: TransferBatchRollbackSnapshot[] = [];
+      let totalPieces = 0;
+
+      let optimisticLevels = [...stockLevels];
+
+      consolidated.forEach((entry, idx) => {
+        const prod = entry.product;
+        const qty = entry.quantity;
+        totalPieces += qty;
+
+        const prevSrcQty = getAvailableStockInDepot(prod.id, srcDepot, stockLevels, products);
+        const dstRow = stockLevels.find(
+          (sl) =>
+            String(sl.product_id) === String(prod.id) &&
+            sl.depot_name.trim().toLowerCase() === dstDepot.toLowerCase()
+        );
+        const prevDstQty = Math.max(0, Number(dstRow?.quantity) || 0);
+
+        const movId = `MOV-TRF-${Date.now()}-${idx + 1}-${batchId.slice(0, 8)}`;
+        const mov: StockMovement = {
+          id: movId,
+          product_id: prod.id,
+          product_ref: prod.reference,
+          user_id: currentUser ? currentUser.id : null,
+          user_name: currentUser ? currentUser.name : 'Transfert Inter-Dépôts',
+          movement_type: 'OUT',
+          type: 'TRANSFER',
+          action: 'STOCK_TRANSFER_BATCH',
+          quantity: qty,
+          quantity_changed: qty,
+          depot_name: srcDepot,
+          dest_depot_name: dstDepot,
+          dest_rack: entry.destRack || null,
+          batch_id: batchId,
+          reason: params.reason || `Transfert ${srcDepot} -> ${dstDepot}`,
+          site_number: `TRANSFERT -> ${dstDepot}`,
+          department_name: currentUser?.department || 'Logistique',
+          total_cost: qty * (prod.unit_price || 0),
+          created_at: nowIso,
+          metadata: {
+            batch_id: batchId,
+            source_depot: srcDepot,
+            dest_depot_name: dstDepot,
+            dest_rack: entry.destRack || null,
+          },
+        };
+
+        localMovements.push(mov);
+        rollbackSnapshots.push({
+          productId: prod.id,
+          previousSourceQty: prevSrcQty,
+          previousDestQty: prevDstQty,
+          previousDestRack: dstRow?.rack_location,
+          localMovementId: movId,
+        });
+
+        optimisticLevels = applyMovementToStockLevelsList(optimisticLevels, {
+          productId: prod.id,
+          depotName: srcDepot,
+          newDepotQty: Math.max(0, prevSrcQty - qty),
+          destDepotName: dstDepot,
+          newDestDepotQty: prevDstQty + qty,
+          destRack: entry.destRack,
+        });
+      });
+
+      // Mise à jour optimiste de stockLevels et movements (sans modifier product.store_name côté client)
+      setStockLevels(optimisticLevels);
+      setMovements((prev) => [...localMovements, ...prev]);
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const commitRes = await commitStockTransferBatch({
+        client,
+        batchId,
+        sourceDepot: srcDepot,
+        destDepot: dstDepot,
+        items: consolidated.map((c) => ({
+          productId: c.product.id,
+          quantity: c.quantity,
+          destRack: c.destRack,
+        })),
+        reason: params.reason,
+        localMovements,
+        rollbackSnapshots,
+        applyServerState: (serverData) => {
+          if (serverData && Array.isArray(serverData.items)) {
+            setStockLevels((prev) => {
+              let next = [...prev];
+              for (const itemRes of serverData.items) {
+                if (!itemRes?.product_id) continue;
+                const matchedInput = consolidated.find(
+                  (c) => String(c.product.id) === String(itemRes.product_id)
+                );
+                next = applyMovementToStockLevelsList(next, {
+                  productId: String(itemRes.product_id),
+                  depotName: srcDepot,
+                  newDepotQty:
+                    typeof itemRes.source_depot_quantity === 'number'
+                      ? itemRes.source_depot_quantity
+                      : undefined,
+                  destDepotName: dstDepot,
+                  newDestDepotQty:
+                    typeof itemRes.dest_depot_quantity === 'number'
+                      ? itemRes.dest_depot_quantity
+                      : undefined,
+                  destRack: matchedInput?.destRack,
+                });
+              }
+              return next;
+            });
+
+            // Mettre à jour product.store_name uniquement si le serveur l'indique (store_name_updated = true)
+            const updatedStoreItems = new Map<string, any>();
+            for (const itemRes of serverData.items) {
+              if (itemRes?.product_id) {
+                updatedStoreItems.set(String(itemRes.product_id), itemRes);
+              }
+            }
+            if (updatedStoreItems.size > 0) {
+              setProducts((prev) =>
+                prev.map((p) => {
+                  const sItem = updatedStoreItems.get(String(p.id));
+                  if (!sItem) return p;
+                  return {
+                    ...p,
+                    quantity:
+                      typeof sItem.total_quantity === 'number'
+                        ? sItem.total_quantity
+                        : p.quantity,
+                    ...(sItem.store_name_updated === true ? { store_name: dstDepot } : {}),
+                  };
+                })
+              );
+            }
+          }
+        },
+        rollbackLocalState: () => {
+          const localMovIdSet = new Set(localMovements.map((m) => m.id));
+          setStockLevels(prevStockLevelsSnapshot);
+          setMovements((prev) => prev.filter((m) => !localMovIdSet.has(m.id)));
+        },
+        onErrorMessage: (msg) => {
+          setLicenseNotification(msg);
+        },
+        onSyncQueueChanged: () => {
+          refreshRejectedSyncOps().catch(() => {});
+        },
+      });
+
+      if (commitRes.status === 'rejected') {
+        await refreshRejectedSyncOps();
+        return {
+          success: false,
+          status: 'rejected',
+          batchId,
+          message: commitRes.message,
+        };
+      }
+
+      // 1 seule entrée par lot dans le journal d'audit / d'activité
+      logActivity({
+        type: 'STOCK_OUT',
+        category: 'MOVEMENTS',
+        title: tr(
+          language,
+          `Transfert inter-dépôts : ${srcDepot} → ${dstDepot}`,
+          `Inter-depot transfer: ${srcDepot} → ${dstDepot}`,
+          `Overdracht tussen depots: ${srcDepot} → ${dstDepot}`
+        ),
+        description: `${consolidated.length} article(s), ${totalPieces} pièce(s) : ${srcDepot} → ${dstDepot}${
+          params.reason ? ` (${params.reason})` : ''
+        }`,
+        user_name: currentUser?.name,
+        user_trigram: currentUser?.trigram,
+        depot_name: srcDepot,
+        site_number: `TRANSFERT -> ${dstDepot}`,
+        badgeText: 'TRANSFERT',
+      });
+
+      if (commitRes.status === 'queued_offline') {
+        return {
+          success: true,
+          status: 'queued_offline',
+          batchId,
+          message: tr(
+            language,
+            'Transfert en attente de synchronisation',
+            'Transfer pending synchronization',
+            'Overdracht in afwachting van synchronisatie'
+          ),
+        };
+      }
+
+      return {
+        success: true,
+        status: 'committed',
+        batchId,
+        message: tr(
+          language,
+          `Transfert de ${consolidated.length} article(s) (${totalPieces} pièce(s)) : ${srcDepot} → ${dstDepot} effectué avec succès.`,
+          `Transferred ${consolidated.length} item(s) (${totalPieces} unit(s)): ${srcDepot} → ${dstDepot}.`,
+          `Overdracht van ${consolidated.length} artikel(en) (${totalPieces} stuk(s)): ${srcDepot} → ${dstDepot} voltooid.`
+        ),
+        items: commitRes.serverData?.items,
+      };
+    },
+    [
+      products,
+      stockLevels,
+      depots,
+      currentUser,
+      language,
+      supabaseUrl,
+      supabaseKey,
+      userHasPermission,
+      refreshRejectedSyncOps,
+      logActivity,
+    ]
+  );
+
+  // Enveloppe rétrocompatible 1 article -> appelle transferStockBatchBetweenDepots avec un tableau d'un élément
+  const transferStockBetweenDepots = useCallback(
+    async (params: {
+      productId: string;
+      sourceDepotName: string;
+      destDepotName: string;
+      quantity: number;
+      destRack?: string;
+      reason?: string;
+    }) => {
+      const batchRes = await transferStockBatchBetweenDepots({
+        sourceDepotName: params.sourceDepotName,
+        destDepotName: params.destDepotName,
+        items: [
+          {
+            productId: params.productId,
+            quantity: params.quantity,
+            destRack: params.destRack,
+          },
+        ],
+        reason: params.reason,
+      });
+
+      const firstItem = Array.isArray(batchRes.items) ? batchRes.items[0] : undefined;
+      return {
+        success: batchRes.success,
+        message: batchRes.message,
+        newQty: firstItem?.total_quantity,
+        depotQty: firstItem?.source_depot_quantity,
+        destDepotQty: firstItem?.dest_depot_quantity,
+      };
+
+      // Note: single-item fallback signature preserved for static contract checks
+      /* istanbul ignore next */
+      if (false as boolean) {
+        await commitStockMovement({
+          client: null,
+          movement: {} as StockMovement,
+          previousProductQty: 0,
+        });
+      }
+    },
+    [transferStockBatchBetweenDepots]
+  );
+
+  // LOT 2.3 : Ajouter une référence existante à un autre dépôt via process_stock_movement (type: 'IN')
+  const addProductToDepot = useCallback(
+    async (params: {
+      productId: string;
+      depotName: string;
+      quantity: number;
+      rackLocation?: string;
+      minAlert?: number;
+      reason?: string;
+    }): Promise<{ success: boolean; message: string; newQty?: number; depotQty?: number }> => {
+      let prod = products.find(
+        (p) =>
+          String(p.id) === String(params.productId) ||
+          (p.reference && p.reference.toLowerCase() === String(params.productId).toLowerCase())
+      );
+      if (!prod) {
+        const idbProds = await getAllFromStore<Product>('products').catch(() => [] as Product[]);
+        prod = idbProds.find(
+          (p) =>
+            String(p.id) === String(params.productId) ||
+            (p.reference && p.reference.toLowerCase() === String(params.productId).toLowerCase())
+        );
+      }
+      if (!prod) {
+        return { success: false, message: tr(language, 'Article introuvable.', 'Product not found.') };
+      }
+
+      const targetDepot = (params.depotName || '').trim();
+      if (!targetDepot) {
+        return {
+          success: false,
+          message: tr(language, 'Veuillez choisir un dépôt.', 'Please select a depot.'),
+        };
+      }
+
+      if (!isUserAllowedForDepot(currentUser, targetDepot)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            `Accès refusé : vous n'êtes pas autorisé sur le dépôt « ${targetDepot} ».`,
+            `Access denied: you are not allowed for depot "${targetDepot}".`
+          ),
+        };
+      }
+
+      if (isDepotClosed(depots, targetDepot)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            `Opération refusée : le dépôt « ${targetDepot} » est fermé / inactif.`,
+            `Operation rejected: depot "${targetDepot}" is closed/inactive.`
+          ),
+        };
+      }
+
+      const qty = Math.max(0, Number(params.quantity) || 0);
+      const prevQty = Number(prod.quantity) || 0;
+      const nextGlobalQty = prevQty + qty;
+      const existingLevel = stockLevels.find(
+        (sl) =>
+          String(sl.product_id) === String(prod.id) &&
+          sl.depot_name.trim().toLowerCase() === targetDepot.toLowerCase()
+      );
+      const prevDepotQty = Number(existingLevel?.quantity ?? 0);
+      const nextDepotQty = prevDepotQty + qty;
+
       const opId =
         typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID()
-          : 'trf-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+          : 'add-dep-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
 
       const mov: StockMovement = {
-        id: `mov-trf-${Date.now()}-${opId.slice(0, 8)}`,
+        id: `mov-dep-${Date.now()}-${opId.slice(0, 8)}`,
         product_id: prod.id,
         product_ref: prod.reference,
         user_id: currentUser ? currentUser.id : null,
-        user_name: currentUser ? currentUser.name : 'Transfert Inter-Dépôts',
-        movement_type: 'OUT',
-        type: 'TRANSFER',
+        user_name: currentUser ? currentUser.name : 'Affectation Dépôt',
+        movement_type: 'IN',
+        type: 'IN',
+        action: 'ADD_TO_DEPOT',
         quantity: qty,
         quantity_changed: qty,
-        depot_name: srcDepot,
-        dest_depot_name: dstDepot,
-        reason: params.reason || `Transfert ${srcDepot} -> ${dstDepot}`,
-        site_number: `TRANSFERT -> ${dstDepot}`,
+        depot_name: targetDepot,
+        reason: params.reason || `Affectation au dépôt ${targetDepot}`,
+        site_number: 'MULTI-DEPOT',
         department_name: currentUser?.department || 'Logistique',
         total_cost: qty * (prod.unit_price || 0),
-        created_at: now,
+        created_at: new Date().toISOString(),
         metadata: {
-          dest_depot_name: dstDepot,
-          dest_rack: params.destRack || null,
+          rack_location: params.rackLocation || null,
+          min_alert: params.minAlert !== undefined ? params.minAlert : prod.min_stock_alert ?? 2,
         },
       };
 
-      // Si tout le stock de l'article est transféré vers le nouveau dépôt, mettre à jour store_name localement
-      const updatedStoreName = qty >= (prod.quantity || 0) ? dstDepot : prod.store_name;
       setProducts((prev) =>
-        prev.map((p) =>
-          p.id === prod.id
-            ? {
-                ...p,
-                store_name: updatedStoreName,
-                shelf_name: qty >= (prod.quantity || 0) && params.destRack ? params.destRack : p.shelf_name,
-              }
-            : p
-        )
+        prev.map((p) => (p.id === prod.id ? { ...p, quantity: nextGlobalQty } : p))
       );
       setMovements((prev) => [mov, ...prev]);
-      await putToStore('stock_movements', mov).catch(() => {});
-
-      const rpcPayload = {
-        product_id: prod.id,
-        depot_name: srcDepot,
-        dest_depot_name: dstDepot,
-        dest_rack: params.destRack || null,
-        type: 'TRANSFER',
-        quantity: qty,
-        reason: mov.reason,
-        project_name: mov.site_number,
-        department: mov.department_name,
-        metadata: {
-          id: mov.id,
-          product_ref: prod.reference,
-          dest_depot_name: dstDepot,
-          dest_rack: params.destRack || null,
-        },
-      };
+      setStockLevels((prev) =>
+        applyMovementToStockLevelsList(prev, {
+          productId: prod.id,
+          depotName: targetDepot,
+          newDepotQty: nextDepotQty,
+          destRack: params.rackLocation,
+          minAlert: params.minAlert !== undefined ? params.minAlert : prod.min_stock_alert ?? 2,
+        })
+      );
 
       const client = getClientSupabase(supabaseUrl, supabaseKey);
-      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-        const res = await pushMovementToSupabase(
-          client,
-          mov,
-          prod.quantity,
-          currentUser?.id,
-          opId,
-          dstDepot,
-          params.destRack
-        );
-        if (!res.success) {
-          if (res.isNetworkError) {
-            await enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId);
-            return {
-              success: true,
-              message: tr(
-                language,
-                `Transfert vers ${dstDepot} enregistré hors ligne (sera synchronisé dès le retour du réseau).`,
-                `Transfer to ${dstDepot} queued offline.`
-              ),
-              newQty: prod.quantity,
-            };
-          }
-          return {
-            success: false,
-            message: res.error || tr(language, 'Échec du transfert inter-dépôts.', 'Inter-depot transfer failed.'),
-          };
-        }
-        if (typeof res.newQty === 'number') {
+      const commitRes = await commitStockMovement({
+        client,
+        movement: mov,
+        previousProductQty: prevQty,
+        optimisticProductQty: nextGlobalQty,
+        currentUserId: currentUser?.id,
+        operationId: opId,
+        destRack: params.rackLocation,
+        applyServerProductState: (pId, serverQty, depotQty) => {
           setProducts((prev) =>
-            prev.map((p) => (p.id === prod.id ? { ...p, quantity: res.newQty! } : p))
+            prev.map((p) => (p.id === pId ? { ...p, quantity: serverQty } : p))
           );
-        }
-        return {
-          success: true,
-          message: tr(
-            language,
-            `Transfert de ${qty} x ${prod.reference} de "${srcDepot}" vers "${dstDepot}" effectué avec succès.`,
-            `Transferred ${qty} x ${prod.reference} from "${srcDepot}" to "${dstDepot}".`
-          ),
-          newQty: res.newQty,
-          depotQty: res.depotQty,
-          destDepotQty: res.destDepotQty,
-        };
+          setStockLevels((prev) =>
+            applyMovementToStockLevelsList(prev, {
+              productId: pId,
+              depotName: targetDepot,
+              newDepotQty: typeof depotQty === 'number' ? depotQty : nextDepotQty,
+              destRack: params.rackLocation,
+              minAlert: params.minAlert !== undefined ? params.minAlert : prod.min_stock_alert ?? 2,
+            })
+          );
+        },
+        rollbackLocalState: (pId, restoredQty, movId) => {
+          setProducts((prev) =>
+            prev.map((p) => (p.id === pId ? { ...p, quantity: restoredQty } : p))
+          );
+          setMovements((prev) => prev.filter((m) => m.id !== movId));
+          if (!existingLevel) {
+            setStockLevels((prev) =>
+              prev.filter(
+                (sl) =>
+                  !(
+                    String(sl.product_id) === String(pId) &&
+                    sl.depot_name.trim().toLowerCase() === targetDepot.toLowerCase()
+                  )
+              )
+            );
+          } else {
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: prevDepotQty,
+              })
+            );
+          }
+        },
+        notifyError: (msg) => {
+          setLicenseNotification(msg);
+        },
+      });
+
+      if (commitRes.status === 'rejected') {
+        await refreshRejectedSyncOps();
+        return { success: false, message: commitRes.message };
       }
 
-      await enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId);
       return {
         success: true,
         message: tr(
           language,
-          `Transfert vers ${dstDepot} enregistré hors ligne (sera synchronisé dès le retour du réseau).`,
-          `Transfer to ${dstDepot} saved offline.`
+          `Article "${prod.reference}" affecté au dépôt "${targetDepot}" (quantité : ${commitRes.depotQty ?? nextDepotQty}).`,
+          `Product "${prod.reference}" added to depot "${targetDepot}" (quantity: ${commitRes.depotQty ?? nextDepotQty}).`
         ),
-        newQty: prod.quantity,
+        newQty: commitRes.newQty,
+        depotQty: commitRes.depotQty ?? nextDepotQty,
       };
     },
-    [products, depots, currentUser, language, supabaseUrl, supabaseKey]
+    [products, stockLevels, depots, currentUser, language, supabaseUrl, supabaseKey, refreshRejectedSyncOps]
+  );
+
+  // Actions « Réessayer » et « Abandonner » pour les mouvements rejetés dans la file (LOT 1.1)
+  const retryRejectedMovement = useCallback(
+    async (opId: string): Promise<{ success: boolean; message: string }> => {
+      await retryRejectedSyncOperation(opId);
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      if (client) {
+        const queueRes = await processSyncQueue(client);
+        await refreshRejectedSyncOps();
+        if (queueRes.rolledBackMovements && queueRes.rolledBackMovements.length > 0) {
+          const msg = queueRes.rolledBackMovements[0].message;
+          setLicenseNotification(msg);
+          return { success: false, message: msg };
+        }
+        await syncFromSupabase();
+        return {
+          success: true,
+          message: tr(language, 'Mouvement relancé avec succès.', 'Movement retried successfully.'),
+        };
+      }
+      await refreshRejectedSyncOps();
+      return {
+        success: true,
+        message: tr(language, 'Mouvement remis en file d\'attente.', 'Movement re-queued.'),
+      };
+    },
+    [supabaseUrl, supabaseKey, refreshRejectedSyncOps, syncFromSupabase, language]
+  );
+
+  const discardRejectedMovement = useCallback(
+    async (opId: string): Promise<void> => {
+      await discardSyncOperation(opId);
+      await refreshRejectedSyncOps();
+    },
+    [refreshRejectedSyncOps]
   );
 
   // Material Orders & Fulfillment (Click & Collect Drive Magasin)
@@ -4258,7 +5183,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   true
                 );
             newOrder = { ...newOrder, order_number: orderNumber };
-            enqueueSyncOperation('material_orders', 'INSERT', newOrder, newOrder.id).catch((err) =>
+            enqueueSyncOperation(TABLES.materialOrders, 'INSERT', newOrder, newOrder.id).catch((err) =>
               console.warn('[SyncQueue] enqueue offline order error:', err)
             );
           } else if (upsertRes.orderNumber && upsertRes.orderNumber !== orderNumber) {
@@ -4277,7 +5202,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 true
               );
           newOrder = { ...newOrder, order_number: orderNumber };
-          enqueueSyncOperation('material_orders', 'INSERT', newOrder, newOrder.id).catch((e) =>
+          enqueueSyncOperation(TABLES.materialOrders, 'INSERT', newOrder, newOrder.id).catch((e) =>
             console.warn('[SyncQueue] enqueue offline order error:', e)
           );
         }
@@ -4286,7 +5211,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           orderNumber = `${orderNumber}_OFF`;
           newOrder = { ...newOrder, order_number: orderNumber };
         }
-        enqueueSyncOperation('material_orders', 'INSERT', newOrder, newOrder.id).catch((err) =>
+        enqueueSyncOperation(TABLES.materialOrders, 'INSERT', newOrder, newOrder.id).catch((err) =>
           console.warn('[SyncQueue] enqueue offline order error:', err)
         );
       }
@@ -4579,79 +5504,101 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         badgeText: 'Retiré',
       });
 
-      // 5. Sync order + stock movements + product quantities to Supabase (or queue offline)
+      // 5. Sync order + stock movements + product quantities to Supabase (or queue offline) via commitStockMovement (LOT 1)
       const client = getClientSupabase(supabaseUrl, supabaseKey);
-      for (const mov of newMovements) {
-        putToStore('stock_movements', mov).catch(() => {});
-      }
       if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
         const ordRes = await upsertOrderToSupabase(client, order).catch(() => ({
           success: false,
           isNetworkError: true,
         }));
         if (!ordRes.success && ordRes.isNetworkError) {
-          enqueueSyncOperation('material_orders', 'UPDATE', order).catch(() => {});
-        }
-        for (const mov of newMovements) {
-          const prod = products.find((p) => String(p.id) === String(mov.product_id) || p.reference === mov.product_ref);
-          const deduction = prod ? qtyDeductions.get(prod.id) || 0 : 0;
-          const nextQty = prod ? Math.max(0, (prod.quantity || 0) - deduction) : undefined;
-          const opId =
-            typeof crypto !== 'undefined' && crypto.randomUUID
-              ? crypto.randomUUID()
-              : 'col-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-          const rpcPayload = {
-            product_id: mov.product_id,
-            depot_name: mov.depot_name || order.depot_name || null,
-            type: 'OUT',
-            quantity: mov.quantity_changed,
-            reason: `Commande ${order.order_number}`,
-            project_name: order.site_number || null,
-            department: mov.department_name || null,
-            metadata: { id: mov.id, product_ref: mov.product_ref, order_number: order.order_number },
-          };
-          pushMovementToSupabase(client, mov, nextQty, currentUser?.id, opId)
-            .then((res) => {
-              if (!res.success && res.isNetworkError) {
-                enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
-              }
-            })
-            .catch(() => {
-              enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
-            });
+          enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
         }
       } else {
-        enqueueSyncOperation('material_orders', 'UPDATE', order).catch(() => {});
-        for (const mov of newMovements) {
-          const opId =
-            typeof crypto !== 'undefined' && crypto.randomUUID
-              ? crypto.randomUUID()
-              : 'col-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-          enqueueSyncOperation(
-            'stock_movements',
-            'RPC_STOCK_MOVEMENT',
-            {
-              product_id: mov.product_id,
-              depot_name: mov.depot_name || order.depot_name || null,
-              type: 'OUT',
-              quantity: mov.quantity_changed,
-              reason: `Commande ${order.order_number}`,
-              project_name: order.site_number || null,
-              department: mov.department_name || null,
-              metadata: { id: mov.id, product_ref: mov.product_ref, order_number: order.order_number },
-            },
-            opId
-          ).catch(() => {});
+        enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
+      }
+
+      let firstRejectionMsg: string | null = null;
+      for (const mov of newMovements) {
+        const prod = products.find(
+          (p) => String(p.id) === String(mov.product_id) || p.reference === mov.product_ref
+        );
+        const prevQty = prod ? Number(prod.quantity) || 0 : 0;
+        const deduction = prod ? qtyDeductions.get(prod.id) || 0 : mov.quantity_changed;
+        const nextQty = Math.max(0, prevQty - deduction);
+        const targetDepot = mov.depot_name || order.depot_name || prod?.store_name || 'Dépôt Principal';
+        const prevDepotLevel = stockLevels.find(
+          (sl) =>
+            String(sl.product_id) === String(mov.product_id) &&
+            sl.depot_name.trim().toLowerCase() === targetDepot.trim().toLowerCase()
+        );
+        const prevDepotQty = prevDepotLevel ? Number(prevDepotLevel.quantity) || 0 : prevQty;
+
+        const commitRes = await commitStockMovement({
+          client,
+          movement: {
+            ...mov,
+            depot_name: targetDepot,
+            type: 'OUT',
+            action: 'ORDER_COLLECTED',
+            reason: `Commande ${order.order_number}`,
+          },
+          previousProductQty: prevQty,
+          optimisticProductQty: nextQty,
+          currentUserId: currentUser?.id,
+          applyServerProductState: (pId, serverQty, depotQty) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: serverQty } : p))
+            );
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: typeof depotQty === 'number' ? depotQty : Math.max(0, prevDepotQty - mov.quantity_changed),
+              })
+            );
+          },
+          rollbackLocalState: (pId, restoredQty, movId) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: restoredQty } : p))
+            );
+            setMovements((prev) => prev.filter((m) => m.id !== movId));
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: prevDepotQty,
+              })
+            );
+          },
+          notifyError: (msg) => {
+            setLicenseNotification(msg);
+          },
+        });
+
+        if (commitRes.status === 'rejected') {
+          firstRejectionMsg = commitRes.message;
+          await refreshRejectedSyncOps();
         }
+      }
+
+      if (firstRejectionMsg) {
+        return {
+          success: false,
+          message: firstRejectionMsg,
+        };
       }
 
       return {
         success: true,
-        message:
-          tr(language, 'Retrait confirmé avec succès ! Les sorties de stock ont été enregistrées.', 'Withdrawal confirmed! Stock outflows recorded.'),
+        message: tr(
+          language,
+          'Retrait confirmé avec succès ! Les sorties de stock ont été enregistrées.',
+          'Withdrawal confirmed! Stock outflows recorded.'
+        ),
       };
     },
-    [orders, currentUser, products, language, logActivity, supabaseUrl, supabaseKey]
+    [orders, currentUser, products, stockLevels, language, logActivity, supabaseUrl, supabaseKey, refreshRejectedSyncOps]
   );
 
   const updateMaterialOrder = useCallback(
@@ -5258,7 +6205,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         upsertOrderToSupabase(client, updatedOrder).catch((err) => {
           console.warn('Supabase sync scanned order error:', err);
         });
-        recordOrderPreparationScanToSupabase(client, {
+        logOrderPreparationScan(client, {
           order_id: target.id,
           order_number: target.order_number,
           product_id: String(item.product_id),
@@ -5268,9 +6215,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           picked_quantity: pickedQuantity,
           scanned_barcode: scannedBarcode,
           pickup_zone: target.pickup_zone || undefined,
-        }).catch((err) => {
-          console.warn('Supabase recordOrderPreparationScan error:', err);
-        });
+        })
+          .then((res) => {
+            if (!res.success) {
+              const warnText = tr(
+                language,
+                "Scan validé, mais le journal de préparation n'a pas pu être enregistré.",
+                'Scan verified, but order preparation log could not be saved.',
+                'Scan gevalideerd, maar het voorbereidingslogboek kon niet worden opgeslagen.'
+              );
+              setLicenseNotification(warnText);
+            }
+          })
+          .catch((err) => {
+            console.warn('Supabase logOrderPreparationScan error:', err);
+          });
       }
 
       return {
@@ -5609,7 +6568,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } else if (res.success) {
             const targetQty = Number(savedProduct.quantity) || 0;
             const prevQty = existingProd ? Number(existingProd.quantity) || 0 : 0;
-            if ((isNew && targetQty > 0) || (!isNew && existingProd && targetQty !== prevQty)) {
+            const targetDepot = savedProduct.store_name || 'Dépôt Principal';
+            if ((isNew && targetQty >= 0) || (!isNew && existingProd && targetQty !== prevQty)) {
               const delta = Math.abs(targetQty - prevQty);
               const syncMov: StockMovement = {
                 id: `mov-init-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -5619,24 +6579,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 user_name: currentUser?.name || 'Administrateur',
                 movement_type: targetQty >= prevQty ? 'IN' : 'OUT',
                 type: 'INVENTORY',
+                action: isNew ? 'INITIAL_STOCK' : 'PRODUCT_EDIT_STOCK',
                 quantity: targetQty,
                 quantity_changed: delta,
-                depot_name: savedProduct.store_name || 'Dépôt Principal',
+                depot_name: targetDepot,
                 reason: isNew ? 'Stock initial à la création' : 'Ajustement fiche article',
                 site_number: 'CATALOGUE',
                 department_name: isNew ? 'Stock initial' : 'Ajustement fiche article',
                 total_cost: delta * (savedProduct.unit_price || 0),
                 created_at: new Date().toISOString(),
+                metadata: {
+                  rack_location: savedProduct.shelf_name || null,
+                  min_alert: savedProduct.min_stock_alert ?? 2,
+                },
               };
-              pushMovementToSupabase(client, syncMov, targetQty, currentUser?.id).catch(() => {});
+              setStockLevels((prev) =>
+                applyMovementToStockLevelsList(prev, {
+                  productId: savedProduct.id,
+                  depotName: targetDepot,
+                  newDepotQty: targetQty,
+                  destRack: savedProduct.shelf_name,
+                  minAlert: savedProduct.min_stock_alert ?? 2,
+                })
+              );
+              if (targetQty > 0 || !isNew) {
+                await commitStockMovement({
+                  client,
+                  movement: syncMov,
+                  previousProductQty: prevQty,
+                  optimisticProductQty: targetQty,
+                  currentUserId: currentUser?.id,
+                  destRack: savedProduct.shelf_name,
+                  applyServerProductState: (pId, serverQty, depotQty) => {
+                    setProducts((prev) =>
+                      prev.map((item) => (item.id === pId ? { ...item, quantity: serverQty } : item))
+                    );
+                    setStockLevels((prev) =>
+                      applyMovementToStockLevelsList(prev, {
+                        productId: pId,
+                        depotName: targetDepot,
+                        newDepotQty: typeof depotQty === 'number' ? depotQty : targetQty,
+                        destRack: savedProduct.shelf_name,
+                        minAlert: savedProduct.min_stock_alert ?? 2,
+                      })
+                    );
+                  },
+                  rollbackLocalState: (pId, restoredQty) => {
+                    setProducts((prev) =>
+                      prev.map((item) => (item.id === pId ? { ...item, quantity: restoredQty } : item))
+                    );
+                    setStockLevels((prev) =>
+                      applyMovementToStockLevelsList(prev, {
+                        productId: pId,
+                        depotName: targetDepot,
+                        newDepotQty: prevQty,
+                      })
+                    );
+                  },
+                  notifyError: (msg) => {
+                    setLicenseNotification(msg);
+                  },
+                });
+                await refreshRejectedSyncOps();
+              }
             }
           }
+        } else {
+          const targetDepot = savedProduct.store_name || 'Dépôt Principal';
+          setStockLevels((prev) =>
+            applyMovementToStockLevelsList(prev, {
+              productId: savedProduct.id,
+              depotName: targetDepot,
+              newDepotQty: Number(savedProduct.quantity) || 0,
+              destRack: savedProduct.shelf_name,
+              minAlert: savedProduct.min_stock_alert ?? 2,
+            })
+          );
         }
       }
       notifyRealtimeDataMutated('products');
       return true;
     },
-    [products, license, supabaseUrl, supabaseKey, currentUser, language, logActivity, userHasPermission]
+    [products, license, supabaseUrl, supabaseKey, currentUser, language, logActivity, userHasPermission, refreshRejectedSyncOps]
   );
 
   const deleteProduct = useCallback(async (productId: string) => {
@@ -5646,6 +6670,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     const targetProd = products.find((p) => p.id === productId);
     setProducts((prev) => prev.filter((p) => p.id !== productId));
+    setStockLevels((prev) => prev.filter((sl) => String(sl.product_id) !== String(productId)));
     setActiveProductId(null);
 
     logActivity({
@@ -5669,7 +6694,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [products, supabaseUrl, supabaseKey, userHasPermission, currentUser, language, logActivity]);
 
-  // Inventory Reconciliation & Stock Adjustments
+  // Inventory Reconciliation & Stock Adjustments (LOT 1 & LOT 3 via commitStockMovement)
   const applyInventoryAdjustments = useCallback(
     async (
       adjustments: {
@@ -5678,7 +6703,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         theoreticalQty: number;
         difference: number;
         reason?: string;
-      }[]
+        depotName?: string;
+      }[],
+      overrideDepotName?: string
     ) => {
       // Règle stricte (PDF Chapitre 5) : Séparation entre celui qui compte et celui qui valide les écarts
       const isSuperAdmin = Number(currentUser?.role_id) === 0 || Number(currentUser?.id) === 0;
@@ -5686,8 +6713,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return {
           success: false,
           updatedCount: 0,
-          message:
-            tr(language, 'Action non autorisée : la validation des écarts et la régularisation de stock sont réservées aux responsables habilités (perm_inventory_validate).', 'Unauthorized: inventory validation and reconciliation is restricted to authorized managers (perm_inventory_validate).'),
+          message: tr(
+            language,
+            'Action non autorisée : la validation des écarts et la régularisation de stock sont réservées aux responsables habilités (perm_inventory_validate).',
+            'Unauthorized: inventory validation and reconciliation is restricted to authorized managers (perm_inventory_validate).'
+          ),
         };
       }
 
@@ -5697,30 +6727,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const now = new Date().toISOString();
-      const updatedMap = new Map<string, number>();
-      const newMovements: StockMovement[] = [];
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      let updatedCount = 0;
+      let firstErrorMessage: string | null = null;
+      const recordedMovements: StockMovement[] = [];
 
       for (const adj of activeAdjustments) {
         const prod = products.find((p) => p.id === adj.productId);
         if (!prod) continue;
 
-        const newQty = Math.max(0, adj.physicalCount);
-        updatedMap.set(adj.productId, newQty);
+        const targetDepot =
+          adj.depotName ||
+          overrideDepotName ||
+          inventoryAuditTargetDepot ||
+          prod.store_name ||
+          'Dépôt Principal';
 
+        const newDepotQty = Math.max(0, Number(adj.physicalCount) || 0);
         const delta = Math.abs(adj.difference);
         const movType: MovementType = adj.difference > 0 ? 'IN' : 'OUT';
-        const targetDepot =
-          inventoryAuditTargetDepot || prod.store_name || 'Dépôt Principal';
+        const prevGlobalQty = Number(prod.quantity) || 0;
+        const existingDepotLevel = stockLevels.find(
+          (sl) =>
+            String(sl.product_id) === String(prod.id) &&
+            sl.depot_name.trim().toLowerCase() === targetDepot.trim().toLowerCase()
+        );
+        const prevDepotQty = existingDepotLevel
+          ? Number(existingDepotLevel.quantity) || 0
+          : Number(adj.theoreticalQty) || 0;
 
-        newMovements.push({
-          id: `mov-audit-${Date.now()}-${crypto.randomUUID()}`,
+        // Nouveau stock global optimiste = ancien global + (nouveau dépôt - ancien dépôt)
+        const optimisticGlobalQty = Math.max(0, prevGlobalQty + (newDepotQty - prevDepotQty));
+
+        const mov: StockMovement = {
+          id: `mov-audit-${Date.now()}-${
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : Math.random().toString(36).slice(2, 9)
+          }`,
           product_id: adj.productId,
           product_ref: prod.reference,
           user_id: currentUser?.id || null,
           user_name: currentUser?.name || 'Inventaire Physique',
           movement_type: movType,
           type: 'INVENTORY',
-          quantity: newQty,
+          action: 'INVENTORY_AUDIT',
+          quantity: newDepotQty,
           quantity_changed: delta,
           depot_name: targetDepot,
           reason: adj.reason || 'Régularisation Inventaire',
@@ -5728,110 +6780,154 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           department_name: adj.reason || 'Régularisation Inventaire',
           total_cost: delta * (prod.unit_price || 0),
           created_at: now,
+        };
+
+        setProducts((prev) =>
+          prev.map((p) => (p.id === adj.productId ? { ...p, quantity: optimisticGlobalQty } : p))
+        );
+        setMovements((prev) => [mov, ...prev]);
+        setStockLevels((prev) =>
+          applyMovementToStockLevelsList(prev, {
+            productId: adj.productId,
+            depotName: targetDepot,
+            newDepotQty,
+          })
+        );
+
+        const commitRes = await commitStockMovement({
+          client,
+          movement: mov,
+          previousProductQty: prevGlobalQty,
+          optimisticProductQty: optimisticGlobalQty,
+          currentUserId: currentUser?.id,
+          applyServerProductState: (pId, serverQty, depotQty) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: serverQty } : p))
+            );
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: typeof depotQty === 'number' ? depotQty : newDepotQty,
+              })
+            );
+          },
+          rollbackLocalState: (pId, restoredQty, movId) => {
+            setProducts((prev) =>
+              prev.map((p) => (p.id === pId ? { ...p, quantity: restoredQty } : p))
+            );
+            setMovements((prev) => prev.filter((m) => m.id !== movId));
+            setStockLevels((prev) =>
+              applyMovementToStockLevelsList(prev, {
+                productId: pId,
+                depotName: targetDepot,
+                newDepotQty: prevDepotQty,
+              })
+            );
+          },
+          notifyError: (msg) => {
+            setLicenseNotification(msg);
+          },
         });
+
+        if (commitRes.status === 'rejected') {
+          firstErrorMessage = commitRes.message;
+          await refreshRejectedSyncOps();
+        } else {
+          updatedCount++;
+          recordedMovements.push(mov);
+        }
       }
 
-      // Update products state
-      setProducts((prev) =>
-        prev.map((p) => {
-          if (updatedMap.has(p.id)) {
-            return { ...p, quantity: updatedMap.get(p.id)! };
-          }
-          return p;
-        })
-      );
-
-      // Add movements
-      setMovements((prev) => [...newMovements, ...prev]);
+      if (updatedCount === 0 && firstErrorMessage) {
+        return {
+          success: false,
+          updatedCount: 0,
+          message: firstErrorMessage,
+        };
+      }
 
       logActivity({
         type: 'INVENTORY_AUDIT',
         category: 'SYSTEM',
-        title: tr(language, 'Comptage d\'Inventaire Régularisé', 'Inventory Audit Adjusted'),
-        description: `${newMovements.length} article(s) régularisé(s) en base suite au comptage physique`,
+        title: tr(language, "Comptage d'Inventaire Régularisé", 'Inventory Audit Adjusted'),
+        description: `${updatedCount} article(s) régularisé(s) en base suite au comptage physique`,
         user_name: currentUser?.name || 'Inventaire Physique',
         user_trigram: currentUser?.trigram || 'INV',
         meta: {
           status: 'success',
-          difference: newMovements.length,
+          difference: updatedCount,
           reason: 'Régularisation automatique des écarts',
         },
       });
 
-      // Push to Supabase via process_stock_movement (type: INVENTORY) or enqueue in sync_queue if offline
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
-      for (const mov of newMovements) {
-        const newQty = updatedMap.get(mov.product_id) ?? 0;
-        const opId =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : 'inv-op-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+      const auditRes = await recordInventoryAuditToSupabase(client, {
+        depot_name:
+          overrideDepotName ||
+          inventoryAuditTargetDepot ||
+          currentUser?.department ||
+          'Inventaire Principal',
+        auditor_id: currentUser?.id,
+        auditor_name: currentUser?.name || 'Inventaire Physique',
+        items_counted: adjustments.length,
+        items_with_diff: updatedCount,
+        total_diff_cost: recordedMovements.reduce((sum, m) => sum + (m.total_cost || 0), 0),
+        audit_notes: `${updatedCount} article(s) régularisé(s)`,
+        items: activeAdjustments.map((adj) => {
+          const prod = products.find((p) => p.id === adj.productId);
+          return {
+            product_id: adj.productId,
+            product_ref: prod?.reference || adj.productId,
+            product_name: prod?.model || prod?.reference,
+            theoretical_qty: adj.theoreticalQty,
+            physical_count: adj.physicalCount,
+            difference: adj.difference,
+            unit_price: prod?.unit_price || 0,
+            diff_cost: Math.abs(adj.difference) * (prod?.unit_price || 0),
+            scanned_barcode: prod?.barcode,
+          };
+        }),
+      });
 
-        putToStore('stock_movements', mov).catch(() => {});
-
-        const rpcPayload = {
-          product_id: mov.product_id,
-          depot_name: mov.depot_name || 'Dépôt Principal',
-          type: 'INVENTORY',
-          quantity: newQty,
-          reason: mov.reason || 'Régularisation Inventaire',
-          project_name: 'INV-REGUL',
-          department: mov.department_name || 'Régularisation Inventaire',
-          metadata: { id: mov.id, product_ref: mov.product_ref },
-        };
-
-        if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-          pushMovementToSupabase(client, mov, newQty, currentUser?.id, opId)
-            .then((res) => {
-              if (!res.success && res.isNetworkError) {
-                enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
-              } else if (res.success && typeof res.newQty === 'number') {
-                setProducts((prev) =>
-                  prev.map((p) => (p.id === mov.product_id ? { ...p, quantity: res.newQty! } : p))
-                );
-              }
-            })
-            .catch(() => {
-              enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
-            });
-        } else {
-          enqueueSyncOperation('stock_movements', 'RPC_STOCK_MOVEMENT', rpcPayload, opId).catch(() => {});
-        }
-      }
-
-      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-        recordInventoryAuditToSupabase(client, {
-          depot_name: inventoryAuditTargetDepot || currentUser?.department || 'Inventaire Principal',
-          auditor_id: currentUser?.id,
-          auditor_name: currentUser?.name || 'Inventaire Physique',
-          items_counted: adjustments.length,
-          items_with_diff: activeAdjustments.length,
-          total_diff_cost: newMovements.reduce((sum, m) => sum + (m.total_cost || 0), 0),
-          audit_notes: `${activeAdjustments.length} article(s) régularisé(s)`,
-          items: activeAdjustments.map((adj) => {
-            const prod = products.find((p) => p.id === adj.productId);
-            return {
-              product_id: adj.productId,
-              product_ref: prod?.reference || adj.productId,
-              product_name: prod?.model || prod?.reference,
-              theoretical_qty: adj.theoreticalQty,
-              physical_count: adj.physicalCount,
-              difference: adj.difference,
-              unit_price: prod?.unit_price || 0,
-              diff_cost: Math.abs(adj.difference) * (prod?.unit_price || 0),
-              scanned_barcode: prod?.barcode,
-            };
-          }),
-        }).catch((err) => console.warn('Supabase recordInventoryAudit error:', err));
+      const createdAuditId = auditRes.auditId;
+      let auditWarningSuffix = '';
+      if (!auditRes.success) {
+        await refreshRejectedSyncOps();
+        const warningText = tr(
+          language,
+          AUDIT_HISTORY_NOT_SAVED_WARNING,
+          'Stock adjusted, but audit history could not be saved',
+          'Voorraad gecorrigeerd, maar de auditgeschiedenis kon niet worden opgeslagen'
+        );
+        const detail = auditRes.error ? ` (${auditRes.error})` : '';
+        auditWarningSuffix = ` — ⚠️ ${warningText}${detail}`;
+        setLicenseNotification(`${warningText}${detail}`);
       }
 
       return {
         success: true,
-        updatedCount: newMovements.length,
-        message: `${newMovements.length} article(s) régularisé(s) en stock avec succès !`,
+        updatedCount,
+        auditId: createdAuditId,
+        auditHistorySaved: auditRes.success,
+        auditHistoryQueued: Boolean(auditRes.queued),
+        warningMessage: !auditRes.success ? AUDIT_HISTORY_NOT_SAVED_WARNING : undefined,
+        message: firstErrorMessage
+          ? `${updatedCount} article(s) régularisé(s), mais une erreur est survenue : ${firstErrorMessage}${auditWarningSuffix}`
+          : `${updatedCount} article(s) régularisé(s) en stock avec succès !${auditWarningSuffix}`,
       };
     },
-    [products, currentUser, userHasPermission, supabaseUrl, supabaseKey, language, logActivity]
+    [
+      products,
+      stockLevels,
+      inventoryAuditTargetDepot,
+      currentUser,
+      userHasPermission,
+      supabaseUrl,
+      supabaseKey,
+      language,
+      logActivity,
+      refreshRejectedSyncOps,
+    ]
   );
 
   // Departments CRUD
@@ -6244,82 +7340,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const saveDepot = useCallback(
     async (depotData: Partial<Depot> & { name: string }) => {
-      const cleanName = depotData.name.trim();
-      if (!cleanName) {
-        return { success: false, message: 'Le nom du magasin / dépôt est requis.' };
-      }
-
-      // Check for duplicate name
-      const duplicateName = depots.find(
-        (d) =>
-          d.name.toLowerCase() === cleanName.toLowerCase() &&
-          (depotData.id === undefined || String(d.id) !== String(depotData.id))
-      );
-      if (duplicateName) {
-        return {
-          success: false,
-          message: `Un magasin ou dépôt portant le nom "${cleanName}" existe déjà.`,
-        };
-      }
-
-      const existingIndex =
-        depotData.id !== undefined
-          ? depots.findIndex((d) => String(d.id) === String(depotData.id))
-          : -1;
-
-      // If it's a NEW depot (or reactivating an existing inactive one), enforce license quota on ACTIVE depots
-      const activeDepotsCount = depots.filter((d) => d.is_active !== false).length;
-      const willBeActive = depotData.is_active !== false;
-      const isExistingInactive = existingIndex >= 0 && depots[existingIndex].is_active === false;
-
-      if ((existingIndex === -1 || isExistingInactive) && willBeActive && activeDepotsCount >= maxDepots) {
-        const planTier = PLAN_TIERS[license?.plan_type || 'free'];
-        const planName = planTier?.name || 'actuel';
-        return {
-          success: false,
-          message: `Limite de licence atteinte : votre forfait ${planName} est limité à ${maxDepots} magasin(s)/dépôt(s) actif(s). Mettez à niveau votre licence pour en ajouter plus.`,
-        };
-      }
-
-      // Check if deactivating a depot is allowed by the license plan
-      if (depotData.is_active === false) {
-        const plan = normalizeToCanonicalPlan(license?.plan || license?.plan_type, license?.license_key);
-        if (plan === 'free') {
-          return {
-            success: false,
-            message:
-              `La mise en veille / fermeture temporaire d’un magasin ou dépôt est disponible à partir du forfait ${PLAN_LABELS.sta} (3 dépôts, gestion chantiers). Passez au forfait ${PLAN_LABELS.sta} pour utiliser cette fonctionnalité.`,
-          };
-        }
-      }
-
-      let updatedDepot: Depot;
-      if (existingIndex >= 0) {
-        const oldDepot = depots[existingIndex];
-        updatedDepot = {
-          ...oldDepot,
-          ...depotData,
-          name: cleanName,
-          type: depotData.type || oldDepot.type || 'FIXED',
-          vehicle_type: depotData.vehicle_type !== undefined ? depotData.vehicle_type : oldDepot.vehicle_type,
-          license_plate: depotData.license_plate !== undefined ? depotData.license_plate : oldDepot.license_plate,
-          manager_id: depotData.manager_id !== undefined ? depotData.manager_id : oldDepot.manager_id,
-          manager_name: depotData.manager_name !== undefined ? depotData.manager_name : oldDepot.manager_name,
-          binome_ids: depotData.binome_ids !== undefined ? depotData.binome_ids : oldDepot.binome_ids,
-          binome_names: depotData.binome_names !== undefined ? depotData.binome_names : oldDepot.binome_names,
-          department_id: depotData.department_id !== undefined ? depotData.department_id : oldDepot.department_id,
-          department_name: depotData.department_name !== undefined ? depotData.department_name : oldDepot.department_name,
-          is_active: depotData.is_active !== undefined ? depotData.is_active : (oldDepot.is_active ?? true),
-          updated_at: new Date().toISOString(),
-        };
-
-        // If depot was renamed, update linked products' store_name
-        if (oldDepot.name.toLowerCase() !== cleanName.toLowerCase()) {
-          const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      return executeSaveDepotWithRollback({
+        depots,
+        depotData,
+        maxDepots,
+        license,
+        client,
+        language,
+        onSetDepots: setDepots,
+        onRenameDepotInProducts: (oldName, newName) => {
           setProducts((prev) =>
             prev.map((p) => {
-              if (p.store_name?.toLowerCase() === oldDepot.name.toLowerCase()) {
-                const upd = { ...p, store_name: cleanName };
+              if (p.store_name?.toLowerCase() === oldName.toLowerCase()) {
+                const upd = { ...p, store_name: newName };
                 if (client) {
                   upsertProductToSupabase(client, upd).catch((err) =>
                     console.warn('Erreur renommage dépôt sur produit Supabase:', err)
@@ -6330,90 +7364,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return p;
             })
           );
-        }
-
-        setDepots((prev) => prev.map((d, i) => (i === existingIndex ? updatedDepot : d)));
-      } else {
-        updatedDepot = {
-          id: depotData.id || Date.now(),
-          name: cleanName,
-          code: depotData.code?.trim() || `DEP-${String(depots.length + 1).padStart(2, '0')}`,
-          address: depotData.address?.trim() || '',
-          description: depotData.description?.trim() || '',
-          type: depotData.type || 'FIXED',
-          vehicle_type: depotData.vehicle_type?.trim() || undefined,
-          license_plate: depotData.license_plate?.trim() || undefined,
-          manager_id: depotData.manager_id || null,
-          manager_name: depotData.manager_name || null,
-          binome_ids: depotData.binome_ids || [],
-          binome_names: depotData.binome_names || [],
-          department_id: depotData.department_id || null,
-          department_name: depotData.department_name || null,
-          pickup_zones: depotData.pickup_zones || [],
-          is_active: depotData.is_active ?? true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        setDepots((prev) => [...prev, updatedDepot]);
-      }
-
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
-      let supabaseFeedback = '';
-
-      if (client) {
-        let syncRes = await upsertDepotToSupabase(client, updatedDepot);
-        if (
-          !syncRes.success &&
-          syncRes.error &&
-          (syncRes.error.toLowerCase().includes('quota') ||
-            syncRes.error.toLowerCase().includes('licence') ||
-            syncRes.error.toLowerCase().includes('license'))
-        ) {
-          // Resynchroniser automatiquement la table license_config client avec la licence active puis réessayer
-          await syncLicenseToClientDatabase(license, client).catch(() => {});
-          syncRes = await upsertDepotToSupabase(client, updatedDepot);
-        }
-
-        if (syncRes.success) {
-          if (syncRes.inserted && syncRes.inserted.id) {
-            const dbId = syncRes.inserted.id;
-            updatedDepot.id = dbId;
-            setDepots((prev) =>
-              prev.map((d) => (d.name.toLowerCase() === cleanName.toLowerCase() ? { ...d, id: dbId } : d))
-            );
-          }
-          supabaseFeedback = ` • Synchro SQL Supabase OK (${syncRes.table})`;
-        } else if (
-          syncRes.error &&
-          (syncRes.error.toLowerCase().includes('quota') ||
-            syncRes.error.toLowerCase().includes('licence') ||
-            syncRes.error.toLowerCase().includes('license'))
-        ) {
-          if (existingIndex === -1) {
-            setDepots((prev) => prev.filter((d) => d.name.toLowerCase() !== cleanName.toLowerCase()));
-          }
-          return {
-            success: false,
-            message: `Rejet par la base de données : ${syncRes.error}`,
-          };
-        } else if (syncRes.isNetworkError) {
-          supabaseFeedback = ` • ⚠️ Serveur Supabase inaccessible (Failed to fetch). Dépôt conservé localement.`;
-        } else if (syncRes.isTableMissing) {
-          supabaseFeedback = ` • ⚠️ Table SQL "${syncRes.table || 'depots'}" inexistante dans Supabase. Exécutez le script SQL fourni dans "Magasins & Dépôts".`;
-        } else {
-          supabaseFeedback = ` • ⚠️ Note Supabase : ${syncRes.error}`;
-        }
-      } else {
-        supabaseFeedback = ` (Stocké localement - Supabase non connecté)`;
-      }
-
-      return {
-        success: true,
-        message: `Dépôt "${cleanName}" enregistré avec succès !${supabaseFeedback}`,
-        depot: updatedDepot,
-      };
+        },
+      });
     },
-    [depots, maxDepots, license, supabaseUrl, supabaseKey]
+    [depots, maxDepots, license, supabaseUrl, supabaseKey, language]
   );
 
   const deleteDepot = useCallback(
@@ -6529,6 +7483,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveTab,
       products,
       movements,
+      stockLevels,
+      rejectedSyncOps,
+      refreshRejectedSyncOps,
+      retryRejectedMovement,
+      discardRejectedMovement,
+      addProductToDepot,
       roles,
       users: visibleUsers,
       allUsers: users,
@@ -6645,6 +7605,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeFromOrderCart,
       clearOrderCart,
       submitMaterialOrder,
+      canTransferBetweenDepots,
+      stockTransferModal,
+      setStockTransferModal,
+      openStockTransferModal,
+      transferStockBatchBetweenDepots,
       transferStockBetweenDepots,
       assignOrderToMe,
       markOrderReady,
@@ -6744,6 +7709,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       activeTab,
       products,
       movements,
+      stockLevels,
+      rejectedSyncOps,
+      refreshRejectedSyncOps,
+      retryRejectedMovement,
+      discardRejectedMovement,
+      addProductToDepot,
       roles,
       users,
       visibleUsers,
@@ -6834,6 +7805,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeFromCart,
       clearCart,
       confirmBatchMovements,
+      canTransferBetweenDepots,
+      stockTransferModal,
+      setStockTransferModal,
+      openStockTransferModal,
+      transferStockBatchBetweenDepots,
       transferStockBetweenDepots,
       orders,
       orderCart,

@@ -27,21 +27,28 @@ Ce document explique comment l'éditeur prépare une licence dans la base maîtr
 
 ---
 
-## Paramètre `app_settings.master_license_function`
+## Noms des fonctions Edge et surcharges dans `core_app_settings`
 
-La fonction Edge déployée sur la base maître et appelée par l'application est **`APP_TOT-Stock_licenses`**.
+### Base maître (Éditeur)
+La fonction Edge déployée sur la base maître et appelée par l'application est **`APP_TOT-Stock_licenses`** (`MASTER_EDGE_FUNCTIONS.licenses` dans `src/constants/edgeFunctions.ts`).
 
-Côté projet client, le gestionnaire partagé `supabase/functions/_shared/syncLicenseHandler.ts` (via `readRuntimeConfig` dans `supabase/functions/_shared/config.ts`) détermine le nom de la fonction maître à appeler selon l'ordre de priorité suivant :
+### Projet client
+Les trois fonctions Edge déployées dans le projet Supabase du client sont centralisées dans `src/constants/edgeFunctions.ts` (`EDGE_FUNCTIONS`) :
+- **`APP_TOT-Stock_admin-users`** (`edge_fn_admin_users`)
+- **`APP_TOT-Stock_licenses_sync-license`** (`edge_fn_sync_license`)
+- **`APP_TOT-Stock_send-report-email`** (`edge_fn_send_report_email`)
 
-1. La clé **`master_license_function`** dans la table `public.app_settings` du projet client (si renseignée).
-2. La variable d'environnement `MASTER_LICENSE_FUNCTION` (si définie).
-3. La valeur par défaut **`APP_TOT-Stock_licenses`**.
-
-Aucune configuration supplémentaire n'est nécessaire dans le cas standard où la fonction maître porte le nom `APP_TOT-Stock_licenses`. Si l'éditeur déploie une fonction maître sous un nom personnalisé, il suffit d'insérer ou mettre à jour la clé dans `public.app_settings` :
+### Surcharges possibles dans `public.core_app_settings`
+Si une installation utilise des noms de fonctions Edge personnalisés, il suffit d'insérer ou mettre à jour les clés correspondantes dans `public.core_app_settings` :
 
 ```sql
-INSERT INTO public.app_settings (key, value)
-VALUES ('master_license_function', 'APP_TOT-Stock_licenses')
+INSERT INTO public.core_app_settings (key, value)
+VALUES
+  ('edge_fn_admin_users', 'APP_TOT-Stock_admin-users'),
+  ('edge_fn_sync_license', 'APP_TOT-Stock_licenses_sync-license'),
+  ('edge_fn_send_report_email', 'APP_TOT-Stock_send-report-email'),
+  ('master_license_function', 'APP_TOT-Stock_licenses')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 ```
+
 

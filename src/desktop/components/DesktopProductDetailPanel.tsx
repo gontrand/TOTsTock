@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { tr } from '../../i18n/dutchTranslator';
 import { useApp } from '../../context/AppContext';
-import { useProductDetailController } from '../../hooks/useProductDetailController';
+import {
+  computeDefaultAddDepotTarget,
+  useProductDetailController,
+} from '../../hooks/useProductDetailController';
 import { formatCurrency, formatDate } from '../../utils/crypto';
 import { getProductDisplayLocation, getProductStockState } from '../../services/desktopInventoryLogic';
 import {
@@ -22,7 +25,14 @@ import {
   Package,
   AlertTriangle,
   PauseCircle,
+  Plus,
+  ArrowLeftRight,
 } from 'lucide-react';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../../services/unsavedChangesGuard';
 
 interface DesktopProductDetailPanelProps {
   productId: string | null;
@@ -37,9 +47,23 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
   onRequestLabelPrint,
   onRequestMovement,
 }) => {
-  const { language, subCategories, depots, setProductFormState } = useApp();
+  const {
+    language,
+    subCategories,
+    depots,
+    setProductFormState,
+    canTransferBetweenDepots,
+    openStockTransferModal,
+  } = useApp();
   const ctrl = useProductDetailController(productId);
-  const { product, subCategory } = ctrl;
+  const {
+    product,
+    productSignature,
+    subCategory,
+    depotBreakdown,
+    availableDepotsForAdd,
+    addProductToDepot,
+  } = ctrl;
 
   const [isEditingInline, setIsEditingInline] = useState(false);
   const [editReference, setEditReference] = useState('');
@@ -59,37 +83,80 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
   const [editDescription, setEditDescription] = useState('');
   const [savingInline, setSavingInline] = useState(false);
 
+  const inlineFormRef = useRef<HTMLFormElement | null>(null);
+  const editRefInputRef = useRef<HTMLInputElement | null>(null);
+
+  // État « Ajouter à un autre dépôt »
+  const [addDepotOpen, setAddDepotOpen] = useState(false);
+  const [targetDepotName, setTargetDepotName] = useState('');
+  const [targetInitialQty, setTargetInitialQty] = useState('1');
+  const [targetRackLocation, setTargetRackLocation] = useState('');
+  const [targetMinAlert, setTargetMinAlert] = useState('2');
+  const [addingToDepot, setAddingToDepot] = useState(false);
+
+  const isEditingInlineRef = useRef(isEditingInline);
+  isEditingInlineRef.current = isEditingInline;
+  const addDepotOpenRef = useRef(addDepotOpen);
+  addDepotOpenRef.current = addDepotOpen;
+  const userSelectedTargetDepotRef = useRef(false);
+
+  const populateInlineFieldsFromProduct = (p: typeof product) => {
+    if (!p) return;
+    setEditReference(p.reference || '');
+    setEditBarcode(p.barcode || '');
+    setEditManufacturerRef(p.manufacturer_ref || '');
+    setEditQrCode(p.qr_code || p.reference || '');
+    setEditBrand(p.brand || '');
+    setEditModel(p.model || '');
+    setEditRackLocation(p.rack_location || '');
+    setEditRoomName(p.room_name || '');
+    setEditShelfName(p.shelf_name || '');
+    setEditQuantity(String(p.quantity ?? 0));
+    setEditMinAlert(String(p.min_stock_alert ?? 2));
+    setEditUnitPrice(String(p.unit_price ?? 0));
+    setEditStoreName(p.store_name || '');
+    setEditSubCatId(p.sub_category_id ? String(p.sub_category_id) : '');
+    setEditDescription(p.description || '');
+  };
+
+  // 1. Réinitialisation uniquement au changement de produit
   useEffect(() => {
     setIsEditingInline(false);
-    if (product) {
-      setEditReference(product.reference || '');
-      setEditBarcode(product.barcode || '');
-      setEditManufacturerRef(product.manufacturer_ref || '');
-      setEditQrCode(product.qr_code || product.reference || '');
-      setEditBrand(product.brand || '');
-      setEditModel(product.model || '');
-      setEditRackLocation(product.rack_location || '');
-      setEditRoomName(product.room_name || '');
-      setEditShelfName(product.shelf_name || '');
-      setEditQuantity(String(product.quantity ?? 0));
-      setEditMinAlert(String(product.min_stock_alert ?? 2));
-      setEditUnitPrice(String(product.unit_price ?? 0));
-      setEditStoreName(product.store_name || '');
-      setEditSubCatId(product.sub_category_id ? String(product.sub_category_id) : '');
-      setEditDescription(product.description || '');
+    setAddDepotOpen(false);
+    isEditingInlineRef.current = false;
+    addDepotOpenRef.current = false;
+    userSelectedTargetDepotRef.current = false;
+    setTargetDepotName('');
+    setTargetInitialQty('1');
+    setTargetRackLocation('');
+    setTargetMinAlert(String(product?.min_stock_alert ?? 2));
+  }, [product?.id]);
+
+  // 2. Remplissage des champs d'édition sur signature stable du produit (bloqué pendant l'édition ou l'ajout à un dépôt)
+  useEffect(() => {
+    if (!product) return;
+    if (isEditingInlineRef.current || addDepotOpenRef.current) return;
+    populateInlineFieldsFromProduct(product);
+  }, [product?.id, productSignature]);
+
+  // 3. Calcul du dépôt cible par défaut uniquement à l'ouverture du menu « Ajouter à un autre dépôt »
+  useEffect(() => {
+    if (!addDepotOpen || !product) return;
+    setTargetDepotName((prev) =>
+      computeDefaultAddDepotTarget({
+        currentTargetDepotName: prev,
+        allDepotRows: depotBreakdown.allDepotRows,
+        availableDepotsForAdd,
+        userHasSelectedTarget: userSelectedTargetDepotRef.current,
+      })
+    );
+    if (!userSelectedTargetDepotRef.current) {
+      setTargetMinAlert(String(product.min_stock_alert ?? 2));
     }
-  }, [product]);
+  }, [addDepotOpen]);
 
-  if (!product) {
-    return null;
-  }
-
-  const stockState = getProductStockState(product);
-  const displayLoc = getProductDisplayLocation(product);
-
-  const handleSaveInline = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ctrl.canEditProduct || savingInline) return;
+  const performSaveInline = async (): Promise<boolean> => {
+    if (!product || !ctrl.canEditProduct || savingInline) return false;
     setSavingInline(true);
     try {
       const cleanRef = editReference.trim() || product.reference;
@@ -118,10 +185,49 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
       );
       if (ok) {
         setIsEditingInline(false);
+        isEditingInlineRef.current = false;
       }
+      return Boolean(ok);
     } finally {
       setSavingInline(false);
     }
+  };
+
+  const discardInlineEdit = () => {
+    if (product) {
+      populateInlineFieldsFromProduct(product);
+    }
+    setIsEditingInline(false);
+    isEditingInlineRef.current = false;
+  };
+
+  useRegisterUnsavedForm({
+    id: 'desktop-product-inline',
+    isDirty: Boolean(product && isEditingInline),
+    label: product
+      ? `${tr(language, 'Produit', 'Product', 'Product')} : ${product.reference} (${product.brand} ${product.model})`
+      : undefined,
+    onSave: () => performSaveInline(),
+    onDiscard: () => discardInlineEdit(),
+  });
+
+  if (!product) {
+    return null;
+  }
+
+  const stockState = getProductStockState(product);
+  const displayLoc = getProductDisplayLocation(product);
+
+  const handleSaveInline = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSaveInline();
+  };
+
+  const handleStartEditInline = () => {
+    ctrl.setActiveTab('details');
+    setIsEditingInline(true);
+    isEditingInlineRef.current = true;
+    scrollToAndFocusForm(inlineFormRef.current, editRefInputRef.current);
   };
 
   return (
@@ -175,7 +281,13 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
           {ctrl.canEditProduct && (
             <button
               type="button"
-              onClick={() => setIsEditingInline((v) => !v)}
+              onClick={() => {
+                if (!isEditingInline) {
+                  handleStartEditInline();
+                } else {
+                  requestGuardedNavigation(() => discardInlineEdit(), ['desktop-product-inline']);
+                }
+              }}
               className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition cursor-pointer ${
                 isEditingInline
                   ? 'bg-orange-600 text-white border-orange-600'
@@ -188,7 +300,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => requestGuardedNavigation(onClose, ['desktop-product-inline'])}
             className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
             aria-label={tr(language, 'Fermer le panneau', 'Close panel', 'Paneel sluiten')}
           >
@@ -214,7 +326,9 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
         {ctrl.canViewArticleHistory && (
           <button
             type="button"
-            onClick={() => ctrl.setActiveTab('history')}
+            onClick={() =>
+              requestGuardedNavigation(() => ctrl.setActiveTab('history'), ['desktop-product-inline'])
+            }
             className={`pb-2 border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
               ctrl.activeTab === 'history'
                 ? 'border-orange-600 text-orange-600 dark:text-orange-400'
@@ -248,13 +362,14 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
 
         {ctrl.activeTab === 'details' ? (
           isEditingInline ? (
-            <form onSubmit={handleSaveInline} className="space-y-3 text-xs">
+            <form ref={inlineFormRef} onSubmit={handleSaveInline} className="space-y-3 text-xs">
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
                     {tr(language, 'Référence Interne', 'Internal Ref', 'Interne ref.')}
                   </label>
                   <input
+                    ref={editRefInputRef}
                     type="text"
                     value={editReference}
                     onChange={(e) => setEditReference(e.target.value)}
@@ -463,7 +578,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setIsEditingInline(false)}
+                    onClick={discardInlineEdit}
                     className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                   >
                     {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
@@ -538,7 +653,8 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                       if (onRequestMovement) {
                         onRequestMovement(product.id, 'OUT');
                       } else {
-                        ctrl.addToCart(product, -1);
+                        ctrl.setScanState({ open: false, mode: 'OUT' });
+                        ctrl.addToCart(product, 1);
                         ctrl.setBatchCartModalOpen(true);
                       }
                     }}
@@ -555,6 +671,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                       if (onRequestMovement) {
                         onRequestMovement(product.id, 'IN');
                       } else {
+                        ctrl.setScanState({ open: false, mode: 'IN' });
                         ctrl.addToCart(product, 1);
                         ctrl.setBatchCartModalOpen(true);
                       }
@@ -591,6 +708,265 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                     <span>{tr(language, 'Imprimer étiquette', 'Print label', 'Etiket afdrukken')}</span>
                   </button>
                 )}
+                {canTransferBetweenDepots && (
+                  <button
+                    type="button"
+                    data-testid="desktop-product-transfer-btn"
+                    onClick={() => {
+                      const defaultSrc =
+                        depotBreakdown.depotRows.find((r) => r.quantity > 0)?.depotName ||
+                        product.store_name ||
+                        undefined;
+                      openStockTransferModal({
+                        sourceDepot: defaultSrc,
+                        items: [{ productId: product.id, quantity: 1 }],
+                      });
+                    }}
+                    className="col-span-2 py-2 px-3 rounded-xl border border-sky-200 dark:border-sky-800/70 bg-sky-50/80 dark:bg-sky-950/40 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sky-700 dark:text-sky-300 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <ArrowLeftRight className="w-4 h-4 text-sky-600 shrink-0" />
+                    <span>
+                      {tr(
+                        language,
+                        'Transférer vers un autre dépôt',
+                        'Transfer to another depot',
+                        'Overdragen naar een ander depot'
+                      )}
+                    </span>
+                  </button>
+                )}
+              </div>
+
+              {/* Section Stock par dépôt (LOT 2 v40) */}
+              <div className="border-t border-slate-200 dark:border-slate-800 pt-3 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <Building className="w-3.5 h-3.5 text-orange-600" />
+                    <span>
+                      {tr(language, 'Stock par dépôt', 'Stock per depot', 'Voorraad per depot')}
+                    </span>
+                  </span>
+                  {(ctrl.canIn || ctrl.canEditProduct) && availableDepotsForAdd.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddDepotOpen((prev) => {
+                          const next = !prev;
+                          if (next && product) {
+                            const defaultTarget = computeDefaultAddDepotTarget({
+                              currentTargetDepotName: targetDepotName,
+                              allDepotRows: depotBreakdown.allDepotRows,
+                              availableDepotsForAdd,
+                              userHasSelectedTarget: userSelectedTargetDepotRef.current,
+                            });
+                            setTargetDepotName(defaultTarget);
+                            if (!userSelectedTargetDepotRef.current) {
+                              setTargetMinAlert(String(product.min_stock_alert ?? 2));
+                            }
+                          }
+                          return next;
+                        });
+                      }}
+                      className="px-2 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800/60 hover:bg-orange-100 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>
+                        {tr(
+                          language,
+                          'Ajouter à un autre dépôt',
+                          'Add to another depot',
+                          'Toevoegen aan een ander depot'
+                        )}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {depotBreakdown.hasDiscrepancy && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300 flex items-start gap-2 text-[11px]">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+                    <div>
+                      <strong className="font-bold block">
+                        {tr(
+                          language,
+                          'Écart de cohérence',
+                          'Consistency discrepancy',
+                          'Consistentieafwijking'
+                        )}
+                      </strong>
+                      <span>
+                        {tr(
+                          language,
+                          `Stock fiche (${depotBreakdown.productQuantity}) ≠ somme des dépôts (${depotBreakdown.sumOfStockLevels}).`,
+                          `Product quantity (${depotBreakdown.productQuantity}) ≠ sum of depots (${depotBreakdown.sumOfStockLevels}).`,
+                          `Productvoorraad (${depotBreakdown.productQuantity}) ≠ som van depots (${depotBreakdown.sumOfStockLevels}).`
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {addDepotOpen && (
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!targetDepotName || addingToDepot) return;
+                      setAddingToDepot(true);
+                      try {
+                        const res = await addProductToDepot({
+                          productId: product.id,
+                          depotName: targetDepotName,
+                          quantity: Math.max(1, Number(targetInitialQty) || 1),
+                          rackLocation: targetRackLocation.trim() || undefined,
+                          minAlert: Math.max(0, Number(targetMinAlert) || 0),
+                        });
+                        if (res.success) {
+                          setAddDepotOpen(false);
+                          userSelectedTargetDepotRef.current = false;
+                          setTargetDepotName('');
+                          setTargetInitialQty('1');
+                          setTargetRackLocation('');
+                        }
+                      } finally {
+                        setAddingToDepot(false);
+                      }
+                    }}
+                    className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2"
+                  >
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                          {tr(language, 'Dépôt cible', 'Target depot', 'Doeldepot')}
+                        </label>
+                        <select
+                          value={targetDepotName}
+                          onChange={(e) => {
+                            userSelectedTargetDepotRef.current = true;
+                            setTargetDepotName(e.target.value);
+                          }}
+                          className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold"
+                        >
+                          {availableDepotsForAdd.map((d) => (
+                            <option key={d.id} value={d.name}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                          {tr(language, 'Quantité initiale', 'Initial quantity', 'Beginvoorraad')}
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={targetInitialQty}
+                          onChange={(e) => setTargetInitialQty(e.target.value)}
+                          className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                          {tr(language, 'Emplacement (Rack)', 'Rack location', 'Reklocatie')}
+                        </label>
+                        <input
+                          type="text"
+                          value={targetRackLocation}
+                          onChange={(e) => setTargetRackLocation(e.target.value)}
+                          placeholder="Ex: B2-01"
+                          className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
+                          {tr(language, 'Seuil min.', 'Min. alert', 'Min. drempel')}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={targetMinAlert}
+                          onChange={(e) => setTargetMinAlert(e.target.value)}
+                          className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAddDepotOpen(false)}
+                        className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 text-[11px] font-semibold cursor-pointer"
+                      >
+                        {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={addingToDepot || !targetDepotName}
+                        className="px-3 py-1 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                      >
+                        {tr(language, 'Valider l’entrée', 'Confirm entry', 'Inname bevestigen')}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <table className="w-full text-left border-collapse text-[11px]">
+                    <thead className="bg-slate-50 dark:bg-slate-800/70 text-[10px] font-bold uppercase text-slate-500">
+                      <tr>
+                        <th className="py-1.5 px-2.5">
+                          {tr(language, 'Dépôt', 'Depot', 'Depot')}
+                        </th>
+                        <th className="py-1.5 px-2">
+                          {tr(language, 'Emplacement', 'Location', 'Locatie')}
+                        </th>
+                        <th className="py-1.5 px-2 text-right">
+                          {tr(language, 'Seuil', 'Min', 'Min')}
+                        </th>
+                        <th className="py-1.5 px-2.5 text-right">
+                          {tr(language, 'Qté', 'Qty', 'Aantal')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {depotBreakdown.depotRows.map((row) => (
+                        <tr key={row.depotName} className="bg-white dark:bg-slate-900">
+                          <td className="py-1.5 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                            {row.depotName}
+                          </td>
+                          <td className="py-1.5 px-2 font-mono text-slate-500">
+                            {row.rackLocation || '—'}
+                          </td>
+                          <td className="py-1.5 px-2 text-right font-mono text-slate-400">
+                            {row.minAlert}
+                          </td>
+                          <td
+                            className={`py-1.5 px-2.5 text-right font-mono font-bold ${
+                              row.isOut
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : row.isLow
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-emerald-600 dark:text-emerald-400'
+                            }`}
+                          >
+                            {row.quantity}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-slate-50 dark:bg-slate-800/70 font-bold border-t border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <td colSpan={3} className="py-1.5 px-2.5 text-slate-600 dark:text-slate-300">
+                          {tr(language, 'Total dépôts autorisés', 'Total allowed depots', 'Totaal toegestane depots')}
+                        </td>
+                        <td className="py-1.5 px-2.5 text-right font-mono text-slate-900 dark:text-white">
+                          {depotBreakdown.allowedTotalQuantity}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
               </div>
 
               {/* Metadata Grid */}

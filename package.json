@@ -1,15 +1,17 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "5.5.0",
+  "version": "5.9.1",
   "type": "module",
   "scripts": {
+    "predev": "npm run build:sql",
     "dev": "vite --port=3000 --host=0.0.0.0",
     "check:version": "node scripts/check-version.mjs",
     "build:sql": "node scripts/build-sql.mjs",
     "bundle:functions": "node scripts/bundle-functions.mjs",
     "install:tot": "node scripts/tot-install.mjs",
     "build": "npm run check:version && npm run build:sql && vite build",
+    "pretest": "npm run build:sql",
     "test": "vitest run",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

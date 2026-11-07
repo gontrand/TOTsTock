@@ -163,7 +163,7 @@ describe('TOT Stock v24 — Installation rapide, migrations générées, Edge Fu
                 check_key: 'edge_functions_deployed',
                 check_label: 'Fonctions Edge déployées',
                 status: 'OK',
-                details: '3/3 fonctions déployées (admin-users, sync-license, send-report-email)',
+                details: `3/3 fonctions déployées (${EDGE_FUNCTIONS.map((f) => f.name).join(', ')})`,
               },
             ],
             error: null,
@@ -240,14 +240,14 @@ describe('TOT Stock v24 — Installation rapide, migrations générées, Edge Fu
 
   it('Point 4 & 7 : --update refuse toute rétrogradation si le schéma cible est plus ancien que celui de la base et restaure maintenance = false en finally', async () => {
     // 1. Test unitaire direct du garde-fou de rétrogradation
-    const downgrade = checkSchemaDowngradeGuard('2.0.0', '1.0.0');
+    const downgrade = checkSchemaDowngradeGuard('2.1.0', '1.0.0');
     expect(downgrade.allowed).toBe(false);
     expect(downgrade.reason).toContain('Refus de rétrogradation');
 
-    const sameVersion = checkSchemaDowngradeGuard('1.0.0', '1.0.0');
+    const sameVersion = checkSchemaDowngradeGuard('2.1.0', '2.1.0');
     expect(sameVersion.allowed).toBe(true);
 
-    const upgrade = checkSchemaDowngradeGuard('1.0.0', '1.1.0');
+    const upgrade = checkSchemaDowngradeGuard('2.0.0', '2.1.0');
     expect(upgrade.allowed).toBe(true);
 
     // 2. Test de bout en bout de runTotInstall --update --maintenance face à une base en version 9.9.0 (> EXPECTED_SCHEMA_VERSION)
@@ -259,7 +259,7 @@ describe('TOT Stock v24 — Installation rapide, migrations générées, Edge Fu
         select: () => ({
           eq: () => ({
             maybeSingle: async () => ({
-              data: table === 'app_compat' ? { schema_version: '9.9.0', maintenance: false } : null,
+              data: table === 'core_app_compat' ? { schema_version: '9.9.0', maintenance: false } : null,
               error: null,
             }),
           }),
@@ -317,7 +317,7 @@ describe('TOT Stock v24 — Installation rapide, migrations générées, Edge Fu
         select: () => ({
           eq: () => ({
             maybeSingle: async () => ({
-              data: table === 'app_compat' ? { schema_version: '1.0.0', maintenance: false } : null,
+              data: table === 'core_app_compat' ? { schema_version: '1.0.0', maintenance: false } : null,
               error: null,
             }),
           }),

@@ -6,6 +6,7 @@ import {
   nativeImage,
   Notification,
   protocol,
+  safeStorage,
   session,
   shell,
   Tray,
@@ -115,6 +116,10 @@ function getDistDirectory() {
 
 function getWindowStatePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function getSafeStorageKeyPath() {
+  return path.join(app.getPath('userData'), 'local-crypto-key.bin');
 }
 
 function getPrintSettingsPath() {
@@ -1475,6 +1480,50 @@ function registerIpcHandlers() {
       ok: false,
       errorMessage: "Aucune mise à jour prête à être installée.",
     };
+  });
+
+  ipcMain.handle('tot:safe-storage-get-or-create-key', async (event) => {
+    if (!assertAuthorizedSender(event)) {
+      return { ok: false, errorMessage: 'Origine IPC non autorisée.' };
+    }
+    try {
+      if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
+        return { ok: false, errorMessage: 'safeStorage indisponible sur ce système.' };
+      }
+      const keyFilePath = getSafeStorageKeyPath();
+      if (fs.existsSync(keyFilePath)) {
+        const encryptedBuf = fs.readFileSync(keyFilePath);
+        const decryptedBase64 = safeStorage.decryptString(encryptedBuf).trim();
+        if (decryptedBase64 && Buffer.from(decryptedBase64, 'base64').byteLength === 32) {
+          return { ok: true, keyBase64: decryptedBase64 };
+        }
+      }
+      const rawKey = crypto.randomBytes(32);
+      const keyBase64 = rawKey.toString('base64');
+      const encryptedBuf = safeStorage.encryptString(keyBase64);
+      fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
+      fs.writeFileSync(keyFilePath, encryptedBuf, { mode: 0o600 });
+      return { ok: true, keyBase64 };
+    } catch (err) {
+      logError('Échec accès safeStorage', err);
+      return { ok: false, errorMessage: 'Impossible de lire ou créer la clé locale via safeStorage.' };
+    }
+  });
+
+  ipcMain.handle('tot:safe-storage-clear-key', async (event) => {
+    if (!assertAuthorizedSender(event)) {
+      return { ok: false, errorMessage: 'Origine IPC non autorisée.' };
+    }
+    try {
+      const keyFilePath = getSafeStorageKeyPath();
+      if (fs.existsSync(keyFilePath)) {
+        fs.unlinkSync(keyFilePath);
+      }
+      return { ok: true };
+    } catch (err) {
+      logError('Échec suppression clé safeStorage', err);
+      return { ok: false };
+    }
   });
 }
 

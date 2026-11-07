@@ -12,6 +12,12 @@ import {
   subscribeDesktopUpdateStatus,
 } from './services/desktopBridge';
 import { tr, useDutchDomTranslator } from './i18n/dutchTranslator';
+import {
+  dismissUserPreferencesSyncBanner,
+  getSyncBannerState,
+  subscribeUserPreferencesSyncBanner,
+  UserPreferencesSyncBannerState,
+} from './services/userPreferencesService';
 import { Header } from './components/Header';
 import { BottomNav } from './components/BottomNav';
 import { DashboardView } from './components/DashboardView';
@@ -49,6 +55,8 @@ import { ScannerPickingMode } from './components/ScannerPickingMode';
 import { LoginWelcomeScreen } from './components/LoginWelcomeScreen';
 import { useLayoutMode } from './hooks/useLayoutMode';
 import { DesktopWorkspace } from './desktop/DesktopWorkspace';
+import { UnsavedChangesModal } from './components/UnsavedChangesModal';
+import { StockTransferModal } from './components/StockTransferModal';
 
 const MainLayout: React.FC = () => {
   const layoutMode = useLayoutMode();
@@ -91,6 +99,7 @@ const MainLayout: React.FC = () => {
     orderCartModalOpen,
     preparerOrdersModalOpen,
     scannerPickingModeOpen,
+    stockTransferModal,
   } = useApp();
 
   useDutchDomTranslator(language);
@@ -103,6 +112,13 @@ const MainLayout: React.FC = () => {
     version: null,
     error: null,
   });
+  const [prefsSyncBanner, setPrefsSyncBanner] = useState<UserPreferencesSyncBannerState>(() =>
+    getSyncBannerState()
+  );
+
+  useEffect(() => {
+    return subscribeUserPreferencesSyncBanner(setPrefsSyncBanner);
+  }, []);
 
   useEffect(() => {
     if (!isDesktopApp()) return;
@@ -151,7 +167,15 @@ const MainLayout: React.FC = () => {
   };
 
   if (layoutMode === 'desktop' && currentUser && !isBlockedByCompat) {
-    return <DesktopWorkspace />;
+    return (
+      <>
+        <DesktopWorkspace />
+        {batchCartModalOpen && <BatchCartModal />}
+        {diagnosticModalOpen && <DiagnosticModal />}
+        {stockTransferModal?.open && <StockTransferModal />}
+        <UnsavedChangesModal />
+      </>
+    );
   }
 
   return (
@@ -209,6 +233,46 @@ const MainLayout: React.FC = () => {
                 `SQL-schema (v${appCompat.schemaVersion}) ouder dan verwacht schema (v${appCompat.expectedSchemaVersion}).`
               )}
             </span>
+          </div>
+        )}
+
+        {/* LOT 1.3 v48 : Bandeau discret unique si core_user_preferences / script SQL 12 est manquant */}
+        {prefsSyncBanner.visible && (
+          <div
+            role="status"
+            className="mx-3 mt-2 p-2.5 bg-violet-500/15 border border-violet-500/40 text-violet-900 dark:text-violet-200 text-xs font-bold rounded-xl flex items-center justify-between gap-2"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Database className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
+              <span className="truncate">
+                {tr(
+                  language,
+                  'Préférences non synchronisées (script SQL 12 manquant)',
+                  'Preferences not synchronized (SQL script 12 missing)',
+                  'Voorkeuren niet gesynchroniseerd (SQL-script 12 ontbreekt)'
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  dismissUserPreferencesSyncBanner();
+                  setCompanySetupModalOpen(true);
+                }}
+                className="px-2 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-extrabold cursor-pointer"
+              >
+                {tr(language, 'Scripts SQL', 'SQL Scripts', 'SQL-scripts')}
+              </button>
+              <button
+                type="button"
+                onClick={dismissUserPreferencesSyncBanner}
+                className="p-1 rounded-lg hover:bg-violet-500/20 cursor-pointer"
+                aria-label={tr(language, 'Fermer', 'Dismiss', 'Sluiten')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -498,6 +562,8 @@ const MainLayout: React.FC = () => {
         {orderCartModalOpen && <MaterialOrdersModal />}
         {preparerOrdersModalOpen && <OrdersPreparationModal />}
         {scannerPickingModeOpen && <ScannerPickingMode />}
+        {stockTransferModal?.open && <StockTransferModal />}
+        <UnsavedChangesModal />
       </div>
     </div>
   );

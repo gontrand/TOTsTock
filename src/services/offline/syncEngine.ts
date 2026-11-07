@@ -8,15 +8,34 @@ import {
   putToStore,
   putManyToStore,
   getByIdFromStore,
+  deleteFromStore,
 } from './indexedDb';
 import {
   isNetworkOrFetchError,
   upsertOrderToSupabase,
+  recordInventoryAuditToSupabase,
   normalizeProductRecord,
   normalizeMovementRecord,
   normalizeOrderRecord,
 } from '../clientSupabase';
+import {
+  formatServerMovementRejectionMessage,
+  sanitizeErrorForConsole,
+} from '../stockMovementService';
+import { TABLES, resolvePrefixedTableName } from '../../constants/tables';
 import { Product, MaterialOrder } from '../../types';
+
+export interface RolledBackMovementInfo {
+  operation_id: string;
+  local_movement_id?: string;
+  movement_id?: string;
+  product_id: string;
+  previous_product_qty?: number;
+  previous_store_name?: string;
+  previous_shelf_name?: string;
+  error_message: string;
+  message: string;
+}
 
 export interface SyncEngineResult {
   success: boolean;
@@ -25,8 +44,9 @@ export interface SyncEngineResult {
   failedCount: number;
   rejectedCount: number;
   conflicts: Array<{ operation_id: string; message: string; details?: any }>;
-  updatedProductQuantities?: Array<{ product_id: string; new_quantity: number; depot_quantity?: number }>;
+  updatedProductQuantities?: Array<{ product_id: string; new_quantity: number; depot_quantity?: number; dest_depot_quantity?: number }>;
   updatedOrders?: Array<{ id: string; order_number: string }>;
+  rolledBackMovements?: RolledBackMovementInfo[];
 }
 
 let isSyncRunning = false;
@@ -47,6 +67,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
       conflicts: [],
       updatedProductQuantities: [],
       updatedOrders: [],
+      rolledBackMovements: [],
     };
   }
 
@@ -60,6 +81,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
       conflicts: [],
       updatedProductQuantities: [],
       updatedOrders: [],
+      rolledBackMovements: [],
     };
   }
 
@@ -73,6 +95,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
     conflicts: [],
     updatedProductQuantities: [],
     updatedOrders: [],
+    rolledBackMovements: [],
   };
 
   try {
@@ -88,6 +111,13 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
         let rejectReason: string | undefined;
 
         if (op.action === 'RPC_STOCK_MOVEMENT') {
+          const movType = String(op.payload.type || 'OUT').toUpperCase();
+          const defaultAction =
+            movType === 'TRANSFER'
+              ? 'STOCK_TRANSFER'
+              : movType === 'INVENTORY'
+              ? 'STOCK_INVENTORY'
+              : 'STOCK_DIRECT_MOVE';
           // Transactional server RPC (supports IN, OUT, TRANSFER, INVENTORY, RETURN, LOSS)
           const { data, error } = await client.rpc('process_stock_movement', {
             p_operation_id: op.operation_id,
@@ -102,30 +132,32 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
               op.payload.dest_depot_name || op.payload.metadata?.dest_depot_name || null,
             p_dest_rack: op.payload.dest_rack || op.payload.metadata?.dest_rack || null,
             p_metadata: op.payload.metadata || {},
+            p_action: op.payload.action || op.payload.metadata?.action || defaultAction,
           });
 
           if (error) {
             if (isNetworkOrFetchError(error)) {
               throw error; // trigger retry on network error
             }
-            rejectReason = error.message;
+            console.error('[TOT Stock][SyncEngine] RPC movement rejected:', sanitizeErrorForConsole(error));
+            rejectReason = formatServerMovementRejectionMessage(error.message);
             if (error.code === '23514' || error.message?.includes('Stock insuffisant')) {
               result.conflicts.push({
                 operation_id: op.operation_id,
-                message: error.message,
+                message: rejectReason,
                 details: error,
               });
             }
           } else if (data && data.success === false) {
-            rejectReason = data.message || 'Mouvement rejeté par le serveur.';
-            const conflictMsg = rejectReason || 'Mouvement rejeté par le serveur.';
-            if (data.error_code === 'REJECTED_STOCK_CONFLICT') {
-              result.conflicts.push({
-                operation_id: op.operation_id,
-                message: conflictMsg,
-                details: data,
-              });
-            }
+            console.error('[TOT Stock][SyncEngine] RPC movement returned failure:', sanitizeErrorForConsole(data));
+            rejectReason = formatServerMovementRejectionMessage(
+              data.message || 'Mouvement rejeté par le serveur.'
+            );
+            result.conflicts.push({
+              operation_id: op.operation_id,
+              message: rejectReason,
+              details: data,
+            });
           } else {
             opSuccess = true;
             if (data && typeof data.new_quantity === 'number' && op.payload.product_id) {
@@ -134,6 +166,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
                 product_id: prodId,
                 new_quantity: data.new_quantity,
                 depot_quantity: data.depot_quantity,
+                dest_depot_quantity: data.dest_depot_quantity,
               });
               try {
                 const existingProd = await getByIdFromStore<Product>('products', prodId);
@@ -144,6 +177,125 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
                   });
                 }
               } catch {}
+            }
+          }
+
+          if (!opSuccess && rejectReason) {
+            const prodId = String(op.payload.product_id || '');
+            const localMovId = op.payload.local_movement_id || op.payload.metadata?.local_movement_id;
+            const prevQty =
+              typeof op.payload.previous_product_qty === 'number'
+                ? op.payload.previous_product_qty
+                : typeof op.payload.metadata?.previous_product_qty === 'number'
+                ? op.payload.metadata.previous_product_qty
+                : undefined;
+            const prevStore =
+              op.payload.previous_store_name ?? op.payload.metadata?.previous_store_name;
+            const prevShelf =
+              op.payload.previous_shelf_name ?? op.payload.metadata?.previous_shelf_name;
+
+            if (localMovId) {
+              await deleteFromStore('stock_movements', String(localMovId)).catch(() => {});
+            }
+            if (prodId && typeof prevQty === 'number') {
+              try {
+                const existingProd = await getByIdFromStore<Product>('products', prodId);
+                if (existingProd) {
+                  await putToStore('products', {
+                    ...existingProd,
+                    quantity: prevQty,
+                    ...(prevStore ? { store_name: prevStore } : {}),
+                    ...(prevShelf ? { shelf_name: prevShelf } : {}),
+                  });
+                }
+              } catch {}
+            }
+            result.rolledBackMovements?.push({
+              operation_id: op.operation_id,
+              local_movement_id: localMovId ? String(localMovId) : undefined,
+              movement_id: localMovId ? String(localMovId) : undefined,
+              product_id: prodId,
+              previous_product_qty: prevQty,
+              previous_store_name: prevStore,
+              previous_shelf_name: prevShelf,
+              error_message: rejectReason,
+              message: rejectReason,
+            });
+          }
+        } else if (op.action === 'RPC_STOCK_TRANSFER_BATCH') {
+          const batchId = op.payload?.p_batch_id || op.operation_id;
+          const { data, error } = await client.rpc('transfer_stock_batch', {
+            p_batch_id: batchId,
+            p_source_depot: op.payload?.p_source_depot || null,
+            p_dest_depot: op.payload?.p_dest_depot || null,
+            p_items: Array.isArray(op.payload?.p_items) ? op.payload.p_items : [],
+            p_reason: op.payload?.p_reason ?? null,
+          });
+
+          if (error) {
+            if (isNetworkOrFetchError(error)) {
+              throw error;
+            }
+            console.error(
+              '[TOT Stock][SyncEngine] RPC transfer_stock_batch rejected:',
+              sanitizeErrorForConsole(error)
+            );
+            rejectReason = formatServerMovementRejectionMessage(error.message);
+            result.conflicts.push({
+              operation_id: op.operation_id,
+              message: rejectReason,
+              details: error,
+            });
+          } else if (data && data.success === false) {
+            console.error(
+              '[TOT Stock][SyncEngine] RPC transfer_stock_batch returned failure:',
+              sanitizeErrorForConsole(data)
+            );
+            rejectReason = formatServerMovementRejectionMessage(
+              data.message || 'Transfert rejeté par le serveur.'
+            );
+            result.conflicts.push({
+              operation_id: op.operation_id,
+              message: rejectReason,
+              details: data,
+            });
+          } else {
+            opSuccess = true;
+            if (data && Array.isArray(data.items)) {
+              for (const itemRes of data.items) {
+                if (itemRes?.product_id && typeof itemRes.total_quantity === 'number') {
+                  result.updatedProductQuantities?.push({
+                    product_id: String(itemRes.product_id),
+                    new_quantity: itemRes.total_quantity,
+                    depot_quantity: itemRes.source_depot_quantity,
+                    dest_depot_quantity: itemRes.dest_depot_quantity,
+                  });
+                }
+              }
+            }
+          }
+
+          if (!opSuccess && rejectReason) {
+            const movIds: string[] = Array.isArray(op.payload?.local_movement_ids)
+              ? op.payload.local_movement_ids
+              : [];
+            for (const mid of movIds) {
+              if (mid) {
+                await deleteFromStore('stock_movements', String(mid)).catch(() => {});
+              }
+            }
+            const snapshots = Array.isArray(op.payload?.rollback_snapshots)
+              ? op.payload.rollback_snapshots
+              : [];
+            for (const snap of snapshots) {
+              result.rolledBackMovements?.push({
+                operation_id: op.operation_id,
+                local_movement_id: snap.localMovementId ? String(snap.localMovementId) : undefined,
+                movement_id: snap.localMovementId ? String(snap.localMovementId) : undefined,
+                product_id: String(snap.productId || ''),
+                error_message: rejectReason,
+                message: rejectReason,
+              });
             }
           }
         } else if (op.action === 'RPC_ORDER_TRANSITION') {
@@ -167,7 +319,8 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             opSuccess = true;
           }
         } else if (op.action === 'INSERT' || op.action === 'UPDATE') {
-          if (op.entity === 'material_orders') {
+          const targetTable = resolvePrefixedTableName(op.entity);
+          if (targetTable === TABLES.materialOrders) {
             const ordRes = await upsertOrderToSupabase(client, op.payload);
             if (ordRes.isNetworkError) {
               throw new Error(ordRes.error || 'Failed to fetch');
@@ -191,7 +344,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             }
           } else {
             // Standard upsert
-            const { error } = await client.from(op.entity).upsert([op.payload]);
+            const { error } = await client.from(targetTable).upsert([op.payload]);
             if (error) {
               if (isNetworkOrFetchError(error)) {
                 throw error;
@@ -202,8 +355,9 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             }
           }
         } else if (op.action === 'DELETE') {
+          const targetTable = resolvePrefixedTableName(op.entity);
           // Standard delete
-          const { error } = await client.from(op.entity).delete().eq('id', op.payload.id);
+          const { error } = await client.from(targetTable).delete().eq('id', op.payload.id);
           if (error) {
             if (isNetworkOrFetchError(error)) {
               throw error;
@@ -211,6 +365,27 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             rejectReason = error.message;
           } else {
             opSuccess = true;
+          }
+        } else if (op.action === 'RECORD_INVENTORY_AUDIT') {
+          const auditRes = await recordInventoryAuditToSupabase(
+            client,
+            {
+              ...op.payload,
+              id: op.payload?.id || op.operation_id,
+            },
+            {
+              skipQueue: true,
+              operationId: op.operation_id,
+            }
+          );
+          if (auditRes.isNetworkError) {
+            throw new Error(auditRes.error || 'Failed to fetch');
+          }
+          if (auditRes.success) {
+            opSuccess = true;
+          } else {
+            rejectReason =
+              auditRes.error || "Impossible d'enregistrer l'historique d'audit.";
           }
         }
 
@@ -253,7 +428,7 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     const nowIso = new Date().toISOString();
 
     // 1. Products updated since lastSync
-    let prodQuery = client.from('products').select('*');
+    let prodQuery = client.from(TABLES.products).select('*');
     if (lastSync) {
       prodQuery = prodQuery.gt('updated_at', lastSync);
     }
@@ -263,7 +438,7 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     }
 
     // 2. Stock movements created since lastSync (uses created_at column)
-    let movQuery = client.from('stock_movements').select('*');
+    let movQuery = client.from(TABLES.movements).select('*');
     if (lastSync) {
       movQuery = movQuery.gt('created_at', lastSync);
     }
@@ -273,7 +448,7 @@ export async function performIncrementalSync(client: SupabaseClient | null): Pro
     }
 
     // 3. Orders updated since lastSync
-    let ordQuery = client.from('material_orders').select('*');
+    let ordQuery = client.from(TABLES.materialOrders).select('*');
     if (lastSync) {
       ordQuery = ordQuery.gt('updated_at', lastSync);
     }

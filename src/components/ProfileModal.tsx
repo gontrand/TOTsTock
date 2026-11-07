@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
-import { hashPin } from '../utils/crypto';
 import { X, User, Lock, CheckCircle, Shield, Clock, LogOut, Smartphone, Sparkles, Volume2, VolumeX, Trash2, Scan } from 'lucide-react';
+import {
+  getLocalCryptoMode,
+  isLocalEncryptionEnabled,
+  enablePinLocalEncryption,
+  disablePinLocalEncryption,
+  clearCryptoKeyFromMemory,
+} from '../services/localCrypto';
+import {
+  hasLocalDevicePin,
+  verifyLocalDevicePin,
+  saveLocalDevicePin,
+  getUnsynchronizedOperationsCount,
+} from '../services/deviceSecurityService';
 import {
   isScannerSoundEnabled,
   setScannerSoundEnabled,
@@ -35,6 +47,7 @@ export const ProfileModal: React.FC = () => {
     setAutoLogoutMinutes,
     logout,
     wipeDeviceAndSignOut,
+    syncFromSupabase,
     language,
     t,
   } = useApp();
@@ -46,6 +59,13 @@ export const ProfileModal: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [confirmWipeDevice, setConfirmWipeDevice] = useState(false);
   const [wipingDevice, setWipingDevice] = useState(false);
+  const [unsyncedCountBeforeWipe, setUnsyncedCountBeforeWipe] = useState<number>(0);
+  const [checkingUnsynced, setCheckingUnsynced] = useState<boolean>(false);
+  const [cryptoMode, setCryptoMode] = useState(() => getLocalCryptoMode());
+  const [cryptoEnabled, setCryptoEnabled] = useState(() => isLocalEncryptionEnabled());
+  const [pinForCrypto, setPinForCrypto] = useState('');
+  const [showPinCryptoPrompt, setShowPinCryptoPrompt] = useState<'enable' | 'disable' | null>(null);
+  const [cryptoBusy, setCryptoBusy] = useState(false);
   const [hapticEnabled, setHapticEnabledState] = useState<boolean>(() => isHapticsEnabled());
   const [soundEnabled, setSoundEnabledState] = useState<boolean>(() => isSoundEnabled());
   const [hapticIntensity, setHapticIntensityState] = useState<HapticIntensity>(() => getHapticIntensity());
@@ -60,9 +80,17 @@ export const ProfileModal: React.FC = () => {
       setHapticEnabledState(isHapticsEnabled());
       setSoundEnabledState(isSoundEnabled());
       setHapticIntensityState(getHapticIntensity());
+      setScannerSoundOn(isScannerSoundEnabled());
+      setScannerVibOn(isScannerVibrationEnabled());
+      setCryptoMode(getLocalCryptoMode());
+      setCryptoEnabled(isLocalEncryptionEnabled());
     };
     window.addEventListener('tot-audio-haptics-changed', syncPrefs);
-    return () => window.removeEventListener('tot-audio-haptics-changed', syncPrefs);
+    window.addEventListener('tot-user-preferences-synced', syncPrefs);
+    return () => {
+      window.removeEventListener('tot-audio-haptics-changed', syncPrefs);
+      window.removeEventListener('tot-user-preferences-synced', syncPrefs);
+    };
   }, []);
 
   // Keyboard shortcut: close on Escape
@@ -487,6 +515,199 @@ export const ProfileModal: React.FC = () => {
           </div>
         </div>
 
+        {/* Local Data Encryption (AES-GCM 256) */}
+        <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <Shield className="w-4 h-4 text-emerald-600 shrink-0" />
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                {tr(
+                  language,
+                  'Chiffrer les données locales avec mon PIN',
+                  'Encrypt local data with my PIN',
+                  'Versleutel lokale gegevens met mijn pincode'
+                )}
+              </h4>
+            </div>
+            {cryptoMode === 'native' ? (
+              <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 text-[10px] font-black">
+                {tr(language, 'Trousseau OS actif', 'OS Keystore active', 'OS-sleutelhanger actief')}
+              </span>
+            ) : (
+              <button
+                type="button"
+                disabled={cryptoBusy}
+                onClick={() => {
+                  setMsg(null);
+                  setPinForCrypto('');
+                  setShowPinCryptoPrompt(cryptoEnabled ? 'disable' : 'enable');
+                }}
+                className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  cryptoEnabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-700'
+                }`}
+                role="switch"
+                aria-checked={cryptoEnabled}
+                title={tr(
+                  language,
+                  'Chiffrer les données locales avec mon PIN',
+                  'Encrypt local data with my PIN',
+                  'Versleutel lokale gegevens met mijn pincode'
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    cryptoEnabled ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            {cryptoMode === 'native'
+              ? tr(
+                  language,
+                  'Chiffrement AES-GCM 256 automatique via le trousseau sécurisé du système (Android Keystore / Electron safeStorage).',
+                  'Automatic AES-GCM 256 encryption via OS secure keystore (Android Keystore / Electron safeStorage).',
+                  'Automatische AES-GCM 256-versleuteling via de beveiligde OS-sleutelhanger.'
+                )
+              : tr(
+                  language,
+                  "Chiffre la session, la clé Supabase, les mouvements et la file hors-ligne avec une clé AES-GCM 256 dérivée de votre PIN (PBKDF2-SHA256 ≥ 600 000 itérations).",
+                  'Encrypts session, Supabase key, movements, and offline queue with an AES-GCM 256 key derived from your PIN (PBKDF2-SHA256 ≥ 600,000 iterations).',
+                  'Versleutelt sessie, Supabase-sleutel, bewegingen en offline wachtrij met een AES-GCM 256-sleutel afgeleid van uw pincode.'
+                )}
+          </p>
+
+          {showPinCryptoPrompt && (
+            <div className="mt-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2">
+              <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                {showPinCryptoPrompt === 'enable'
+                  ? tr(
+                      language,
+                      'Saisissez votre code PIN à 4 chiffres pour activer le chiffrement local :',
+                      'Enter your 4-digit PIN to enable local encryption:',
+                      'Voer uw 4-cijferige pincode in om lokale versleuteling in te schakelen:'
+                    )
+                  : tr(
+                      language,
+                      'Saisissez votre code PIN à 4 chiffres pour déchiffrer et désactiver :',
+                      'Enter your 4-digit PIN to decrypt and disable:',
+                      'Voer uw 4-cijferige pincode in om te ontsleutelen en uit te schakelen:'
+                    )}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={pinForCrypto}
+                  onChange={(e) => setPinForCrypto(e.target.value.replace(/\D/g, ''))}
+                  placeholder="••••"
+                  className="flex-1 p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-center font-bold tracking-widest text-sm"
+                />
+                <button
+                  type="button"
+                  disabled={cryptoBusy || pinForCrypto.length !== 4}
+                  onClick={async () => {
+                    setCryptoBusy(true);
+                    setMsg(null);
+                    try {
+                      const uid = String(currentUser.id);
+                      if (showPinCryptoPrompt === 'enable') {
+                        if (hasLocalDevicePin(uid)) {
+                          const valid = await verifyLocalDevicePin(uid, pinForCrypto);
+                          if (!valid) {
+                            setMsg({
+                              type: 'error',
+                              text: tr(language, 'Code PIN local incorrect.', 'Incorrect local PIN.', 'Onjuiste lokale pincode.'),
+                            });
+                            return;
+                          }
+                        } else {
+                          await saveLocalDevicePin(uid, pinForCrypto);
+                        }
+                        const res = await enablePinLocalEncryption(pinForCrypto);
+                        if (res.ok) {
+                          setCryptoMode(getLocalCryptoMode());
+                          setCryptoEnabled(true);
+                          setShowPinCryptoPrompt(null);
+                          setPinForCrypto('');
+                          setMsg({
+                            type: 'success',
+                            text: tr(
+                              language,
+                              'Chiffrement local AES-GCM 256 activé avec votre PIN.',
+                              'AES-GCM 256 local encryption enabled with your PIN.',
+                              'Lokale AES-GCM 256-versleuteling ingeschakeld met uw pincode.'
+                            ),
+                          });
+                        } else {
+                          setMsg({
+                            type: 'error',
+                            text:
+                              res.error ||
+                              tr(
+                                language,
+                                'Impossible d’activer le chiffrement local.',
+                                'Unable to enable local encryption.',
+                                'Kan lokale versleuteling niet inschakelen.'
+                              ),
+                          });
+                        }
+                      } else {
+                        clearCryptoKeyFromMemory();
+                        const res = await disablePinLocalEncryption(pinForCrypto);
+                        if (res.ok) {
+                          setCryptoMode(getLocalCryptoMode());
+                          setCryptoEnabled(false);
+                          setShowPinCryptoPrompt(null);
+                          setPinForCrypto('');
+                          setMsg({
+                            type: 'success',
+                            text: tr(
+                              language,
+                              'Chiffrement local désactivé et données restaurées en clair.',
+                              'Local encryption disabled and data restored in plaintext.',
+                              'Lokale versleuteling uitgeschakeld en gegevens hersteld.'
+                            ),
+                          });
+                        } else {
+                          setMsg({
+                            type: 'error',
+                            text: tr(
+                              language,
+                              'Code PIN incorrect : déchiffrement refusé (aucune donnée supprimée).',
+                              'Incorrect PIN: decryption refused (no data deleted).',
+                              'Onjuiste pincode: ontsleuteling geweigerd (geen gegevens verwijderd).'
+                            ),
+                          });
+                        }
+                      }
+                    } finally {
+                      setCryptoBusy(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs disabled:opacity-50 cursor-pointer"
+                >
+                  {cryptoBusy ? t('common_loading') : tr(language, 'Valider', 'Confirm', 'Bevestigen')}
+                </button>
+                <button
+                  type="button"
+                  disabled={cryptoBusy}
+                  onClick={() => {
+                    setShowPinCryptoPrompt(null);
+                    setPinForCrypto('');
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer"
+                >
+                  {t('common_cancel')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         </div>
 
         {/* Quick Logout & Wipe Device Buttons */}
@@ -506,16 +727,57 @@ export const ProfileModal: React.FC = () => {
           {!confirmWipeDevice ? (
             <button
               type="button"
-              onClick={() => setConfirmWipeDevice(true)}
+              disabled={checkingUnsynced}
+              onClick={async () => {
+                setCheckingUnsynced(true);
+                try {
+                  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+                    try {
+                      await syncFromSupabase();
+                    } catch {
+                      // Best-effort sync before counting unsynchronized offline operations
+                    }
+                  }
+                  const count = await getUnsynchronizedOperationsCount();
+                  setUnsyncedCountBeforeWipe(count);
+                  setConfirmWipeDevice(true);
+                } finally {
+                  setCheckingUnsynced(false);
+                }
+              }}
               className="w-full py-2 px-3 rounded-xl bg-slate-100 hover:bg-rose-100 dark:bg-slate-800 dark:hover:bg-rose-950/60 text-slate-700 hover:text-rose-700 dark:text-slate-300 dark:hover:text-rose-300 font-bold text-[11px] flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700 transition cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5 shrink-0" />
-              <span>{t('profile_wipe_device_btn')}</span>
+              <span>
+                {checkingUnsynced
+                  ? t('common_loading')
+                  : tr(
+                      language,
+                      'Réinitialiser les données locales',
+                      'Reset local data',
+                      'Lokale gegevens resetten'
+                    )}
+              </span>
             </button>
           ) : (
             <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 space-y-2">
               <p className="text-[11px] font-semibold text-rose-800 dark:text-rose-200 leading-snug">
                 {t('profile_wipe_device_confirm')}
+              </p>
+              <p className="text-[11px] font-bold text-rose-700 dark:text-rose-300 leading-snug">
+                {unsyncedCountBeforeWipe > 0
+                  ? tr(
+                      language,
+                      `⚠️ Attention : ${unsyncedCountBeforeWipe} opération(s) hors-ligne non synchronisée(s) seront définitivement perdues.`,
+                      `⚠️ Warning: ${unsyncedCountBeforeWipe} unsynchronized offline operation(s) will be permanently lost.`,
+                      `⚠️ Waarschuwing: ${unsyncedCountBeforeWipe} niet-gesynchroniseerde offline bewerking(en) gaan definitief verloren.`
+                    )
+                  : tr(
+                      language,
+                      '✓ Aucune opération hors-ligne en attente (0 opération perdue).',
+                      '✓ No pending offline operations (0 operations lost).',
+                      '✓ Geen wachtende offline bewerkingen (0 bewerkingen verloren).'
+                    )}
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -535,7 +797,14 @@ export const ProfileModal: React.FC = () => {
                   }}
                   className="flex-1 py-1.5 px-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] cursor-pointer disabled:opacity-50"
                 >
-                  {wipingDevice ? t('common_loading') : t('profile_wipe_device_btn')}
+                  {wipingDevice
+                    ? t('common_loading')
+                    : tr(
+                        language,
+                        'Réinitialiser les données locales',
+                        'Reset local data',
+                        'Lokale gegevens resetten'
+                      )}
                 </button>
               </div>
             </div>

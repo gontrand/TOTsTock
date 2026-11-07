@@ -88,7 +88,7 @@ const INITIAL_SEED_EVENTS: ActivityItem[] = [
       status: 'success',
       difference: 4,
       reason: 'Régularisation suite à inventaire tournant mensuel',
-      systemVersion: 'v5.5.0',
+      systemVersion: 'v5.9.1',
     },
   },
   {
@@ -157,7 +157,7 @@ const INITIAL_SEED_EVENTS: ActivityItem[] = [
     user_trigram: 'ADM',
     meta: {
       status: 'success',
-      systemVersion: 'v5.5.0',
+      systemVersion: 'v5.8.0',
     },
   },
   {

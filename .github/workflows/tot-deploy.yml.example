@@ -1,0 +1,76 @@
+# ==============================================================================
+# Modèle GitHub Actions — Mise à jour automatisée TOT Stock (Point 5)
+# ==============================================================================
+# Pour activer ce workflow :
+# 1. Copiez ou renommez ce fichier en `.github/workflows/tot-deploy.yml`
+# 2. Dans votre dépôt GitHub : Settings > Secrets and variables > Actions,
+#    définissez les 3 secrets suivants :
+#      - SUPABASE_ACCESS_TOKEN : Jeton personnel Supabase (https://supabase.com/dashboard/account/tokens)
+#      - SUPABASE_PROJECT_REF  : Référence du projet (ex: abcdefghijklmnopqrst)
+#      - SUPABASE_DB_PASSWORD  : Mot de passe PostgreSQL de la base Supabase
+# 3. Déclenchez manuellement le workflow depuis l'onglet "Actions" > "TOT Stock — Mise à jour Supabase".
+# ==============================================================================
+
+name: TOT Stock — Mise à jour Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      maintenance:
+        description: "Activer le mode maintenance pendant la migration (--maintenance)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      set_min_app_version:
+        description: "Forcer une version minimale d'application (optionnel, ex: 5.5.0)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  update-supabase:
+    name: Mise à jour schéma SQL & Edge Functions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Récupération du code source
+        uses: actions/checkout@v4
+
+      - name: Installation de Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Génération et vérification des migrations SQL
+        run: npm run build:sql
+
+      - name: Exécution de tot-install (--update --yes)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.maintenance }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --maintenance"
+          fi
+          if [ -n "${{ inputs.set_min_app_version }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --set-min-app-version ${{ inputs.set_min_app_version }}"
+          fi
+          node scripts/tot-install.mjs --update --yes $EXTRA_ARGS
+
+      - name: Publication du rapport d'installation (sans secret)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tot-install-report
+          path: tot-install-report.txt
+          if-no-files-found: ignore

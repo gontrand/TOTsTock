@@ -11,7 +11,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['logo.png', 'icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
+        includeAssets: ['logo.png', 'icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-maskable-512x512.png'],
         manifest: {
           id: '/',
           name: 'TOT - Inventory & Scan Edition',
@@ -58,14 +58,34 @@ export default defineConfig(() => {
           enabled: false,
         },
       }),
+      {
+        name: 'tot-csp-extra-connect',
+        transformIndexHtml(html) {
+          const extra = (process.env.VITE_CSP_EXTRA_CONNECT || '').trim();
+          if (!extra) return html;
+          const sanitizedTokens = extra
+            .split(/[\s,]+/)
+            .map((s) => s.trim())
+            .filter((s) => /^https?:\/\/|^wss?:\/\//.test(s));
+          if (sanitizedTokens.length === 0) return html;
+          return html.replace(
+            "connect-src 'self' https://*.supabase.co wss://*.supabase.co;",
+            `connect-src 'self' https://*.supabase.co wss://*.supabase.co ${sanitizedTokens.join(' ')};`
+          );
+        },
+      },
     ],
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, '.'),
+        'https://esm.sh/@supabase/supabase-js@2': '@supabase/supabase-js',
       },
     },
     define: {
       'import.meta.env.VITE_ALLOWED_SUPABASE_HOSTS': JSON.stringify(''),
+    },
+    build: {
+      emptyOutDir: false,
     },
     server: {
       port: 3000,

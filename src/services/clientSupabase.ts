@@ -4,9 +4,28 @@ import {
   EXPECTED_SCHEMA_VERSION,
   MIN_SUPPORTED_SCHEMA_VERSION,
 } from '../appVersion';
+import { TABLES, PREFIXED_TO_LEGACY_TABLE_MAP } from '../constants/tables';
+import {
+  getResolvedEdgeFunctionName,
+  loadEdgeFunctionOverridesFromClientDb,
+  pingClientEdgeFunctions,
+} from '../constants/edgeFunctions';
+import {
+  enqueueSyncOperation,
+  enqueueRejectedSyncOperation,
+  retryRejectedSyncOperation,
+  discardSyncOperation,
+  updateSyncOperationStatus,
+} from './offline/indexedDb';
+import {
+  createSupabaseEncryptedAuthStorage,
+  readSensitiveLocalStorageSync,
+  removeSensitiveLocalStorage,
+} from './localCrypto';
 import {
   Product,
   StockMovement,
+  StockLevel,
   User,
   Role,
   Department,
@@ -21,6 +40,112 @@ import {
 let cachedClient: SupabaseClient | null = null;
 let cachedUrl = '';
 let cachedKey = '';
+
+const legacyFallbackTablesByOrigin = new Map<string, Map<string, number>>();
+const LEGACY_FALLBACK_TTL_MS = 30_000;
+
+export function clearLegacyTableFallbackCache(): void {
+  legacyFallbackTablesByOrigin.clear();
+}
+
+function getLegacyFallbackMapForOrigin(origin: string): Map<string, number> {
+  if (!legacyFallbackTablesByOrigin.has(origin)) {
+    legacyFallbackTablesByOrigin.set(origin, new Map());
+  }
+  return legacyFallbackTablesByOrigin.get(origin)!;
+}
+
+function rewriteRestTableUrl(rawUrlStr: string, fromTable: string, toTable: string): string | null {
+  try {
+    const u = new URL(rawUrlStr);
+    const prefix = `/rest/v1/${fromTable}`;
+    if (u.pathname === prefix || u.pathname.startsWith(`${prefix}/`)) {
+      u.pathname = `/rest/v1/${toTable}${u.pathname.slice(prefix.length)}`;
+      return u.toString();
+    }
+  } catch {}
+  return null;
+}
+
+function extractRestPrefixedTableFromUrl(rawUrlStr: string): {
+  origin: string;
+  prefixedTable: string;
+  legacyTable: string;
+} | null {
+  try {
+    const u = new URL(rawUrlStr);
+    const match = u.pathname.match(/^\/rest\/v1\/([a-zA-Z0-9_]+)(?:\/|$)/);
+    if (!match) return null;
+    const table = match[1];
+    const legacyTable = PREFIXED_TO_LEGACY_TABLE_MAP[table];
+    if (!legacyTable) return null;
+    return { origin: u.origin, prefixedTable: table, legacyTable };
+  } catch {
+    return null;
+  }
+}
+
+function createLegacyAwareSupabaseFetch(): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const baseFetch = globalThis.fetch.bind(globalThis);
+    const rawUrlStr =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    const tableMatch = extractRestPrefixedTableFromUrl(rawUrlStr);
+    if (!tableMatch) {
+      return baseFetch(input, init);
+    }
+
+    const { origin, prefixedTable, legacyTable } = tableMatch;
+    const originMap = getLegacyFallbackMapForOrigin(origin);
+    const cachedUntil = originMap.get(prefixedTable) || 0;
+    const now = Date.now();
+
+    // Si cette table préfixée a déjà répondu 404 PGRST205 récemment sur cette base 1.x,
+    // utiliser directement l'ancien nom de table pour éviter les erreurs 404 dans la console.
+    if (cachedUntil > now) {
+      const fallbackUrl = rewriteRestTableUrl(rawUrlStr, prefixedTable, legacyTable);
+      if (fallbackUrl) {
+        return baseFetch(fallbackUrl, init);
+      }
+    }
+
+    const response = await baseFetch(input, init);
+    if (response.status !== 404) {
+      if (response.ok && cachedUntil > 0) {
+        originMap.delete(prefixedTable);
+      }
+      return response;
+    }
+
+    // Inspecter si le 404 provient de PostgREST parce que la table préfixée n'existe pas encore (base 1.x avant exécution de 09_core_prefixes.sql)
+    try {
+      const cloned = response.clone();
+      const errBody = await cloned.json();
+      const errCode = String(errBody?.code || '');
+      const errMsg = String(errBody?.message || '').toLowerCase();
+      const isTableMissing =
+        errCode === 'PGRST205' ||
+        errCode === '42P01' ||
+        errMsg.includes('could not find the table') ||
+        errMsg.includes('does not exist');
+
+      if (isTableMissing) {
+        const fallbackUrl = rewriteRestTableUrl(rawUrlStr, prefixedTable, legacyTable);
+        if (fallbackUrl) {
+          originMap.set(prefixedTable, Date.now() + LEGACY_FALLBACK_TTL_MS);
+          return baseFetch(fallbackUrl, init);
+        }
+      }
+    } catch {}
+
+    return response;
+  };
+}
 
 /**
  * Normalise l'URL Supabase pour corriger les erreurs courantes :
@@ -275,11 +400,228 @@ export function validateSupabaseServerUrl(
 }
 
 /**
- * Nettoie la clé Supabase anon / public
+ * Message d'erreur réglementaire lorsqu'une clé secrète (`service_role` ou `sb_secret_...`) est détectée.
+ */
+export const FORBIDDEN_SERVICE_ROLE_KEY_MESSAGE =
+  'Cette clé est secrète (service_role). Utilisez la clé publique “anon”. Ne la collez jamais dans l\'application.';
+
+export type SupabaseKeyErrorCode =
+  | 'EMPTY_KEY'
+  | 'FORBIDDEN_SECRET_KEY'
+  | 'MALFORMED_KEY';
+
+export interface SupabaseKeyValidationResult {
+  valid: boolean;
+  normalizedKey: string;
+  keyType?: 'anon_jwt' | 'publishable';
+  role?: string;
+  errorCode?: SupabaseKeyErrorCode;
+  errorMessage?: string;
+}
+
+function decodeBase64UrlUtf8(input: string): string | null {
+  try {
+    const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (normalized.length % 4)) % 4;
+    const padded = normalized + '='.repeat(padLen);
+    if (typeof atob === 'function') {
+      const binary = atob(padded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new TextDecoder().decode(bytes);
+    }
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(padded, 'base64').toString('utf-8');
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Décode sans vérification de signature la charge utile d'un JWT si la chaîne a 3 segments.
+ */
+export function decodeJwtPayloadUnsafe(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+    return null;
+  }
+  const headerJson = decodeBase64UrlUtf8(parts[0]);
+  const payloadJson = decodeBase64UrlUtf8(parts[1]);
+  if (!headerJson || !payloadJson) return null;
+  try {
+    const header = JSON.parse(headerJson);
+    const payload = JSON.parse(payloadJson);
+    if (
+      !header ||
+      typeof header !== 'object' ||
+      Array.isArray(header) ||
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
+      return null;
+    }
+    return payload as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Valide une clé Supabase cliente (LOT 2.1) :
+ * - Refuse toute clé commençant par `sb_secret_` ou dont le JWT porte `role === 'service_role'` (ou `supabase_admin`).
+ * - Accepte les clés `sb_publishable_...` valides.
+ * - Accepte les JWT lisibles dont le rôle est `anon` (ou public/authenticated client).
+ * - Refuse les clés vides, tronquées ou illisibles.
+ * - Ne journalise jamais la clé.
+ */
+export function validateSupabaseAnonKey(rawKey?: string): SupabaseKeyValidationResult {
+  const clean = (rawKey || '').trim().replace(/^["']|["']$/g, '').trim();
+  if (!clean) {
+    return {
+      valid: false,
+      normalizedKey: '',
+      errorCode: 'EMPTY_KEY',
+      errorMessage: 'Veuillez saisir la clé publique “anon” Supabase.',
+    };
+  }
+
+  // 1. Rejet immédiat des nouvelles clés secrètes Supabase (sb_secret_...)
+  if (clean.toLowerCase().startsWith('sb_secret_')) {
+    return {
+      valid: false,
+      normalizedKey: '',
+      role: 'service_role',
+      errorCode: 'FORBIDDEN_SECRET_KEY',
+      errorMessage: FORBIDDEN_SERVICE_ROLE_KEY_MESSAGE,
+    };
+  }
+
+  // 2. Nouvelles clés publiques Supabase (sb_publishable_...)
+  if (clean.startsWith('sb_publishable_')) {
+    const suffix = clean.slice('sb_publishable_'.length);
+    if (suffix.length < 8 || /\s/.test(suffix)) {
+      return {
+        valid: false,
+        normalizedKey: '',
+        errorCode: 'MALFORMED_KEY',
+        errorMessage: 'Clé publique Supabase (“sb_publishable_…”) invalide ou tronquée.',
+      };
+    }
+    return {
+      valid: true,
+      normalizedKey: clean,
+      keyType: 'publishable',
+      role: 'anon',
+    };
+  }
+
+  // 3. Format JWT (eyJ...)
+  const payload = decodeJwtPayloadUnsafe(clean);
+  if (!payload) {
+    return {
+      valid: false,
+      normalizedKey: '',
+      errorCode: 'MALFORMED_KEY',
+      errorMessage: 'Clé Supabase illisible ou mal formée (attendu : JWT “anon” ou clé “sb_publishable_…”).',
+    };
+  }
+
+  const role = typeof payload.role === 'string' ? payload.role.trim().toLowerCase() : '';
+  if (role === 'service_role' || role === 'supabase_admin' || role === 'postgres') {
+    return {
+      valid: false,
+      normalizedKey: '',
+      role,
+      errorCode: 'FORBIDDEN_SECRET_KEY',
+      errorMessage: FORBIDDEN_SERVICE_ROLE_KEY_MESSAGE,
+    };
+  }
+
+  if (role && role !== 'anon' && role !== 'authenticated') {
+    return {
+      valid: false,
+      normalizedKey: '',
+      role,
+      errorCode: 'MALFORMED_KEY',
+      errorMessage: `Rôle de clé JWT non supporté côté client (“${role}”). Utilisez la clé publique “anon”.`,
+    };
+  }
+
+  return {
+    valid: true,
+    normalizedKey: clean,
+    keyType: 'anon_jwt',
+    role: role || 'anon',
+  };
+}
+
+/**
+ * Indique si une chaîne correspond à une clé secrète interdite (`service_role` ou `sb_secret_`).
+ */
+export function isDangerousSupabaseKey(rawKey?: string | null): boolean {
+  if (!rawKey) return false;
+  const res = validateSupabaseAnonKey(rawKey);
+  return !res.valid && res.errorCode === 'FORBIDDEN_SECRET_KEY';
+}
+
+/**
+ * Vérifie au démarrage si une clé `service_role` ou `sb_secret_` est déjà enregistrée
+ * dans `tqt_company_key` ou `tot_inv_supabase_key`. Si oui, la supprime immédiatement.
+ */
+export function purgeStoredDangerousSupabaseKey(
+  storage: Storage | null = typeof localStorage !== 'undefined' ? localStorage : null
+): { purged: boolean; purgedKeys: string[] } {
+  const purgedKeys: string[] = [];
+  if (!storage) return { purged: false, purgedKeys };
+
+  const candidateKeys = ['tqt_company_key', 'tot_inv_supabase_key'];
+  for (const storageKey of candidateKeys) {
+    try {
+      const val =
+        storage === (typeof localStorage !== 'undefined' ? localStorage : null)
+          ? readSensitiveLocalStorageSync(storageKey) ?? storage.getItem(storageKey)
+          : storage.getItem(storageKey);
+      if (val && isDangerousSupabaseKey(val)) {
+        if (storage === (typeof localStorage !== 'undefined' ? localStorage : null)) {
+          removeSensitiveLocalStorage(storageKey);
+        } else {
+          storage.removeItem(storageKey);
+        }
+        purgedKeys.push(storageKey);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }
+
+  if (purgedKeys.length > 0) {
+    cachedClient = null;
+    cachedKey = '';
+  }
+
+  return {
+    purged: purgedKeys.length > 0,
+    purgedKeys,
+  };
+}
+
+/**
+ * Nettoie la clé Supabase anon / public.
+ * Si la clé est une clé secrète (`service_role` ou `sb_secret_`), retourne `''` pour empêcher toute utilisation.
  */
 export function normalizeSupabaseKey(rawKey?: string): string {
   if (!rawKey) return '';
-  return rawKey.trim().replace(/^["']|["']$/g, '');
+  const clean = rawKey.trim().replace(/^["']|["']$/g, '').trim();
+  if (!clean) return '';
+  if (isDangerousSupabaseKey(clean)) {
+    return '';
+  }
+  return clean;
 }
 
 /**
@@ -303,8 +645,22 @@ export function isNetworkOrFetchError(err: any): boolean {
 }
 
 export function getClientSupabase(url?: string, key?: string): SupabaseClient | null {
-  const rawUrl = url || localStorage.getItem('tqt_company_url') || '';
-  const rawKey = key || localStorage.getItem('tqt_company_key') || '';
+  const rawUrl =
+    url ||
+    readSensitiveLocalStorageSync('tqt_company_url') ||
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_url') : '') ||
+    '';
+  const rawKey =
+    key ||
+    readSensitiveLocalStorageSync('tqt_company_key') ||
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_key') : '') ||
+    '';
+
+  if (isDangerousSupabaseKey(rawKey)) {
+    purgeStoredDangerousSupabaseKey();
+    cachedClient = null;
+    return null;
+  }
 
   const finalUrl = normalizeSupabaseUrl(rawUrl);
   const finalKey = normalizeSupabaseKey(rawKey);
@@ -324,42 +680,20 @@ export function getClientSupabase(url?: string, key?: string): SupabaseClient | 
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false,
+        storage: createSupabaseEncryptedAuthStorage(),
+      },
+      global: {
+        fetch: createLegacyAwareSupabaseFetch(),
       },
     });
     cachedUrl = finalUrl;
     cachedKey = finalKey;
     return cachedClient;
-  } catch (err) {
-    console.error('Erreur initialisation Supabase client:', err);
+  } catch {
+    console.error('Erreur initialisation Supabase client.');
     cachedClient = null;
     return null;
   }
-}
-
-const workingTableCache = new Map<string, string>();
-
-// Helper to determine table name with fallback support (uses 'id' instead of '*' to avoid column-level RLS rejection on users.pin)
-async function findWorkingTable(
-  client: SupabaseClient,
-  candidates: string[],
-  testCol = 'id'
-): Promise<string | null> {
-  const cacheKey = `${cachedUrl || 'default'}:${candidates.join(',')}:${testCol}`;
-  const cachedTable = workingTableCache.get(cacheKey);
-  if (cachedTable) return cachedTable;
-
-  for (const table of candidates) {
-    try {
-      const { error } = await client.from(table).select(testCol).limit(1);
-      if (!error) {
-        workingTableCache.set(cacheKey, table);
-        return table;
-      }
-    } catch {
-      // try next
-    }
-  }
-  return null;
 }
 
 let licenseInfoWriteQueue: Promise<any> = Promise.resolve();
@@ -427,7 +761,7 @@ export async function updateCompanyLicenseInfoShared(
       let dbObj: Record<string, any> = {};
       try {
         const { data: licRow } = await client
-          .from('app_settings')
+          .from(TABLES.appSettings)
           .select('value')
           .eq('key', 'company_license_info')
           .maybeSingle();
@@ -455,7 +789,7 @@ export async function updateCompanyLicenseInfoShared(
       lastKnownLicenseInfoObj = nextObj;
 
       const nowIso = new Date().toISOString();
-      const { error } = await client.from('app_settings').upsert(
+      const { error } = await client.from(TABLES.appSettings).upsert(
         [
           {
             key: 'company_license_info',
@@ -593,7 +927,7 @@ export async function syncUserProfileAndDirectoryToSupabase(
 
     if (cleanUser.email) {
       const { data: existingByEmail } = await client
-        .from('users')
+        .from(TABLES.users)
         .select('id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at')
         .ilike('email', cleanUser.email)
         .maybeSingle();
@@ -653,8 +987,8 @@ export async function fetchUsersDirectorySafe(client: SupabaseClient): Promise<U
     }
   } catch {}
 
-  // 2. Requête directe sur public.users avec sous-ensembles de colonnes sécurisés (sans pin ni pin_hash)
-  const userTable = (await findWorkingTable(client, ['users', 'tot_users', 'APP_TOT_users'], 'id, name')) || 'users';
+  // 2. Requête directe sur public.core_users avec sous-ensembles de colonnes sécurisés (sans pin ni pin_hash)
+  const userTable = TABLES.users;
   const columnSets = [
     'id, auth_user_id, name, trigram, email, department, role_id, is_blocked, must_change_pin, is_preparer, allowed_depots, created_at, updated_at',
     'id, name, trigram, email, department, role_id, is_blocked, allowed_depots, created_at',
@@ -712,16 +1046,14 @@ export async function fetchLoginDirectory(client: SupabaseClient): Promise<{
   } catch {}
 
   try {
-    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
-    const { data, error } = await client.from(depTable).select('*');
+    const { data, error } = await client.from(TABLES.departments).select('*');
     if (!error && Array.isArray(data) && data.length > 0) {
       result.departments = data as Department[];
     }
   } catch {}
 
   try {
-    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
-    const { data, error } = await client.from(roleTable).select('*');
+    const { data, error } = await client.from(TABLES.roles).select('*');
     if (!error && Array.isArray(data) && data.length > 0) {
       result.roles = data as Role[];
     }
@@ -749,7 +1081,15 @@ export async function testClientSupabaseConnection(
   key: string
 ): Promise<ConnectionTestResult> {
   const cleanUrl = normalizeSupabaseUrl(url);
-  const cleanKey = normalizeSupabaseKey(key);
+  const keyValidation = validateSupabaseAnonKey(key);
+  if (!keyValidation.valid) {
+    return {
+      ok: false,
+      success: false,
+      message: keyValidation.errorMessage || 'Clé Supabase invalide.',
+    };
+  }
+  const cleanKey = keyValidation.normalizedKey;
 
   if (!cleanUrl || !cleanKey) {
     return { ok: false, success: false, message: 'URL et clé Supabase requises.' };
@@ -770,7 +1110,7 @@ export async function testClientSupabaseConnection(
     } = {};
 
     // Test products table
-    const prodTable = (await findWorkingTable(tempClient, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
+    const prodTable = TABLES.products;
     const { data: prodData, error: prodErr, count: prodCount } = await tempClient
       .from(prodTable)
       .select('*', { count: 'exact', head: false })
@@ -798,27 +1138,22 @@ export async function testClientSupabaseConnection(
     if (loadedUsers.length > 0) {
       results.users = loadedUsers.length;
     } else {
-      const userTable = (await findWorkingTable(tempClient, ['users', 'tot_users', 'APP_TOT_users'], 'id, name')) || 'users';
-      const { data: userData, error: userErr } = await tempClient.from(userTable).select('id, name').limit(20);
+      const { data: userData, error: userErr } = await tempClient.from(TABLES.users).select('id, name').limit(20);
       if (!userErr && userData) {
         results.users = userData.length;
       }
     }
 
     // Test movements table
-    const movTable = (await findWorkingTable(tempClient, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
-    const { data: movData, error: movErr } = await tempClient.from(movTable).select('id').limit(5);
+    const { data: movData, error: movErr } = await tempClient.from(TABLES.movements).select('id').limit(5);
     if (!movErr && movData) {
       results.movements = movData.length;
     }
 
     // Test depots table
-    const depTable = await findWorkingTable(tempClient, ['depots', 'warehouses', 'magasins', 'tot_depots']);
-    if (depTable) {
-      const { data: depData, error: depErr } = await tempClient.from(depTable).select('id').limit(10);
-      if (!depErr && depData) {
-        results.depots = depData.length;
-      }
+    const { data: depData, error: depErr } = await tempClient.from(TABLES.depots).select('id').limit(10);
+    if (!depErr && depData) {
+      results.depots = depData.length;
     }
 
     if (results.products !== undefined || results.users !== undefined) {
@@ -859,6 +1194,7 @@ export async function testClientSupabaseConnection(
 export interface ClientDataPayload {
   products?: Product[];
   movements?: StockMovement[];
+  stockLevels?: StockLevel[];
   users?: User[];
   roles?: Role[];
   departments?: Department[];
@@ -866,6 +1202,23 @@ export interface ClientDataPayload {
   subCategories?: SubCategory[];
   depots?: Depot[];
   orders?: MaterialOrder[];
+}
+
+export function normalizeStockLevelRecord(row: any): StockLevel {
+  const pid = String(row?.product_id ?? '').trim();
+  const dep = String(row?.depot_name ?? 'Dépôt Principal').trim();
+  return {
+    id: row?.id ? String(row.id) : `sl-${pid}-${dep}`,
+    product_id: pid,
+    depot_name: dep,
+    quantity: Number(row?.quantity ?? 0),
+    rack_location:
+      row?.rack_location != null && String(row.rack_location).trim() !== ''
+        ? String(row.rack_location).trim()
+        : undefined,
+    min_alert: row?.min_alert != null ? Number(row.min_alert) : undefined,
+    updated_at: row?.updated_at ? String(row.updated_at) : undefined,
+  };
 }
 
 export function normalizeProductRecord(p: any): Product {
@@ -968,8 +1321,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 1. Products
   try {
-    const prodTable = (await findWorkingTable(client, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
-    const { data, error } = await client.from(prodTable).select('*').order('brand', { ascending: true });
+    const { data, error } = await client.from(TABLES.products).select('*').order('brand', { ascending: true });
     if (!error && data && data.length > 0) {
       result.products = data.map(normalizeProductRecord);
     }
@@ -979,9 +1331,8 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 2. Stock Movements
   try {
-    const movTable = (await findWorkingTable(client, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
     const { data, error } = await client
-      .from(movTable)
+      .from(TABLES.movements)
       .select('*')
       .order('created_at', { ascending: false })
       .limit(500);
@@ -1004,8 +1355,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 4. Roles
   try {
-    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
-    const { data, error } = await client.from(roleTable).select('*');
+    const { data, error } = await client.from(TABLES.roles).select('*');
     if (!error && data && data.length > 0) {
       result.roles = data as Role[];
     }
@@ -1015,8 +1365,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 5. Departments
   try {
-    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
-    const { data, error } = await client.from(depTable).select('*');
+    const { data, error } = await client.from(TABLES.departments).select('*');
     if (!error && data && data.length > 0) {
       result.departments = data.map(normalizeDepartmentRecord);
     }
@@ -1026,8 +1375,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 6. Projects
   try {
-    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
-    const { data, error } = await client.from(projTable).select('*');
+    const { data, error } = await client.from(TABLES.projects).select('*');
     if (!error && data && data.length > 0) {
       result.projects = data.map(normalizeProjectRecord);
     }
@@ -1037,8 +1385,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 7. Subcategories
   try {
-    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
-    const { data, error } = await client.from(catTable).select('*');
+    const { data, error } = await client.from(TABLES.subCategories).select('*');
     if (!error && data && data.length > 0) {
       result.subCategories = data as SubCategory[];
     }
@@ -1048,8 +1395,7 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
 
   // 8. Depots / Magasins
   try {
-    const depotTable = (await findWorkingTable(client, ['depots', 'warehouses', 'magasins', 'tot_depots'])) || 'depots';
-    const { data, error } = await client.from(depotTable).select('*');
+    const { data, error } = await client.from(TABLES.depots).select('*');
     if (!error && data && data.length > 0) {
       result.depots = data.map(normalizeDepotRecord);
     }
@@ -1065,6 +1411,16 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
     }
   } catch (e) {
     console.warn('Erreur chargement material_orders Supabase:', e);
+  }
+
+  // 10. Stock Levels (par dépôt)
+  try {
+    const { data, error } = await client.from(TABLES.stockLevels).select('*');
+    if (!error && Array.isArray(data)) {
+      result.stockLevels = data.map(normalizeStockLevelRecord);
+    }
+  } catch (e) {
+    console.warn('Erreur chargement stock_levels Supabase:', e);
   }
 
   return result;
@@ -1196,7 +1552,7 @@ async function fetchOrdersFromSettingsMirror(client: SupabaseClient): Promise<Ma
   const collected: MaterialOrder[][] = [];
   try {
     const { data, error } = await client
-      .from('app_settings')
+      .from(TABLES.appSettings)
       .select('key, value')
       .in('key', ['company_orders_sync', 'company_license_info']);
     if (!error && Array.isArray(data)) {
@@ -1247,7 +1603,7 @@ async function mirrorOrderToSettings(client: SupabaseClient, order: MaterialOrde
 
     // 1. Écriture directe sur 'company_orders_sync' (autorisée par RLS pour TOUS les utilisateurs authentifiés)
     await client
-      .from('app_settings')
+      .from(TABLES.appSettings)
       .upsert(
         [
           {
@@ -1385,7 +1741,7 @@ async function fetchAllUserBasketsMapFromSettings(
 
   try {
     const { data, error } = await client
-      .from('app_settings')
+      .from(TABLES.appSettings)
       .select('key, value')
       .in('key', ['company_user_baskets', 'company_license_info']);
     if (!error && Array.isArray(data)) {
@@ -1538,7 +1894,7 @@ export async function pushUserBasketsToSupabase(
     try {
       const currentMap = await fetchAllUserBasketsMapFromSettings(client);
       const updatedMap = cleanDuplicatesInMap({ ...currentMap });
-      const { error: upErr } = await client.from('app_settings').upsert(
+      const { error: upErr } = await client.from(TABLES.appSettings).upsert(
         [
           {
             key: 'company_user_baskets',
@@ -1586,9 +1942,8 @@ export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Pro
   } catch {}
 
   try {
-    const orderTable = (await findWorkingTable(client, ['material_orders', 'orders', 'tot_orders'])) || 'material_orders';
     const { data, error } = await client
-      .from(orderTable)
+      .from(TABLES.materialOrders)
       .select('*')
       .order('created_at', { ascending: false });
     if (!error && Array.isArray(data)) {
@@ -1617,6 +1972,7 @@ export async function fetchLiveOperationalData(
   orders?: MaterialOrder[];
   products?: Product[];
   movements?: StockMovement[];
+  stockLevels?: StockLevel[];
   depots?: Depot[];
   departments?: Department[];
   projects?: Project[];
@@ -1630,6 +1986,7 @@ export async function fetchLiveOperationalData(
     orders?: MaterialOrder[];
     products?: Product[];
     movements?: StockMovement[];
+    stockLevels?: StockLevel[];
     depots?: Depot[];
     departments?: Department[];
     projects?: Project[];
@@ -1656,8 +2013,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const prodTable = (await findWorkingTable(client, ['products', 'tot_products', 'APP_TOT_products'])) || 'products';
-        const { data, error } = await client.from(prodTable).select('*').order('brand', { ascending: true });
+        const { data, error } = await client.from(TABLES.products).select('*').order('brand', { ascending: true });
         if (!error && Array.isArray(data) && data.length > 0) {
           result.products = data.map(normalizeProductRecord);
         }
@@ -1665,9 +2021,8 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const movTable = (await findWorkingTable(client, ['stock_movements', 'movements', 'tot_movements'])) || 'stock_movements';
         const { data, error } = await client
-          .from(movTable)
+          .from(TABLES.movements)
           .select('*')
           .order('created_at', { ascending: false })
           .limit(500);
@@ -1678,8 +2033,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const depotTable = (await findWorkingTable(client, ['depots', 'warehouses', 'magasins', 'tot_depots'])) || 'depots';
-        const { data, error } = await client.from(depotTable).select('*');
+        const { data, error } = await client.from(TABLES.depots).select('*');
         if (!error && Array.isArray(data) && data.length > 0) {
           result.depots = data.map(normalizeDepotRecord);
         }
@@ -1687,8 +2041,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
-        const { data, error } = await client.from(depTable).select('*');
+        const { data, error } = await client.from(TABLES.departments).select('*');
         if (!error && Array.isArray(data) && data.length > 0) {
           result.departments = data.map(normalizeDepartmentRecord);
         }
@@ -1696,8 +2049,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
-        const { data, error } = await client.from(projTable).select('*');
+        const { data, error } = await client.from(TABLES.projects).select('*');
         if (!error && Array.isArray(data)) {
           result.projects = data.map(normalizeProjectRecord);
         }
@@ -1705,8 +2057,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
-        const { data, error } = await client.from(catTable).select('*');
+        const { data, error } = await client.from(TABLES.subCategories).select('*');
         if (!error && Array.isArray(data)) {
           result.subCategories = data as SubCategory[];
         }
@@ -1722,8 +2073,7 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
-        const { data, error } = await client.from(roleTable).select('*');
+        const { data, error } = await client.from(TABLES.roles).select('*');
         if (!error && Array.isArray(data) && data.length > 0) {
           result.roles = data as Role[];
         }
@@ -1734,6 +2084,14 @@ export async function fetchLiveOperationalData(
         const pub = await fetchPublicAppSettings(client);
         if (pub && Object.keys(pub).length > 0) {
           result.publicSettings = pub;
+        }
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        const { data, error } = await client.from(TABLES.stockLevels).select('*');
+        if (!error && Array.isArray(data)) {
+          result.stockLevels = data.map(normalizeStockLevelRecord);
         }
       } catch {}
     })(),
@@ -1768,7 +2126,7 @@ export async function fetchPublicAppSettings(client: SupabaseClient): Promise<Re
   const settingsMap: Record<string, string> = {};
   try {
     const { data, error } = await client
-      .from('app_settings')
+      .from(TABLES.appSettings)
       .select('key, value')
       .in('key', [
         'company_currency',
@@ -1809,11 +2167,14 @@ export async function pushMovementToSupabase(
   _currentUserId?: string | number,
   operationId?: string,
   destDepotName?: string,
-  destRack?: string
+  destRack?: string,
+  actionType?: string
 ): Promise<{
   success: boolean;
   newQty?: number;
   error?: string;
+  errorCode?: string;
+  rawError?: any;
   conflict?: boolean;
   depotQty?: number;
   destDepotQty?: number;
@@ -1840,10 +2201,11 @@ export async function pushMovementToSupabase(
     destRack ||
     (movement as any).dest_rack ||
     (movement.metadata?.dest_rack as string) ||
+    (movement.metadata?.rack_location as string) ||
     null;
 
   try {
-    // Exécution exclusivement via la RPC transactionnelle côté serveur (process_stock_movement)
+    // Exécution exclusivement via la RPC transactionnelle côté serveur (process_stock_movement - 12 paramètres)
     // ZÉRO écriture directe de secours sur movements / stock_movements / products
     const { data: rpcData, error: rpcErr } = await client.rpc('process_stock_movement', {
       p_operation_id: opId,
@@ -1862,13 +2224,27 @@ export async function pushMovementToSupabase(
         ...(movement.order_number ? { order_number: movement.order_number } : {}),
         ...(movement.metadata || {}),
       },
+      p_action: actionType || 'STOCK_DIRECT_MOVE',
     });
 
     if (rpcErr) {
+      const code = String(rpcErr.code || '');
+      const msg = String(rpcErr.message || '');
+      const isMissingRpc =
+        code === '42883' ||
+        code === 'PGRST202' ||
+        /function .*process_stock_movement.* does not exist|could not find the function/i.test(msg);
+
+      const formattedErr = isMissingRpc
+        ? `${formatPostgresErrorMessage(rpcErr)} — Le serveur n'a pas la dernière version des scripts SQL (03, 04) : exécutez dist/install.sql`
+        : formatPostgresErrorMessage(rpcErr);
+
       return {
         success: false,
-        error: formatPostgresErrorMessage(rpcErr),
-        conflict: rpcErr.code === '23514' || rpcErr.message?.includes('Stock insuffisant'),
+        error: formattedErr,
+        errorCode: code || undefined,
+        rawError: rpcErr,
+        conflict: code === '23514' || msg.includes('Stock insuffisant'),
         isNetworkError: isNetworkOrFetchError(rpcErr),
       };
     }
@@ -1877,6 +2253,8 @@ export async function pushMovementToSupabase(
       return {
         success: false,
         error: rpcData.message || 'Mouvement rejeté par le serveur.',
+        errorCode: rpcData.error_code ? String(rpcData.error_code) : undefined,
+        rawError: rpcData,
         conflict: rpcData.error_code === 'REJECTED_STOCK_CONFLICT',
       };
     }
@@ -1889,10 +2267,11 @@ export async function pushMovementToSupabase(
       destDepotQty: rpcData?.dest_depot_quantity,
     };
   } catch (err: any) {
-    console.error('Exception enregistrement mouvement Supabase:', err);
     return {
       success: false,
       error: err?.message || 'Exception mouvement',
+      errorCode: err?.code ? String(err.code) : undefined,
+      rawError: err,
       isNetworkError: isNetworkOrFetchError(err),
     };
   }
@@ -1955,7 +2334,7 @@ export async function upsertProductToSupabase(
   canEditAllFields: boolean = true
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
+    const prodTable = TABLES.products;
     
     // Si l'utilisateur n'a pas les droits d'édition de métadonnées, aucune mise à jour directe n'est permise
     // (la modification des quantités passe obligatoirement par process_stock_movement)
@@ -2038,7 +2417,7 @@ export async function testStockConsistency(
 ): Promise<{ consistent: boolean; discrepancies: Array<{ productId: string; productQty: number; levelsSum: number }>; error?: string }> {
   try {
     const { data: prods, error: pErr } = await client
-      .from('products')
+      .from(TABLES.products)
       .select('id, reference, quantity');
 
     if (pErr) {
@@ -2046,7 +2425,7 @@ export async function testStockConsistency(
     }
 
     const { data: levels, error: lErr } = await client
-      .from('stock_levels')
+      .from(TABLES.stockLevels)
       .select('product_id, quantity');
 
     if (lErr) {
@@ -2086,8 +2465,7 @@ export async function deleteProductFromSupabase(
   productId: string
 ): Promise<boolean> {
   try {
-    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
-    const { error } = await client.from(prodTable).delete().eq('id', productId);
+    const { error } = await client.from(TABLES.products).delete().eq('id', productId);
     if (!error) notifyRealtimeDataMutated('products');
     return !error;
   } catch {
@@ -2100,7 +2478,7 @@ export async function upsertDepartmentToSupabase(
   dep: Department
 ): Promise<boolean> {
   try {
-    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'])) || 'departments';
+    const depTable = TABLES.departments;
     const payload = {
       id: dep.id,
       name: dep.name,
@@ -2145,8 +2523,7 @@ export async function deleteDepartmentFromSupabase(
   depId: number
 ): Promise<boolean> {
   try {
-    const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'])) || 'departments';
-    const { error } = await client.from(depTable).delete().eq('id', depId);
+    const { error } = await client.from(TABLES.departments).delete().eq('id', depId);
     if (!error) notifyRealtimeDataMutated('departments');
     return !error;
   } catch {
@@ -2159,7 +2536,7 @@ export async function upsertProjectToSupabase(
   proj: Project
 ): Promise<boolean> {
   try {
-    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
+    const projTable = TABLES.projects;
     const { error } = await client.from(projTable).upsert([proj]);
     if (error) {
       // Fallback for legacy schemas
@@ -2186,8 +2563,7 @@ export async function deleteProjectFromSupabase(
   projId: number
 ): Promise<boolean> {
   try {
-    const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
-    const { error } = await client.from(projTable).delete().eq('id', projId);
+    const { error } = await client.from(TABLES.projects).delete().eq('id', projId);
     if (!error) notifyRealtimeDataMutated('projects');
     return !error;
   } catch {
@@ -2200,8 +2576,7 @@ export async function upsertRoleToSupabase(
   role: Role
 ): Promise<boolean> {
   try {
-    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
-    const { error } = await client.from(roleTable).upsert([role]);
+    const { error } = await client.from(TABLES.roles).upsert([role]);
     if (!error) notifyRealtimeDataMutated('roles');
     return !error;
   } catch {
@@ -2214,8 +2589,7 @@ export async function deleteRoleFromSupabase(
   roleId: number
 ): Promise<boolean> {
   try {
-    const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'])) || 'roles';
-    const { error } = await client.from(roleTable).delete().eq('id', roleId);
+    const { error } = await client.from(TABLES.roles).delete().eq('id', roleId);
     if (!error) notifyRealtimeDataMutated('roles');
     return !error;
   } catch {
@@ -2228,8 +2602,7 @@ export async function upsertSubCategoryToSupabase(
   category: SubCategory
 ): Promise<boolean> {
   try {
-    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
-    const { error } = await client.from(catTable).upsert([category]);
+    const { error } = await client.from(TABLES.subCategories).upsert([category]);
     if (!error) notifyRealtimeDataMutated('sub_categories');
     return !error;
   } catch {
@@ -2242,8 +2615,7 @@ export async function deleteSubCategoryFromSupabase(
   catId: number
 ): Promise<boolean> {
   try {
-    const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories'])) || 'sub_categories';
-    const { error } = await client.from(catTable).delete().eq('id', catId);
+    const { error } = await client.from(TABLES.subCategories).delete().eq('id', catId);
     if (!error) notifyRealtimeDataMutated('sub_categories');
     return !error;
   } catch {
@@ -2273,49 +2645,47 @@ export async function checkDepotTableInSupabase(
   client: SupabaseClient | null
 ): Promise<CheckDepotsTableResult> {
   if (!client) {
-    return { exists: false, table: 'depots', count: 0, error: 'Supabase non configuré.' };
+    return { exists: false, table: TABLES.depots, count: 0, error: 'Supabase non configuré.' };
   }
 
-  const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
-  for (const table of candidateTables) {
-    try {
-      const { data, count, error } = await client
-        .from(table)
-        .select('*', { count: 'exact', head: false })
-        .limit(1);
+  const table = TABLES.depots;
+  try {
+    const { data, count, error } = await client
+      .from(table)
+      .select('*', { count: 'exact', head: false })
+      .limit(1);
 
-      if (!error) {
-        return { exists: true, table, count: count ?? (data ? data.length : 0) };
-      }
+    if (!error) {
+      return { exists: true, table, count: count ?? (data ? data.length : 0) };
+    }
 
-      if (isNetworkOrFetchError(error)) {
-        return {
-          exists: false,
-          table: 'depots',
-          count: 0,
-          isNetworkError: true,
-          error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
-        };
-      }
-    } catch (e: any) {
-      if (isNetworkOrFetchError(e)) {
-        return {
-          exists: false,
-          table: 'depots',
-          count: 0,
-          isNetworkError: true,
-          error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
-        };
-      }
+    if (isNetworkOrFetchError(error)) {
+      return {
+        exists: false,
+        table,
+        count: 0,
+        isNetworkError: true,
+        error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
+      };
+    }
+  } catch (e: any) {
+    if (isNetworkOrFetchError(e)) {
+      return {
+        exists: false,
+        table,
+        count: 0,
+        isNetworkError: true,
+        error: "Serveur Supabase inaccessible (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused) ou l'URL configurée est incorrecte.",
+      };
     }
   }
 
   return {
     exists: false,
-    table: 'depots',
+    table,
     count: 0,
     isNetworkError: false,
-    error: 'Table public.depots introuvable dans votre projet Supabase.',
+    error: `Table public.${TABLES.depots} introuvable dans votre projet Supabase.`,
   };
 }
 
@@ -2332,8 +2702,7 @@ export async function upsertDepotToSupabase(
   }
 
   try {
-    const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
-    let depotTable = (await findWorkingTable(client, candidateTables)) || 'depots';
+    const depotTable = TABLES.depots;
 
     // Prepare clean payload
     // Note: Do NOT pass large Date.now() timestamps as 'id' into PostgreSQL sequences/integers
@@ -2364,6 +2733,17 @@ export async function upsertDepotToSupabase(
       payloadFull.id = depot.id;
     }
 
+    const isMissingColumnError = (err: any): boolean => {
+      if (!err) return false;
+      const code = String(err.code || '');
+      const msg = String(err.message || '').toLowerCase();
+      return (
+        code === '42703' ||
+        code === 'PGRST204' ||
+        (msg.includes('column') && (msg.includes('does not exist') || msg.includes('could not find')))
+      );
+    };
+
     // Attempt 0: Try UPDATE first if depot already exists in DB (by id or name)
     // so editing an existing depot does not fire BEFORE INSERT quota triggers
     if (payloadFull.id) {
@@ -2376,6 +2756,23 @@ export async function upsertDepotToSupabase(
         notifyRealtimeDataMutated('depots');
         return { success: true, table: depotTable, inserted: updById[0] as Depot };
       }
+      if (updIdErr) {
+        if (isNetworkOrFetchError(updIdErr)) {
+          return {
+            success: false,
+            isNetworkError: true,
+            table: depotTable,
+            error: "Impossible de joindre le serveur Supabase (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused sur supabase.com) ou l'URL configurée est inaccessible.",
+          };
+        }
+        if (!isMissingColumnError(updIdErr)) {
+          return {
+            success: false,
+            table: depotTable,
+            error: updIdErr.message,
+          };
+        }
+      }
     }
     {
       const { data: updByName, error: updNameErr } = await client
@@ -2386,6 +2783,23 @@ export async function upsertDepotToSupabase(
       if (!updNameErr && Array.isArray(updByName) && updByName.length > 0) {
         notifyRealtimeDataMutated('depots');
         return { success: true, table: depotTable, inserted: updByName[0] as Depot };
+      }
+      if (updNameErr) {
+        if (isNetworkOrFetchError(updNameErr)) {
+          return {
+            success: false,
+            isNetworkError: true,
+            table: depotTable,
+            error: "Impossible de joindre le serveur Supabase (Failed to fetch). Votre projet Supabase est très probablement en veille (Paused sur supabase.com) ou l'URL configurée est inaccessible.",
+          };
+        }
+        if (!isMissingColumnError(updNameErr)) {
+          return {
+            success: false,
+            table: depotTable,
+            error: updNameErr.message,
+          };
+        }
       }
     }
 
@@ -2413,24 +2827,10 @@ export async function upsertDepotToSupabase(
       };
     }
 
-    // If server-side quota constraint error (Modèle B), bail out immediately
-    if (
-      err1.message?.toLowerCase().includes('quota') ||
-      err1.message?.toLowerCase().includes('licence') ||
-      err1.message?.toLowerCase().includes('license')
-    ) {
-      return {
-        success: false,
-        table: depotTable,
-        error: err1.message,
-      };
-    }
-
     // Check if table missing (PostgreSQL 42P01 or PostgREST PGRST204/PGRST205)
     if (
       err1.code === '42P01' ||
-      err1.message?.includes('does not exist') ||
-      err1.code === 'PGRST204' ||
+      (err1.message?.includes('does not exist') && !isMissingColumnError(err1)) ||
       err1.code === 'PGRST205'
     ) {
       return {
@@ -2438,6 +2838,15 @@ export async function upsertDepotToSupabase(
         isTableMissing: true,
         table: depotTable,
         error: `La table "${depotTable}" n'existe pas dans votre base de données Supabase. Veuillez exécuter le script SQL fourni dans l'éditeur SQL de Supabase.`,
+      };
+    }
+
+    // For any explicit server rejection (quota, licence, RLS, constraint, trigger error) that is NOT a missing column or missing ON CONFLICT constraint, bail out immediately
+    if (!isMissingColumnError(err1) && err1.code !== '42P10') {
+      return {
+        success: false,
+        table: depotTable,
+        error: err1.message,
       };
     }
 
@@ -2527,8 +2936,7 @@ export async function deleteDepotFromSupabase(
   if (!client) return { success: false, error: 'Supabase non connecté.' };
 
   try {
-    const candidateTables = ['depots', 'depot', 'magasins', 'magasin', 'warehouses', 'warehouse', 'tot_depots'];
-    const depotTable = (await findWorkingTable(client, candidateTables)) || 'depots';
+    const depotTable = TABLES.depots;
 
     // Delete by name if provided
     if (depotName) {
@@ -2670,12 +3078,11 @@ export async function allocateUniqueOrderNumberFromSupabase(
     }
   }
 
-  // 2. Interroger la table material_orders et le miroir app_settings sur le serveur
+  // 2. Interroger la table stk_material_orders et le miroir core_app_settings sur le serveur
   // pour garantir l'unicité absolue même si la RPC n'est pas encore installée ou si des commandes sont dans le miroir
   if (!networkFailed) {
     try {
-      const candidateTables = ['material_orders', 'orders', 'tot_orders'];
-      const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+      const orderTable = TABLES.materialOrders;
       const { data: rows, error: selErr } = await client
         .from(orderTable)
         .select('order_number')
@@ -2750,8 +3157,7 @@ export async function upsertOrderToSupabase(
   const isOfflineNumber = currentOrderNumber.endsWith('_OFF');
 
   try {
-    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
-    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+    const orderTable = TABLES.materialOrders;
 
     const buildUpdateFields = (ordNum: string) => {
       const qrCode =
@@ -3050,7 +3456,7 @@ export async function deleteOrderFromSupabase(
       const filteredMirror = existingMirror.filter(
         (o) => String(o.id) !== String(orderId) && String(o.order_number) !== String(orderId)
       );
-      await client.from('app_settings').upsert(
+      await client.from(TABLES.appSettings).upsert(
         [
           {
             key: 'company_orders_sync',
@@ -3074,8 +3480,7 @@ export async function deleteOrderFromSupabase(
       }));
     } catch {}
 
-    const candidateTables = ['material_orders', 'orders', 'tot_orders'];
-    const orderTable = (await findWorkingTable(client, candidateTables)) || 'material_orders';
+    const orderTable = TABLES.materialOrders;
 
     // 2. Tenter la suppression directe avec .select('id') pour vérifier si au moins 1 ligne a été supprimée,
     // puis repli sur statut CANCELLED + notes '[SUPPRIMÉE]' (autorisé par RLS)
@@ -3159,7 +3564,7 @@ export async function syncAllDepotsToSupabase(
   if (missingTable) {
     return {
       success: false,
-      message: 'Table public.depots introuvable dans Supabase. Veuillez exécuter le script SQL fourni.',
+      message: `Table public.${TABLES.depots} introuvable dans Supabase. Veuillez exécuter le script SQL fourni.`,
       count: successCount,
       isTableMissing: true,
     };
@@ -3195,24 +3600,20 @@ export async function exportAllLocalDataToSupabase(
   }
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const prodTable = (await findWorkingTable(client, ['products', 'tot_products'])) || 'products';
-    const userTable = (await findWorkingTable(client, ['users', 'tot_users'])) || 'users';
+    const prodTable = TABLES.products;
+    const userTable = TABLES.users;
 
     if (data.roles && data.roles.length > 0) {
-      const roleTable = (await findWorkingTable(client, ['roles', 'tot_roles'], 'id, name')) || 'roles';
-      await client.from(roleTable).upsert(data.roles, { onConflict: 'id' });
+      await client.from(TABLES.roles).upsert(data.roles, { onConflict: 'id' });
     }
     if (data.departments && data.departments.length > 0) {
-      const depTable = (await findWorkingTable(client, ['departments', 'tot_departments'], 'id, name')) || 'departments';
-      await client.from(depTable).upsert(data.departments, { onConflict: 'id' });
+      await client.from(TABLES.departments).upsert(data.departments, { onConflict: 'id' });
     }
     if (data.projects && data.projects.length > 0) {
-      const projTable = (await findWorkingTable(client, ['projects', 'tot_projects'])) || 'projects';
-      await client.from(projTable).upsert(data.projects, { onConflict: 'id' });
+      await client.from(TABLES.projects).upsert(data.projects, { onConflict: 'id' });
     }
     if (data.subCategories && data.subCategories.length > 0) {
-      const catTable = (await findWorkingTable(client, ['sub_categories', 'subcategories', 'tot_subcategories'])) || 'sub_categories';
-      await client.from(catTable).upsert(data.subCategories, { onConflict: 'id' });
+      await client.from(TABLES.subCategories).upsert(data.subCategories, { onConflict: 'id' });
     }
     if (data.products.length > 0) {
       const cleanProducts = data.products.map(({ quantity, ...meta }) => meta);
@@ -3243,8 +3644,7 @@ export async function exportAllLocalDataToSupabase(
       await syncAllDepotsToSupabase(client, data.depots);
     }
     if (data.orders && data.orders.length > 0) {
-      const orderTable = (await findWorkingTable(client, ['material_orders', 'orders', 'tot_orders'])) || 'material_orders';
-      await client.from(orderTable).upsert(data.orders, { onConflict: 'id' });
+      await client.from(TABLES.materialOrders).upsert(data.orders, { onConflict: 'id' });
     }
     return { success: true, message: 'Données exportées vers Supabase avec succès !' };
   } catch (err: any) {
@@ -3252,71 +3652,224 @@ export async function exportAllLocalDataToSupabase(
   }
 }
 
-export async function recordOrderPreparationScanToSupabase(
+export interface OrderPreparationScanInput {
+  order_id: string;
+  order_number: string;
+  product_id: string;
+  product_ref: string;
+  preparer_id?: string | null;
+  preparer_name?: string | null;
+  picked_quantity: number;
+  scanned_barcode?: string;
+  pickup_zone?: string;
+}
+
+export interface OrderPreparationScanResult {
+  success: boolean;
+  error?: string;
+  warningMessage?: string;
+  preparerId?: string | null;
+}
+
+export async function logOrderPreparationScan(
   client: SupabaseClient | null,
-  scanData: {
-    order_id: string;
-    order_number: string;
-    product_id: string;
-    product_ref: string;
-    preparer_id?: string | null;
-    preparer_name?: string | null;
-    picked_quantity: number;
-    scanned_barcode?: string;
-    pickup_zone?: string;
+  scanData: OrderPreparationScanInput
+): Promise<OrderPreparationScanResult> {
+  if (!client) {
+    return {
+      success: false,
+      error: 'Supabase non connecté.',
+      warningMessage: "Scan validé localement (journal de préparation hors ligne).",
+    };
   }
-): Promise<{ success: boolean; error?: string }> {
-  if (!client) return { success: false, error: 'Supabase non connecté.' };
+
   try {
+    let resolvedPreparerId: string | null = scanData.preparer_id
+      ? String(scanData.preparer_id).trim() || null
+      : null;
+    let resolvedPreparerName: string | null = scanData.preparer_name || null;
+
+    // Résout l'id core_users de l'utilisateur authentifié afin de respecter la règle RLS :
+    // preparer_id IS NULL OR preparer_id = public.current_user_id() OR public.is_administrator()
+    try {
+      if (client.auth && typeof client.auth.getUser === 'function') {
+        const { data: authData } = await client.auth.getUser();
+        const authUid = authData?.user?.id;
+        if (authUid) {
+          const { data: connectedProfile } = await client
+            .from(TABLES.users)
+            .select('id, name')
+            .eq('auth_user_id', authUid)
+            .maybeSingle();
+          if (
+            connectedProfile?.id !== undefined &&
+            connectedProfile?.id !== null &&
+            String(connectedProfile.id).trim() !== ''
+          ) {
+            resolvedPreparerId = String(connectedProfile.id).trim();
+            if (!resolvedPreparerName && connectedProfile.name) {
+              resolvedPreparerName = String(connectedProfile.name);
+            }
+          }
+        }
+      }
+    } catch {
+      // Conservation du preparer_id fourni en cas d'indisponibilité de auth.getUser()
+    }
+
     const payload = {
       id: `prep-${Date.now()}-${crypto.randomUUID()}`,
       order_id: scanData.order_id,
       order_number: scanData.order_number,
       product_id: String(scanData.product_id),
       product_ref: scanData.product_ref,
-      preparer_id: scanData.preparer_id ? String(scanData.preparer_id) : null,
-      preparer_name: scanData.preparer_name || null,
+      preparer_id: resolvedPreparerId,
+      preparer_name: resolvedPreparerName,
       picked_quantity: scanData.picked_quantity,
       scanned_barcode: scanData.scanned_barcode || null,
       pickup_zone: scanData.pickup_zone || null,
       scanned_at: new Date().toISOString(),
     };
-    const { error } = await client.from('order_preparations_log').insert([payload]);
-    return { success: !error, error: error?.message };
+
+    const { error } = await client.from(TABLES.orderPreparationsLog).insert([payload]);
+    if (error) {
+      const warningMessage =
+        "Scan validé, mais le journal de préparation n'a pas pu être enregistré.";
+      console.warn(`[TOT Stock] ${warningMessage}`, error.message);
+      return {
+        success: false,
+        error: error.message,
+        warningMessage,
+        preparerId: resolvedPreparerId,
+      };
+    }
+
+    return {
+      success: true,
+      preparerId: resolvedPreparerId,
+    };
   } catch (err: any) {
-    return { success: false, error: err.message };
+    const warningMessage =
+      "Scan validé, mais le journal de préparation n'a pas pu être enregistré.";
+    console.warn(`[TOT Stock] ${warningMessage}`, err?.message || err);
+    return {
+      success: false,
+      error: err?.message || String(err),
+      warningMessage,
+    };
   }
+}
+
+export async function recordOrderPreparationScanToSupabase(
+  client: SupabaseClient | null,
+  scanData: OrderPreparationScanInput
+): Promise<OrderPreparationScanResult> {
+  return logOrderPreparationScan(client, scanData);
+}
+
+export interface InventoryAuditRecordPayload {
+  id?: string;
+  depot_name?: string;
+  auditor_id?: string | number | null;
+  auditor_name?: string;
+  items_counted: number;
+  items_with_diff: number;
+  total_diff_cost: number;
+  audit_notes?: string;
+  items: {
+    id?: string;
+    product_id: string;
+    product_ref: string;
+    product_name?: string;
+    theoretical_qty: number;
+    physical_count: number;
+    difference: number;
+    unit_price?: number;
+    diff_cost?: number;
+    scanned_barcode?: string;
+  }[];
+}
+
+export const AUDIT_HISTORY_NOT_SAVED_WARNING =
+  "Stock régularisé, mais l'historique n'a pas pu être enregistré";
+
+export interface RecordInventoryAuditResult {
+  success: boolean;
+  auditId?: string;
+  queued?: boolean;
+  operationId?: string;
+  warningMessage?: string;
+  error?: string;
+  isNetworkError?: boolean;
 }
 
 export async function recordInventoryAuditToSupabase(
   client: SupabaseClient | null,
-  audit: {
-    depot_name?: string;
-    auditor_id?: string | number | null;
-    auditor_name?: string;
-    items_counted: number;
-    items_with_diff: number;
-    total_diff_cost: number;
-    audit_notes?: string;
-    items: {
-      product_id: string;
-      product_ref: string;
-      product_name?: string;
-      theoretical_qty: number;
-      physical_count: number;
-      difference: number;
-      unit_price?: number;
-      diff_cost?: number;
-      scanned_barcode?: string;
-    }[];
+  audit: InventoryAuditRecordPayload,
+  options?: {
+    skipQueue?: boolean;
+    operationId?: string;
   }
-): Promise<{ success: boolean; auditId?: string; error?: string }> {
-  if (!client) return { success: false, error: 'Supabase non connecté.' };
+): Promise<RecordInventoryAuditResult> {
+  const auditId = audit.id || `audit-${Date.now()}-${crypto.randomUUID()}`;
+  const operationId = options?.operationId || auditId;
+  const normalizedAudit: InventoryAuditRecordPayload = {
+    ...audit,
+    id: auditId,
+  };
+
+  const enqueueOnFailure = async (errorMsg: string, isNet: boolean): Promise<RecordInventoryAuditResult> => {
+    if (!options?.skipQueue) {
+      try {
+        if (isNet) {
+          await enqueueSyncOperation(
+            TABLES.inventoryAudits,
+            'RECORD_INVENTORY_AUDIT',
+            normalizedAudit,
+            operationId
+          );
+        } else {
+          await enqueueRejectedSyncOperation(
+            TABLES.inventoryAudits,
+            'RECORD_INVENTORY_AUDIT',
+            normalizedAudit,
+            errorMsg,
+            operationId
+          );
+        }
+      } catch (qErr) {
+        console.warn('Impossible de mettre en file d’attente l’historique d’audit:', qErr);
+      }
+    }
+    return {
+      success: false,
+      auditId,
+      queued: !options?.skipQueue,
+      operationId,
+      warningMessage: AUDIT_HISTORY_NOT_SAVED_WARNING,
+      error: errorMsg,
+      isNetworkError: isNet,
+    };
+  };
+
+  if (!client || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    return enqueueOnFailure('Supabase non connecté ou mode hors ligne.', true);
+  }
+
   try {
-    const auditId = `audit-${Date.now()}-${crypto.randomUUID()}`;
-    const auditRow = {
+    const nowIso = new Date().toISOString();
+    const positiveDiffValue = (audit.items || []).reduce((acc, it) => {
+      const dc = Number(it.diff_cost ?? it.difference * (it.unit_price || 0)) || 0;
+      return dc > 0 ? acc + dc : acc;
+    }, 0);
+    const negativeDiffValue = (audit.items || []).reduce((acc, it) => {
+      const dc = Number(it.diff_cost ?? it.difference * (it.unit_price || 0)) || 0;
+      return dc < 0 ? acc + Math.abs(dc) : acc;
+    }, 0);
+
+    const auditRowFull = {
       id: auditId,
-      depot_name: audit.depot_name || null,
+      depot_name: audit.depot_name || 'Dépôt Principal',
       auditor_id: audit.auditor_id ? String(audit.auditor_id) : null,
       auditor_name: audit.auditor_name || null,
       status: 'COMPLETED',
@@ -3324,19 +3877,62 @@ export async function recordInventoryAuditToSupabase(
       items_with_diff: audit.items_with_diff,
       total_diff_cost: audit.total_diff_cost,
       audit_notes: audit.audit_notes || null,
-      created_at: new Date().toISOString(),
-      completed_at: new Date().toISOString(),
+      total_references: audit.items_counted,
+      counted_references: audit.items_counted,
+      discrepancies_count: audit.items_with_diff,
+      positive_diff_value: positiveDiffValue,
+      negative_diff_value: negativeDiffValue,
+      net_diff_value: audit.total_diff_cost,
+      notes: audit.audit_notes || null,
+      started_at: nowIso,
+      created_at: nowIso,
+      completed_at: nowIso,
     };
 
-    const { error: errAudit } = await client.from('inventory_audits').insert([auditRow]);
+    let { error: errAudit } = await client
+      .from(TABLES.inventoryAudits)
+      .insert([auditRowFull]);
+
     if (errAudit) {
+      const errCode = String(errAudit.code || '');
+      const errMsg = String(errAudit.message || '').toLowerCase();
+      if (
+        errCode === '42703' ||
+        errCode === 'PGRST204' ||
+        (errMsg.includes('column') && (errMsg.includes('does not exist') || errMsg.includes('could not find')))
+      ) {
+        const auditRowBasic = {
+          id: auditId,
+          depot_name: audit.depot_name || null,
+          auditor_id: audit.auditor_id ? String(audit.auditor_id) : null,
+          auditor_name: audit.auditor_name || null,
+          status: 'COMPLETED',
+          items_counted: audit.items_counted,
+          items_with_diff: audit.items_with_diff,
+          total_diff_cost: audit.total_diff_cost,
+          audit_notes: audit.audit_notes || null,
+          created_at: nowIso,
+          completed_at: nowIso,
+        };
+        const retryRes = await client
+          .from(TABLES.inventoryAudits)
+          .insert([auditRowBasic]);
+        errAudit = retryRes.error;
+      }
+    }
+
+    // Idempotent retry: ignore 23505 duplicate key on audit header if already inserted
+    if (errAudit && String(errAudit.code || '') !== '23505') {
       console.warn('Supabase inventory_audits insert:', errAudit);
-      return { success: false, error: errAudit.message };
+      return enqueueOnFailure(
+        errAudit.message || "Erreur lors de l'enregistrement de l'audit.",
+        isNetworkOrFetchError(errAudit)
+      );
     }
 
     if (audit.items.length > 0) {
-      const itemRows = audit.items.map((it) => ({
-        id: `item-${Date.now()}-${crypto.randomUUID()}`,
+      const itemRows = audit.items.map((it, idx) => ({
+        id: it.id || `${auditId}-item-${idx + 1}`,
         audit_id: auditId,
         product_id: String(it.product_id),
         product_ref: it.product_ref,
@@ -3347,14 +3943,184 @@ export async function recordInventoryAuditToSupabase(
         unit_price: it.unit_price || 0,
         diff_cost: it.diff_cost || 0,
         scanned_barcode: it.scanned_barcode || null,
-        scanned_at: new Date().toISOString(),
+        scanned_at: nowIso,
       }));
-      await client.from('inventory_audit_items').insert(itemRows);
+      const { error: errItems } = await client
+        .from(TABLES.inventoryAuditItems)
+        .insert(itemRows);
+      if (errItems && String(errItems.code || '') !== '23505') {
+        console.warn('Supabase inventory_audit_items insert:', errItems);
+        return enqueueOnFailure(
+          errItems.message || "Erreur lors de l'enregistrement des lignes d'audit.",
+          isNetworkOrFetchError(errItems)
+        );
+      }
     }
 
-    return { success: true, auditId };
+    return { success: true, auditId, operationId };
   } catch (err: any) {
-    return { success: false, error: err.message };
+    return enqueueOnFailure(
+      err?.message || "Erreur lors de l'enregistrement de l'audit.",
+      isNetworkOrFetchError(err)
+    );
+  }
+}
+
+export async function retryQueuedInventoryAudit(
+  client: SupabaseClient | null,
+  operationId: string
+): Promise<RecordInventoryAuditResult> {
+  const op = await retryRejectedSyncOperation(operationId);
+  if (!op) {
+    return {
+      success: false,
+      operationId,
+      error: "Opération d'audit introuvable dans la file d'attente.",
+    };
+  }
+  const res = await recordInventoryAuditToSupabase(
+    client,
+    {
+      ...op.payload,
+      id: op.payload?.id || operationId,
+    },
+    {
+      skipQueue: true,
+      operationId,
+    }
+  );
+  if (res.success) {
+    await updateSyncOperationStatus(operationId, 'synced');
+  } else if (res.isNetworkError) {
+    await updateSyncOperationStatus(operationId, 'failed', res.error);
+  } else {
+    await updateSyncOperationStatus(operationId, 'rejected', res.error);
+  }
+  return res;
+}
+
+export async function discardQueuedInventoryAudit(operationId: string): Promise<void> {
+  await discardSyncOperation(operationId);
+}
+
+export interface FetchInventoryAuditsResult {
+  success: boolean;
+  audits: any[];
+  error?: string;
+  isNetworkError?: boolean;
+}
+
+export async function fetchInventoryAuditsFromSupabase(
+  client: SupabaseClient | null
+): Promise<FetchInventoryAuditsResult> {
+  if (!client) {
+    return {
+      success: false,
+      audits: [],
+      error: 'Base de données Supabase non configurée ou hors ligne.',
+      isNetworkError: true,
+    };
+  }
+  try {
+    const { data: audits, error } = await client
+      .from(TABLES.inventoryAudits)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) {
+      return {
+        success: false,
+        audits: [],
+        error: error.message || "Impossible de lire l'historique des audits.",
+        isNetworkError: isNetworkOrFetchError(error),
+      };
+    }
+    if (!Array.isArray(audits)) {
+      return {
+        success: true,
+        audits: [],
+      };
+    }
+
+    const auditIds = audits.map((a: any) => String(a.id)).filter(Boolean);
+    const itemsByAuditId: Record<string, any[]> = {};
+    if (auditIds.length > 0) {
+      const { data: items, error: itemsErr } = await client
+        .from(TABLES.inventoryAuditItems)
+        .select('*')
+        .in('audit_id', auditIds);
+      if (itemsErr) {
+        return {
+          success: false,
+          audits: [],
+          error: itemsErr.message || "Impossible de lire le détail des lignes d'audit.",
+          isNetworkError: isNetworkOrFetchError(itemsErr),
+        };
+      }
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          const aid = String(it.audit_id);
+          if (!itemsByAuditId[aid]) itemsByAuditId[aid] = [];
+          itemsByAuditId[aid].push({
+            id: String(it.id),
+            audit_id: aid,
+            product_id: String(it.product_id),
+            product_ref: String(it.product_ref || ''),
+            product_name: it.product_name || undefined,
+            theoretical_qty: Number(it.theoretical_qty) || 0,
+            physical_count: Number(it.physical_count) || 0,
+            difference: Number(it.difference) || 0,
+            unit_price: Number(it.unit_price) || 0,
+            diff_cost: Number(it.diff_cost) || 0,
+            scanned_barcode: it.scanned_barcode || undefined,
+            scanned_at: it.scanned_at || undefined,
+          });
+        }
+      }
+    }
+
+    const mappedAudits = audits.map((a: any) => {
+      const auditItems = itemsByAuditId[String(a.id)] || [];
+      const computedPos = auditItems.reduce((acc, it) => (it.diff_cost > 0 ? acc + it.diff_cost : acc), 0);
+      const computedNeg = auditItems.reduce((acc, it) => (it.diff_cost < 0 ? acc + Math.abs(it.diff_cost) : acc), 0);
+      return {
+        id: String(a.id),
+        depot_name: String(a.depot_name || 'Dépôt Principal'),
+        auditor_id: a.auditor_id ?? null,
+        auditor_name: String(a.auditor_name || 'Auditeur'),
+        validator_id: a.validator_id ?? null,
+        validator_name: a.validator_name || undefined,
+        status: a.status === 'VALIDATED' || a.status === 'CANCELLED' ? a.status : 'COMPLETED',
+        total_references: Number(a.total_references ?? a.items_counted) || auditItems.length || 0,
+        counted_references: Number(a.counted_references ?? a.items_counted) || auditItems.length || 0,
+        discrepancies_count:
+          Number(a.discrepancies_count ?? a.items_with_diff) ||
+          auditItems.filter((it) => it.difference !== 0).length ||
+          0,
+        positive_diff_value: Number(a.positive_diff_value) || computedPos || 0,
+        negative_diff_value: Number(a.negative_diff_value) || computedNeg || 0,
+        net_diff_value: Number(a.net_diff_value ?? a.total_diff_cost) || 0,
+        notes: a.notes || a.audit_notes || undefined,
+        started_at: String(a.started_at || a.created_at || new Date().toISOString()),
+        completed_at: a.completed_at || undefined,
+        validated_at: a.validated_at || undefined,
+        created_at: String(a.created_at || new Date().toISOString()),
+        items: auditItems,
+      };
+    });
+
+    return {
+      success: true,
+      audits: mappedAudits,
+    };
+  } catch (err: any) {
+    console.warn('Supabase fetchInventoryAuditsFromSupabase:', err);
+    return {
+      success: false,
+      audits: [],
+      error: err?.message || "Erreur lors de la lecture de l'historique des audits.",
+      isNetworkError: isNetworkOrFetchError(err),
+    };
   }
 }
 
@@ -3444,7 +4210,7 @@ export function compareSemver(v1?: string | null, v2?: string | null): number {
 }
 
 /**
- * Évalue les règles de compatibilité Point 4 à partir d'une ligne app_compat :
+ * Évalue les règles de compatibilité Point 4 à partir d'une ligne core_app_compat :
  * - APP_VERSION < min_app_version (base) : blocage « Mettez l'application à jour »
  * - schema_version (base) < MIN_SUPPORTED_SCHEMA_VERSION : blocage « La base de données doit être mise à jour »
  * - schema_version (base) < EXPECTED_SCHEMA_VERSION mais >= MIN_SUPPORTED_SCHEMA_VERSION :
@@ -3514,7 +4280,7 @@ export function evaluateAppCompatRules(
 }
 
 /**
- * Vérifie la table singleton public.app_compat (id = 1) au démarrage (Point 4).
+ * Vérifie la table singleton public.core_app_compat (id = 1) au démarrage (Point 4).
  * Distingue trois cas :
  * 1) table absente : avertissement non bloquant « installation incomplète, contactez votre administrateur »
  * 2) erreur réseau ou hors ligne : continuer avec le dernier état connu mis en cache
@@ -3568,7 +4334,7 @@ export async function checkAppCompatibility(
 
   try {
     const { data, error } = await client
-      .from('app_compat')
+      .from(TABLES.appCompat)
       .select('*')
       .eq('id', 1)
       .maybeSingle();
@@ -3586,7 +4352,7 @@ export async function checkAppCompatibility(
         msg.includes('could not find') ||
         msg.includes('does not exist') ||
         msg.includes('not found') ||
-        msg.includes('app_compat');
+        msg.includes(TABLES.appCompat);
 
       if (isTableAbsent) {
         try {
@@ -3657,7 +4423,8 @@ export async function checkEmailServiceConfigured(
   }
 
   try {
-    const { data, error } = await client.functions.invoke('send-report-email', {
+    const fnName = getResolvedEdgeFunctionName('sendReportEmail');
+    const { data, error } = await client.functions.invoke(fnName, {
       body: { action: 'status' },
     });
     if (!error && data && (data.configured === false || data.status === 'non configuré')) {
@@ -3685,6 +4452,168 @@ export async function checkEmailServiceConfigured(
   return true;
 }
 
+export const STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE =
+  "Le serveur n'a pas la dernière version des scripts SQL (03, 04) : exécutez dist/install.sql";
+
+/**
+ * Vérifie au démarrage et lors du diagnostic que la table public.stk_stock_levels existe
+ * et que la fonction RPC public.process_stock_movement existe avec la signature attendue (12 paramètres).
+ */
+export async function checkStockMovementsReadiness(
+  client: SupabaseClient | null
+): Promise<{
+  ready: boolean;
+  message: string;
+  isNetworkError?: boolean;
+  checkRow: DiagnosticCheckRow;
+  warningMessage?: string;
+}> {
+  if (!client) {
+    return {
+      ready: true,
+      message: 'Base de données Supabase non configurée ou hors ligne.',
+      checkRow: {
+        check_key: 'stock_movements_rpc',
+        check_label: 'Mouvements de stock',
+        status: 'ATTENTION',
+        details: 'Base de données Supabase non configurée ou hors ligne.',
+      },
+    };
+  }
+
+  try {
+    // 1. Vérifier que la table public.stk_stock_levels existe
+    const { error: slErr } = await client.from(TABLES.stockLevels).select('product_id').limit(1);
+    if (slErr) {
+      if (isNetworkOrFetchError(slErr)) {
+        return {
+          ready: true,
+          message: 'Serveur hors ligne — contrôle différé.',
+          isNetworkError: true,
+          checkRow: {
+            check_key: 'stock_movements_rpc',
+            check_label: 'Mouvements de stock',
+            status: 'ATTENTION',
+            details: 'Serveur hors ligne — contrôle différé.',
+          },
+        };
+      }
+      const slCode = String(slErr.code || '');
+      const slMsg = String(slErr.message || '').toLowerCase();
+      const isTableMissing =
+        slCode === '42P01' ||
+        slCode === 'PGRST205' ||
+        slMsg.includes('does not exist') ||
+        slMsg.includes('could not find the table') ||
+        slMsg.includes('not found');
+      if (isTableMissing) {
+        return {
+          ready: false,
+          message: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+          checkRow: {
+            check_key: 'stock_movements_rpc',
+            check_label: 'Mouvements de stock',
+            status: 'ERREUR',
+            details: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+          },
+          warningMessage: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+        };
+      }
+    }
+
+    // 2. Vérifier que la fonction RPC public.process_stock_movement existe avec les 12 paramètres attendus
+    const pingOpId = '00000000-0000-4000-8000-000000000000';
+    const { error: rpcErr } = await client.rpc('process_stock_movement', {
+      p_operation_id: pingOpId,
+      p_product_id: '__DIAGNOSTIC_PING__',
+      p_depot_name: 'Dépôt Principal',
+      p_type: 'IN',
+      p_quantity: 1,
+      p_reason: null,
+      p_project_name: null,
+      p_department: null,
+      p_dest_depot_name: null,
+      p_dest_rack: null,
+      p_metadata: {},
+      p_action: 'DIAGNOSTIC_PING',
+    });
+
+    if (rpcErr) {
+      if (isNetworkOrFetchError(rpcErr)) {
+        return {
+          ready: true,
+          message: 'Serveur hors ligne — contrôle différé.',
+          isNetworkError: true,
+          checkRow: {
+            check_key: 'stock_movements_rpc',
+            check_label: 'Mouvements de stock',
+            status: 'ATTENTION',
+            details: 'Serveur hors ligne — contrôle différé.',
+          },
+        };
+      }
+      const rpcCode = String(rpcErr.code || '');
+      const rpcMsg = String(rpcErr.message || '').toLowerCase();
+      const isRpcMissingOrWrongSignature =
+        rpcCode === '42883' ||
+        rpcCode === 'PGRST202' ||
+        rpcMsg.includes('could not find the function') ||
+        (rpcMsg.includes('function') &&
+          rpcMsg.includes('process_stock_movement') &&
+          rpcMsg.includes('does not exist'));
+
+      if (isRpcMissingOrWrongSignature) {
+        return {
+          ready: false,
+          message: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+          checkRow: {
+            check_key: 'stock_movements_rpc',
+            check_label: 'Mouvements de stock',
+            status: 'ERREUR',
+            details: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+          },
+          warningMessage: STOCK_MOVEMENTS_SQL_OUTDATED_MESSAGE,
+        };
+      }
+    }
+
+    return {
+      ready: true,
+      message: 'Table stock_levels et fonction process_stock_movement (12 paramètres) présentes',
+      checkRow: {
+        check_key: 'stock_movements_rpc',
+        check_label: 'Mouvements de stock',
+        status: 'OK',
+        details: 'Table stock_levels et fonction process_stock_movement (12 paramètres) présentes',
+      },
+    };
+  } catch (err: any) {
+    if (isNetworkOrFetchError(err)) {
+      return {
+        ready: true,
+        message: 'Serveur hors ligne — contrôle différé.',
+        isNetworkError: true,
+        checkRow: {
+          check_key: 'stock_movements_rpc',
+          check_label: 'Mouvements de stock',
+          status: 'ATTENTION',
+          details: 'Serveur hors ligne — contrôle différé.',
+        },
+      };
+    }
+    return {
+      ready: true,
+      message: 'Table stock_levels et fonction process_stock_movement (12 paramètres) présentes',
+      checkRow: {
+        check_key: 'stock_movements_rpc',
+        check_label: 'Mouvements de stock',
+        status: 'OK',
+        details: 'Table stock_levels et fonction process_stock_movement (12 paramètres) présentes',
+      },
+    };
+  }
+}
+
 export async function runDiagnosticInstallation(
   client: SupabaseClient | null
 ): Promise<{ success: boolean; rows: DiagnosticCheckRow[]; error?: string }> {
@@ -3697,6 +4626,9 @@ export async function runDiagnosticInstallation(
   }
 
   try {
+    // Clear legacy table fallback cache before running diagnostic so a freshly migrated DB is immediately detected
+    clearLegacyTableFallbackCache();
+
     const { data, error } = await client.rpc('diagnostic_installation');
     if (error) {
       return {
@@ -3718,32 +4650,60 @@ export async function runDiagnosticInstallation(
         }))
       : [];
 
-    // Probe Edge Functions availability if SQL check returned ATTENTION (not yet recorded in app_settings)
-    const edgeRowIdx = rows.findIndex((r) => r.check_key === 'edge_functions_deployed');
-    if (edgeRowIdx !== -1 && rows[edgeRowIdx].status !== 'OK' && cachedUrl) {
+    // Probe prefixed_tables if not returned by an older 1.x server diagnostic_installation()
+    if (!rows.some((r) => r.check_key === 'prefixed_tables')) {
       try {
-        const fnNames = ['admin-users', 'sync-license', 'send-report-email'];
-        const reachable: string[] = [];
-        await Promise.all(
-          fnNames.map(async (fn) => {
-            try {
-              const res = await fetch(`${cachedUrl}/functions/v1/${fn}`, {
-                method: 'OPTIONS',
-              });
-              if (res.ok || res.status === 204 || res.status === 200) {
-                reachable.push(fn);
-              }
-            } catch {}
-          })
-        );
-        if (reachable.length === fnNames.length) {
-          rows[edgeRowIdx] = {
-            ...rows[edgeRowIdx],
-            status: 'OK',
-            details: `3/3 fonctions Edge accessibles (${reachable.join(', ')}).`,
-          };
+        await client.from(TABLES.products).select('id').limit(1);
+        let usedLegacyFallback = false;
+        for (const map of legacyFallbackTablesByOrigin.values()) {
+          if (map.has(TABLES.products)) {
+            usedLegacyFallback = true;
+            break;
+          }
         }
-      } catch {}
+        rows.push({
+          check_key: 'prefixed_tables',
+          check_label: 'Tables avec préfixes (core_ / stk_)',
+          status: usedLegacyFallback ? 'ERREUR' : 'OK',
+          details: usedLegacyFallback
+            ? "Anciennes tables sans préfixe détectées (schéma 1.x). Exécutez supabase-client/09_core_prefixes.sql ou dist/install.sql dans l'éditeur SQL Supabase."
+            : 'Tables préfixées core_* et stk_* présentes.',
+        });
+      } catch {
+        rows.push({
+          check_key: 'prefixed_tables',
+          check_label: 'Tables avec préfixes (core_ / stk_)',
+          status: 'ERREUR',
+          details:
+            "Impossible de vérifier les tables préfixées core_* / stk_*. Exécutez dist/install.sql dans l'éditeur SQL Supabase.",
+        });
+      }
+    }
+
+    // Probe stock_movements_rpc if not already returned by the server's diagnostic_installation()
+    if (!rows.some((r) => r.check_key === 'stock_movements_rpc')) {
+      const movCheck = await checkStockMovementsReadiness(client);
+      rows.push(movCheck.checkRow);
+    }
+
+    // Probe Edge Functions availability using { action: 'ping' }
+    await loadEdgeFunctionOverridesFromClientDb(client);
+    const pingReport = await pingClientEdgeFunctions(client);
+    const edgeRowIdx = rows.findIndex((r) => r.check_key === 'edge_functions_deployed');
+    if (edgeRowIdx !== -1) {
+      rows[edgeRowIdx] = {
+        ...rows[edgeRowIdx],
+        status: pingReport.status,
+        details: pingReport.summary,
+      };
+    }
+    if (!rows.some((r) => r.check_key === 'edge_functions')) {
+      rows.push({
+        check_key: 'edge_functions',
+        check_label: 'Fonctions Edge',
+        status: pingReport.status,
+        details: pingReport.summary,
+      });
     }
 
     return { success: true, rows };

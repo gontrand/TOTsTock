@@ -18,8 +18,21 @@ import {
   syncLicenseTokenToClientDb,
 } from './licenseTokenService';
 import { updateCompanyLicenseInfoShared } from './clientSupabase';
+import { TABLES } from '../constants/tables';
+import {
+  getResolvedEdgeFunctionName,
+  getResolvedMasterEdgeFunctionName,
+  loadEdgeFunctionOverridesFromClientDb,
+} from '../constants/edgeFunctions';
 
-export { plan_limits };
+export { plan_limits, normalizeToCanonicalPlan };
+
+export const PLAN_LABELS: Record<CanonicalLicensePlan, string> = {
+  free: 'Gratuit (Free)',
+  sta: 'Standard (STA)',
+  pro: 'Professionnel (PRO)',
+  ent: 'Entreprise (ENT)',
+};
 
 export const LICENSE_STORAGE_KEY = 'tot_inv_license_info';
 export const LICENSE_CHECK_INTERVAL_DAYS = 15;
@@ -449,10 +462,11 @@ export async function verifyLicenseKey(
     };
   }
 
-  // 1. Validation et liaison contrôlée via l'Edge Function Maître (APP_TOT-Stock_licenses, action: 'validate')
+  // 1. Validation et liaison contrôlée via l'Edge Function Maître (action: 'validate')
+  const masterFnName = getResolvedMasterEdgeFunctionName('licenses');
   try {
     const { data: edgeData, error: edgeErr } = await masterSupabase.functions.invoke(
-      'APP_TOT-Stock_licenses',
+      masterFnName,
       {
         body: {
           action: 'validate',
@@ -686,7 +700,7 @@ export async function provisionServerLicense(
   ) {
     try {
       if (cleanEmail) {
-        await masterSupabase.functions.invoke('APP_TOT-Stock_licenses', {
+        await masterSupabase.functions.invoke(getResolvedMasterEdgeFunctionName('licenses'), {
           body: {
             action: 'update_contact',
             license_key: current.license_key,
@@ -741,14 +755,17 @@ export async function associateContactEmailWithLicense(
   }
 
   try {
-    const { data, error } = await masterSupabase.functions.invoke('APP_TOT-Stock_licenses', {
-      body: {
-        action: 'update_contact',
-        license_key: cleanKey,
-        contact_email: cleanEmail,
-        client_supabase_url: current.client_supabase_url,
-      },
-    });
+    const { data, error } = await masterSupabase.functions.invoke(
+      getResolvedMasterEdgeFunctionName('licenses'),
+      {
+        body: {
+          action: 'update_contact',
+          license_key: cleanKey,
+          contact_email: cleanEmail,
+          client_supabase_url: current.client_supabase_url,
+        },
+      }
+    );
 
     if (error || data?.success === false) {
       return {
@@ -790,6 +807,7 @@ export const DISCOVER_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 export type LicenseDiscoveryStatus =
   | 'found'
   | 'not_found'
+  | 'function_not_found'
   | 'inactive'
   | 'expired'
   | 'invalid_token'
@@ -864,9 +882,10 @@ export async function discoverLicenseByProjectUrl(
     ((fnName: string, args: { body: Record<string, any> }) =>
       masterSupabase.functions.invoke(fnName, args));
   const verifyToken = options?.verifyTokenFn || verifySignedLicenseToken;
+  const masterFnName = getResolvedMasterEdgeFunctionName('licenses');
 
   try {
-    let { data, error } = await invoke('APP_TOT-Stock_licenses', {
+    let { data, error } = await invoke(masterFnName, {
       body: {
         action: 'discover',
         client_supabase_url: cleanUrl,
@@ -888,21 +907,19 @@ export async function discoverLicenseByProjectUrl(
       }
     }
 
-    const errStatus = (error as any)?.context?.status || (error as any)?.status;
+    const errStatus = Number((error as any)?.context?.status || (error as any)?.status || data?.status || 0);
     const code = String(data?.code || '').toUpperCase();
-    const rawMsg = String(data?.message || data?.error || error?.message || '');
+    const rawMsg = String(data?.message || data?.error || error?.message || '').trim();
+    const lowerMsg = rawMsg.toLowerCase();
 
-    const isEdgeFunctionNotDeployed =
-      code === 'NOT_FOUND' ||
-      rawMsg.includes('Requested function was not found') ||
-      (error as any)?.name === 'FunctionsFetchError';
+    // 1. Licence non liée au projet client
+    const isLicenseNotLinked =
+      code === 'LICENSE_NOT_FOUND' ||
+      lowerMsg.includes('aucune licence') ||
+      lowerMsg.includes('non liée') ||
+      lowerMsg.includes('no license');
 
-    if (
-      !isEdgeFunctionNotDeployed &&
-      (code === 'LICENSE_NOT_FOUND' ||
-        errStatus === 404 ||
-        rawMsg.toLowerCase().includes('aucune licence'))
-    ) {
+    if (isLicenseNotLinked) {
       if (storage) {
         try {
           storage.setItem(DISCOVER_COOLDOWN_KEY, String(Date.now()));
@@ -913,14 +930,29 @@ export async function discoverLicenseByProjectUrl(
       return {
         success: false,
         status: 'not_found',
-        message: data?.message || 'Aucune licence liée à ce projet sur le serveur maître.',
+        message: data?.message || 'Licence non liée : aucune licence active n\'est rattachée à ce projet sur le serveur maître.',
+      };
+    }
+
+    // 2. Fonction Edge introuvable (uniquement pour un vrai 404 ou code NOT_FOUND)
+    const isTrue404FunctionNotFound =
+      code === 'NOT_FOUND' ||
+      lowerMsg.includes('requested function was not found') ||
+      lowerMsg.includes('function not found') ||
+      (errStatus === 404 && !isLicenseNotLinked);
+
+    if (isTrue404FunctionNotFound) {
+      return {
+        success: false,
+        status: 'function_not_found',
+        message: `Fonction introuvable (404) : la fonction Edge "${masterFnName}" n'est pas encore déployée ou le nom/URL de la base maître est incorrect.`,
       };
     }
 
     if (
       code === 'LICENSE_INACTIVE' ||
-      rawMsg.toLowerCase().includes('inactive') ||
-      rawMsg.toLowerCase().includes('révoquée')
+      lowerMsg.includes('inactive') ||
+      lowerMsg.includes('révoquée')
     ) {
       return {
         success: false,
@@ -931,7 +963,7 @@ export async function discoverLicenseByProjectUrl(
 
     if (
       code === 'LICENSE_EXPIRED' ||
-      rawMsg.toLowerCase().includes('expiré')
+      lowerMsg.includes('expiré')
     ) {
       return {
         success: false,
@@ -944,20 +976,21 @@ export async function discoverLicenseByProjectUrl(
       if (
         code === 'DISCOVER_DENIED' ||
         errStatus === 401 ||
-        errStatus === 403
+        errStatus === 403 ||
+        lowerMsg.includes('refusé') ||
+        lowerMsg.includes('forbidden') ||
+        lowerMsg.includes('unauthorized')
       ) {
         return {
           success: false,
           status: 'denied',
-          message: data?.message || 'Vérification du projet refusée par le serveur maître.',
+          message: data?.message || data?.error || `Refusé par le serveur maître (${errStatus || 403}) : vérification du projet ou de la session refusée.`,
         };
       }
       return {
         success: false,
         status: 'network_error',
-        message: isEdgeFunctionNotDeployed
-          ? 'La fonction Edge APP_TOT-Stock_licenses n\'est pas encore déployée sur la base maître Éditeur.'
-          : rawMsg || 'Impossible de joindre le serveur maître pour rechercher la licence.',
+        message: rawMsg || 'Impossible de joindre le serveur maître pour rechercher la licence.',
       };
     }
 
@@ -1071,14 +1104,14 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
 
   try {
     const { data: userRow } = await client
-      .from('users')
+      .from(TABLES.users)
       .select('role_id')
       .eq('auth_user_id', authUser.id)
       .maybeSingle();
 
     if (!userRow && authUser.email) {
       const { data: emailRow } = await client
-        .from('users')
+        .from(TABLES.users)
         .select('role_id')
         .ilike('email', authUser.email)
         .maybeSingle();
@@ -1086,7 +1119,7 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
         const rId = Number(emailRow.role_id);
         if (rId === 0 || rId === 1) return true;
         const { data: roleRow } = await client
-          .from('roles')
+          .from(TABLES.roles)
           .select('permissions')
           .eq('id', rId)
           .maybeSingle();
@@ -1099,7 +1132,7 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
       const rId = Number(userRow.role_id);
       if (rId === 0 || rId === 1) return true;
       const { data: roleRow } = await client
-        .from('roles')
+        .from(TABLES.roles)
         .select('permissions')
         .eq('id', rId)
         .maybeSingle();
@@ -1131,10 +1164,10 @@ export async function recoverCompanyLicenseFromServerAndClientDb(
   let offlineFallbackLicense: LicenseInfo | null = null;
 
   if (client) {
-    // 1. Check app_settings on client DB for stored license_key
+    // 1. Check core_app_settings on client DB for stored license_key
     try {
       const { data: settingsRows } = await client
-        .from('app_settings')
+        .from(TABLES.appSettings)
         .select('key, value')
         .in('key', ['company_license_info', 'license_key', 'company_name']);
 
@@ -1206,10 +1239,10 @@ export async function recoverCompanyLicenseFromServerAndClientDb(
       }
     } catch {}
 
-    // 2. Check license_config on client DB for stored license_key
+    // 2. Check core_license_config on client DB for stored license_key
     try {
       const { data: cfgRows } = await client
-        .from('license_config')
+        .from(TABLES.licenseConfig)
         .select('*')
         .limit(5);
 
@@ -1534,18 +1567,21 @@ export async function upgradeServerLicense(
   const canonicalTarget = normalizePlanType(targetPlan);
 
   try {
-    const { data, error } = await masterSupabase.functions.invoke('APP_TOT-Stock_licenses', {
-      body: {
-        action: 'upgrade',
-        license_key: current.license_key,
-        plan: canonicalTarget,
-        plan_type: canonicalTarget,
-        billing_cycle: billingCycle,
-        organization_name: cleanOrg,
-        client_supabase_url: cleanUrl,
-        contact_email: cleanEmail,
-      },
-    });
+    const { data, error } = await masterSupabase.functions.invoke(
+      getResolvedMasterEdgeFunctionName('licenses'),
+      {
+        body: {
+          action: 'upgrade',
+          license_key: current.license_key,
+          plan: canonicalTarget,
+          plan_type: canonicalTarget,
+          billing_cycle: billingCycle,
+          organization_name: cleanOrg,
+          client_supabase_url: cleanUrl,
+          contact_email: cleanEmail,
+        },
+      }
+    );
 
     if (error) {
       return {
@@ -1601,14 +1637,148 @@ export const updateLicenseContactEmail = associateContactEmailWithLicense;
 
 export { syncLicenseTokenToClientDb } from './licenseTokenService';
 
+export interface ClientDbLicenseStatus {
+  effectivePlan: CanonicalLicensePlan;
+  effectiveMaxDepots: number;
+  hasSignedToken: boolean;
+  rawPlanType: CanonicalLicensePlan;
+  rawMaxDepots: number;
+  licenseKey?: string;
+  updatedAt?: string;
+  mismatchWithApp: boolean;
+  plan: CanonicalLicensePlan;
+  max_depots: number;
+  signedTokenPresent: boolean;
+  mismatchWarning: boolean;
+}
+
+export type ClientDatabaseLicenseStatus = ClientDbLicenseStatus;
+
 /**
- * Synchronizes the verified license to the Client Supabase Database (license_config & app_settings tables).
- * Technical ceilings (max_references / max_tools) are NEVER stored per client.
+ * Relit `public.core_license_config` dans la base cliente et calcule le plafond réellement
+ * appliqué par le trigger SQL `enforce_license_max_depots_quota` (qui retombe sur FREE / 1 dépôt
+ * si aucun `signed_token` valide n'est présent).
+ */
+export async function readClientDatabaseLicenseStatus(
+  client: any,
+  expectedAppPlan?: string
+): Promise<ClientDbLicenseStatus> {
+  const normAppPlan = expectedAppPlan ? normalizePlanType(expectedAppPlan) : 'free';
+  const defaultMismatch = normAppPlan !== 'free';
+  const defaultStatus: ClientDbLicenseStatus = {
+    effectivePlan: 'free',
+    effectiveMaxDepots: 1,
+    hasSignedToken: false,
+    rawPlanType: 'free',
+    rawMaxDepots: 1,
+    mismatchWithApp: defaultMismatch,
+    plan: 'free',
+    max_depots: 1,
+    signedTokenPresent: false,
+    mismatchWarning: defaultMismatch,
+  };
+
+  if (!client || typeof client.from !== 'function') {
+    return defaultStatus;
+  }
+
+  try {
+    const { data: rows, error } = await client
+      .from(TABLES.licenseConfig)
+      .select('*')
+      .limit(5);
+
+    if (error || !Array.isArray(rows) || rows.length === 0) {
+      return defaultStatus;
+    }
+
+    const row =
+      rows.find((r: any) => String(r?.id) === 'active_license' || Number(r?.id) === 1) ||
+      rows[0];
+
+    if (!row) return defaultStatus;
+
+    const rawPlanType = normalizePlanType(row.plan_type || row.plan || 'free', row.license_key);
+    const rawMaxDepots = Math.max(Number(row.max_depots) || 1, 1);
+
+    let parsedToken: any = null;
+    let sig = '';
+    const rawSigned = row.signed_token;
+
+    if (rawSigned) {
+      if (typeof rawSigned === 'object') {
+        parsedToken = rawSigned;
+        sig = String(rawSigned.signature || '').trim();
+      } else if (typeof rawSigned === 'string' && rawSigned.trim()) {
+        const trimmed = rawSigned.trim();
+        if (trimmed.startsWith('{')) {
+          try {
+            parsedToken = JSON.parse(trimmed);
+            sig = String(parsedToken?.signature || '').trim();
+          } catch {}
+        } else if (trimmed.includes('.')) {
+          try {
+            const [b64, s] = trimmed.split('.');
+            parsedToken = JSON.parse(atob(b64));
+            sig = String(s || '').trim();
+          } catch {}
+        }
+      }
+    }
+
+    const hasSignedToken = Boolean(parsedToken && sig.length >= 8);
+    let effectivePlan: CanonicalLicensePlan = 'free';
+    let effectiveMaxDepots = 1;
+
+    if (hasSignedToken) {
+      effectivePlan = normalizePlanType(
+        parsedToken.plan || parsedToken.plan_type || rawPlanType,
+        parsedToken.license_key || row.license_key
+      );
+      const limits = plan_limits(effectivePlan);
+      const tokenDepots = Number(parsedToken.max_depots) || 0;
+      effectiveMaxDepots =
+        tokenDepots > 0 ? Math.min(tokenDepots, limits.max_depots) : limits.max_depots;
+    }
+
+    const mismatch = normAppPlan !== 'free' && effectivePlan === 'free';
+    return {
+      effectivePlan,
+      effectiveMaxDepots,
+      hasSignedToken,
+      rawPlanType,
+      rawMaxDepots,
+      licenseKey: row.license_key ? String(row.license_key) : undefined,
+      updatedAt: row.updated_at ? String(row.updated_at) : undefined,
+      mismatchWithApp: mismatch,
+      plan: effectivePlan,
+      max_depots: effectiveMaxDepots,
+      signedTokenPresent: hasSignedToken,
+      mismatchWarning: mismatch,
+    };
+  } catch {
+    return defaultStatus;
+  }
+}
+
+export interface SyncLicenseClientDbResult {
+  success: boolean;
+  status?: number;
+  code?: string;
+  isNotFound?: boolean;
+  message: string;
+  dbStatus?: ClientDbLicenseStatus;
+  dbLicenseStatus?: ClientDbLicenseStatus;
+}
+
+/**
+ * Synchronizes the verified license to the Client Supabase Database (`core_license_config` via Edge Function & `core_app_settings`).
+ * LOT 2 v43 : Ne renvoie jamais `success: true` si l'Edge Function échoue (403, 404, 500) ou si le jeton signé n'est pas écrit.
  */
 export async function syncLicenseToClientDatabase(
   license: LicenseInfo,
   client?: any
-): Promise<{ success: boolean; message: string }> {
+): Promise<SyncLicenseClientDbResult> {
   if (!client) {
     return { success: false, message: 'Client Supabase non connecté' };
   }
@@ -1617,14 +1787,36 @@ export async function syncLicenseToClientDatabase(
   const limits = plan_limits(canonicalPlan);
   const modules = normalizeLicenseModules(license.modules, false, canonicalPlan);
   const pDepots = Math.max(Number(license.max_depots) || 0, limits.max_depots);
+  const isFreePlan =
+    canonicalPlan === 'free' &&
+    (!license.license_key || license.license_key.toUpperCase().startsWith('TOT-STOCK-FREE'));
 
   try {
-    const { data: sessionData } = await client.auth.getSession();
-    if (!sessionData?.session) {
-      return {
-        success: true,
-        message: `Licence ${canonicalPlan.toUpperCase()} chargée.`,
-      };
+    await loadEdgeFunctionOverridesFromClientDb(client);
+    const syncFnName = getResolvedEdgeFunctionName('syncLicense');
+
+    if (typeof client.auth?.getSession === 'function') {
+      const { data: sessionData } = await client.auth.getSession();
+      if (!sessionData?.session) {
+        const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
+        if (!isFreePlan && !dbStatus.hasSignedToken) {
+          return {
+            success: false,
+            status: 401,
+            message:
+              'Session utilisateur requise pour écrire le jeton signé de licence dans la base cliente.',
+            dbStatus,
+            dbLicenseStatus: dbStatus,
+          };
+        }
+        return {
+          success: true,
+          status: 200,
+          message: `Licence ${canonicalPlan.toUpperCase()} chargée.`,
+          dbStatus,
+          dbLicenseStatus: dbStatus,
+        };
+      }
     }
 
     if (license.license_key && !license.license_key.toUpperCase().startsWith('TOT-STOCK-FREE')) {
@@ -1656,26 +1848,73 @@ export async function syncLicenseToClientDatabase(
       });
     }
 
-    if (license.signed_token) {
-      try {
-        const edgeRes = await syncLicenseTokenToClientDb(client, license.signed_token);
-        if (edgeRes.success) {
-          return {
-            success: true,
-            message: `Base client synchronisée avec succès via sync-license (${canonicalPlan.toUpperCase()}, modules : ${modules.join(', ')}, ${pDepots} dépôts).`,
-          };
-        }
-      } catch {}
+    if (!isFreePlan && !license.signed_token) {
+      const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
+      return {
+        success: false,
+        status: 400,
+        code: 'MISSING_SIGNED_TOKEN',
+        message: `Impossible de synchroniser la licence ${canonicalPlan.toUpperCase()} dans la base cliente : aucun jeton signé Ed25519 n'est présent. Relancez « Découvrir la licence du projet » ou revalidez la clé.`,
+        dbStatus,
+        dbLicenseStatus: dbStatus,
+      };
     }
 
+    if (license.signed_token) {
+      const edgeRes = await syncLicenseTokenToClientDb(client, license.signed_token);
+      const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
+
+      if (!edgeRes.success) {
+        return {
+          success: false,
+          status: edgeRes.status,
+          code: edgeRes.code,
+          isNotFound: edgeRes.isNotFound,
+          message: edgeRes.message,
+          dbStatus,
+          dbLicenseStatus: dbStatus,
+        };
+      }
+
+      const finalDbStatus: ClientDbLicenseStatus = dbStatus.hasSignedToken
+        ? dbStatus
+        : {
+            ...dbStatus,
+            effectivePlan: canonicalPlan,
+            effectiveMaxDepots: pDepots,
+            hasSignedToken: true,
+            mismatchWithApp: false,
+            plan: canonicalPlan,
+            max_depots: pDepots,
+            signedTokenPresent: true,
+            mismatchWarning: false,
+          };
+
+      return {
+        success: true,
+        status: 200,
+        message: `Base client synchronisée avec succès via ${syncFnName} (${canonicalPlan.toUpperCase()}, modules : ${modules.join(', ')}, ${pDepots} dépôts).`,
+        dbStatus: finalDbStatus,
+        dbLicenseStatus: finalDbStatus,
+      };
+    }
+
+    const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
     return {
       success: true,
+      status: 200,
       message: `Licence ${canonicalPlan.toUpperCase()} active synchronisée (modules : ${modules.join(', ')}, ${pDepots >= 99999 ? 'Illimité' : pDepots + ' dépôts'}).`,
+      dbStatus,
+      dbLicenseStatus: dbStatus,
     };
   } catch (err: any) {
+    const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
     return {
       success: false,
+      status: 500,
       message: err?.message || 'Erreur lors de la synchronisation de licence client',
+      dbStatus,
+      dbLicenseStatus: dbStatus,
     };
   }
 }

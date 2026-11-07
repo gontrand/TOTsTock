@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { DesktopShell } from './DesktopShell';
+import { DesktopAuditPage } from './pages/DesktopAuditPage';
 import { DesktopMovementsPage } from './pages/DesktopMovementsPage';
 import { DesktopOrdersPage } from './pages/DesktopOrdersPage';
 import { DesktopPreparationPage } from './pages/DesktopPreparationPage';
@@ -100,6 +101,9 @@ export const DesktopWorkspace: React.FC = () => {
             setLabelDialogProductIds(products.slice(0, 12).map((p) => p.id));
           }
         }}
+        renderAuditPage={({ globalDepotFilter }) => (
+          <DesktopAuditPage selectedDepotFilter={globalDepotFilter} />
+        )}
         renderMovementsPage={({ globalDepotFilter }) => (
           <DesktopMovementsPage
             selectedDepotFilter={globalDepotFilter}

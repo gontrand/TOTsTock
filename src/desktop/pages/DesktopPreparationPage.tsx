@@ -1,29 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
+  Barcode,
+  Check,
   CheckCircle2,
   MapPin,
   Printer,
   RefreshCw,
-  RotateCcw,
-  ScanBarcode,
   Search,
-  UserCheck,
-  Volume2,
-  VolumeX,
+  Undo2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { MaterialOrder, MaterialOrderItem, Product } from '../../types';
 import {
   canFinishOrder,
   filterOrdersForPreparer,
-  getItemRackLocation,
+  findCatalogProductByCode,
   getNextItemToPick,
   getOrderProgress,
   getSortedOrderItemsForPicking,
   isOrderLockedForUser,
-  isScannerSoundEnabled,
   matchScannedCodeInOrder,
-  setScannerSoundEnabled,
   triggerScannerFeedback,
 } from '../../services/orderPickingLogic';
 import {
@@ -31,24 +28,26 @@ import {
   isEditableEventTarget,
   processKeyForBarcodeBurst,
 } from '../../services/desktopInventoryLogic';
-import { getPickingLineVisualStatus } from '../../services/desktopOrdersMovementsLogic';
 import {
-  getSavedPrintStationId,
-  getScannerSelectedLabelFormat,
-  getScannerSelectedStationId,
-  rpcCreatePrintJob,
-  rpcListPrintStations,
-  PrintStationRecord,
-} from '../../services/printStationService';
+  buildFullPrintableDocumentHtml,
+  generateProductVisualsMap,
+  renderOrderReadyLabelSheetHtml,
+  renderProductLabelsSheetHtml,
+} from '../../services/labelRendering';
+import { generateQrCodeDataUrlWithTotLogo } from '../../utils/qrCodeHelper';
+import { dispatchStationPrintDocument } from '../../services/printStationService';
+import { tr } from '../../i18n/dutchTranslator';
 
-interface DesktopPreparationPageProps {
-  selectedDepotFilter: string;
+export interface DesktopPreparationPageProps {
+  selectedDepotFilter?: string;
   initialOrderId?: string | null;
+  globalDepotFilter?: string;
 }
 
 export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
   selectedDepotFilter,
   initialOrderId,
+  globalDepotFilter = 'ALL',
 }) => {
   const {
     orders,
@@ -57,33 +56,47 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
     currentUser,
     userHasPermission,
     assignOrderToMe,
-    updateMaterialOrder,
+    validateOrderItemScanned,
+    unpickOrderItem,
+    updateOrderItemAvailability,
+    substituteOrderItem,
     markOrderReady,
+    language,
     t,
   } = useApp();
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(initialOrderId || null);
-  const [selectedLineProductId, setSelectedLineProductId] = useState<string | number | null>(null);
-  const [manualScanCode, setManualScanCode] = useState('');
-  const [pickupZoneInput, setPickupZoneInput] = useState('Zone Retrait A');
-  const [printReadyLabelOnFinish, setPrintReadyLabelOnFinish] = useState(true);
-  const [stations, setStations] = useState<PrintStationRecord[]>([]);
-  const [selectedStationId, setSelectedStationId] = useState<string>(
-    getScannerSelectedStationId() || getSavedPrintStationId() || ''
+  const effectiveDepotFilter = selectedDepotFilter ?? globalDepotFilter ?? 'ALL';
+  const hasManagePerm = userHasPermission('perm_orders_manage');
+  const canPrintLabels = userHasPermission('perm_menu_print_labels');
+
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(
+    initialOrderId || null
   );
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => isScannerSoundEnabled());
-  const [scanBanner, setScanBanner] = useState<{
-    type: 'success' | 'error' | 'info';
-    message: string;
+  const [searchQuery, setSearchQuery] = useState('');
+  const [manualScanCode, setManualScanCode] = useState('');
+  const [activeProductId, setActiveProductId] = useState<string | number | null>(null);
+  const [qtyInput, setQtyInput] = useState<number>(1);
+  const [pickupLocation, setPickupLocation] = useState('Étagère A1');
+  const [autoPrintOrderSlip, setAutoPrintOrderSlip] = useState(true);
+  const [feedbackBanner, setFeedbackBanner] = useState<{
+    type: 'success' | 'warn' | 'error';
+    text: string;
   } | null>(null);
-  const [undoSnapshot, setUndoSnapshot] = useState<MaterialOrderItem[] | null>(null);
-  const [showReplaceSelector, setShowReplaceSelector] = useState(false);
-  const [replaceSearch, setReplaceSearch] = useState('');
-  const [customQtyPrompt, setCustomQtyPrompt] = useState<number | null>(null);
+
+  // Missing / Substitute modals
+  const [missingModalItem, setMissingModalItem] = useState<MaterialOrderItem | null>(
+    null
+  );
+  const [missingReason, setMissingReason] = useState('Rupture de stock en rayon');
+  const [substituteModalItem, setSubstituteModalItem] =
+    useState<MaterialOrderItem | null>(null);
+  const [substituteSearch, setSubstituteSearch] = useState('');
+  const [lastPickedProductId, setLastPickedProductId] = useState<
+    string | number | null
+  >(null);
 
   const burstStateRef = useRef(createInitialBarcodeBurstState());
-  const hasManagePerm = userHasPermission('perm_orders_manage');
+  const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (initialOrderId) {
@@ -91,266 +104,252 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
     }
   }, [initialOrderId]);
 
-  useEffect(() => {
-    rpcListPrintStations().then((res) => {
-      if (res.stations.length > 0) {
-        setStations(res.stations);
-        if (!selectedStationId) {
-          const online = res.stations.find((s) => s.is_online) || res.stations[0];
-          if (online) setSelectedStationId(online.id);
-        }
-      }
-    });
-  }, [selectedStationId]);
-
-  const preparerOrders = useMemo(() => {
+  const preparableOrders = useMemo(() => {
     return filterOrdersForPreparer(orders, currentUser, {
-      depotFilter: selectedDepotFilter,
+      depotFilter: effectiveDepotFilter,
       searchQuery,
     });
-  }, [orders, currentUser, selectedDepotFilter, searchQuery]);
+  }, [orders, currentUser, effectiveDepotFilter, searchQuery]);
 
   const activeOrder: MaterialOrder | null = useMemo(() => {
     if (selectedOrderId) {
-      const found = preparerOrders.find((o) => o.id === selectedOrderId);
+      const found = preparableOrders.find((o) => o.id === selectedOrderId);
       if (found) return found;
     }
-    return preparerOrders[0] || null;
-  }, [preparerOrders, selectedOrderId]);
+    return preparableOrders[0] || null;
+  }, [preparableOrders, selectedOrderId]);
 
   const sortedItems = useMemo(() => {
     if (!activeOrder) return [];
-    return getSortedOrderItemsForPicking(activeOrder, {
-      strategy: 'rack_location',
-      products,
-    });
+    return getSortedOrderItemsForPicking(activeOrder, { products });
   }, [activeOrder, products]);
 
-  const expectedItem: MaterialOrderItem | null = useMemo(() => {
+  const currentItem: MaterialOrderItem | null = useMemo(() => {
     if (!activeOrder) return null;
-    if (selectedLineProductId !== null) {
-      const explicit = activeOrder.items.find(
-        (it) => String(it.product_id) === String(selectedLineProductId)
+    if (activeProductId != null) {
+      const found = activeOrder.items.find(
+        (it) => String(it.product_id) === String(activeProductId)
       );
-      if (explicit) return explicit;
+      if (found) return found;
     }
-    return getNextItemToPick(activeOrder, { strategy: 'rack_location', products });
-  }, [activeOrder, selectedLineProductId, products]);
+    return getNextItemToPick(activeOrder, { products });
+  }, [activeOrder, activeProductId, products]);
 
-  const progress = useMemo(() => getOrderProgress(activeOrder), [activeOrder]);
-  const isLockedByOther = useMemo(
-    () => isOrderLockedForUser(activeOrder, currentUser, hasManagePerm),
-    [activeOrder, currentUser, hasManagePerm]
-  );
+  useEffect(() => {
+    if (currentItem) {
+      const remaining = Math.max(
+        1,
+        currentItem.quantity - (currentItem.picked_quantity || 0)
+      );
+      setQtyInput(remaining);
+    }
+  }, [currentItem?.product_id, currentItem?.quantity, currentItem?.picked_quantity]);
 
-  const ensureOrderAssignedToMe = useCallback(
+  const ensureOrderAssigned = useCallback(
     async (order: MaterialOrder) => {
-      if (!currentUser) return;
-      if (!order.preparer_id || order.status === 'PENDING') {
+      if (order.status === 'PENDING' && !order.preparer_id) {
         await assignOrderToMe(order.id);
       }
     },
-    [currentUser, assignOrderToMe]
+    [assignOrderToMe]
   );
 
-  const applyItemsUpdate = useCallback(
-    async (nextItems: MaterialOrderItem[], bannerMsg: string) => {
-      if (!activeOrder || isLockedByOther) return;
-      setUndoSnapshot(activeOrder.items.map((it) => ({ ...it })));
-      await ensureOrderAssignedToMe(activeOrder);
-      await updateMaterialOrder(activeOrder.id, { items: nextItems });
-      setScanBanner({ type: 'success', message: bannerMsg });
+  const handleValidateLine = useCallback(
+    async (item: MaterialOrderItem, codeUsed: string, quantityToPick: number) => {
+      if (!activeOrder) return;
+      await ensureOrderAssigned(activeOrder);
+      const res = validateOrderItemScanned(
+        activeOrder.id,
+        item.product_id,
+        quantityToPick,
+        codeUsed || item.product_ref
+      );
+      if (res.success) {
+        triggerScannerFeedback('success');
+        setLastPickedProductId(item.product_id);
+        setFeedbackBanner({
+          type: 'success',
+          text: tr(
+            language,
+            `Ligne pointée : ${item.product_ref} (×${quantityToPick})`,
+            `Line picked: ${item.product_ref} (×${quantityToPick})`,
+            `Regel verzameld: ${item.product_ref} (×${quantityToPick})`
+          ),
+        });
+        setActiveProductId(null);
+      } else {
+        triggerScannerFeedback('error');
+        setFeedbackBanner({
+          type: 'error',
+          text: tr(
+            language,
+            `Échec de validation pour ${item.product_ref}`,
+            `Validation failed for ${item.product_ref}`,
+            `Validatie mislukt voor ${item.product_ref}`
+          ),
+        });
+      }
     },
-    [activeOrder, isLockedByOther, ensureOrderAssignedToMe, updateMaterialOrder]
+    [activeOrder, ensureOrderAssigned, validateOrderItemScanned, language]
   );
-
-  const handlePickLine = useCallback(
-    async (targetItem: MaterialOrderItem, qtyToPick?: number, scannedBarcode?: string) => {
-      if (!activeOrder || isLockedByOther) return;
-      const finalQty =
-        qtyToPick !== undefined ? Math.max(1, Math.trunc(qtyToPick)) : targetItem.quantity;
-      const nextItems = activeOrder.items.map((it) =>
-        String(it.product_id) === String(targetItem.product_id)
-          ? {
-              ...it,
-              picked: true,
-              picked_quantity: finalQty,
-              unavailable: false,
-              scanned_barcode: scannedBarcode || it.product_ref,
-              scanned_at: new Date().toISOString(),
-            }
-          : it
-      );
-      triggerScannerFeedback('success');
-      await applyItemsUpdate(
-        nextItems,
-        `Article pointé : ${targetItem.product_ref} (Qté : ${finalQty}/${targetItem.quantity})`
-      );
-      setSelectedLineProductId(null);
-      setCustomQtyPrompt(null);
-    },
-    [activeOrder, isLockedByOther, applyItemsUpdate]
-  );
-
-  const handleMarkUnavailable = useCallback(
-    async (targetItem: MaterialOrderItem) => {
-      if (!activeOrder || isLockedByOther) return;
-      const nextItems = activeOrder.items.map((it) =>
-        String(it.product_id) === String(targetItem.product_id)
-          ? {
-              ...it,
-              picked: false,
-              picked_quantity: 0,
-              unavailable: true,
-              unavailable_comment: 'Rupture constatée au picking bureau',
-            }
-          : it
-      );
-      await applyItemsUpdate(nextItems, `Ligne marquée manquante : ${targetItem.product_ref}`);
-      setSelectedLineProductId(null);
-    },
-    [activeOrder, isLockedByOther, applyItemsUpdate]
-  );
-
-  const handleSubstituteLine = useCallback(
-    async (targetItem: MaterialOrderItem, replacement: Product) => {
-      if (!activeOrder || isLockedByOther) return;
-      const nextItems = activeOrder.items.map((it) =>
-        String(it.product_id) === String(targetItem.product_id)
-          ? {
-              ...it,
-              substituted: true,
-              substituted_with_id: replacement.id,
-              substituted_with_ref: replacement.reference,
-              substituted_with_name: `${replacement.brand} ${replacement.model}`.trim(),
-              picked: true,
-              picked_quantity: it.quantity,
-              unavailable: false,
-              scanned_at: new Date().toISOString(),
-            }
-          : it
-      );
-      triggerScannerFeedback('success');
-      await applyItemsUpdate(
-        nextItems,
-        `Article ${targetItem.product_ref} remplacé par ${replacement.reference}`
-      );
-      setShowReplaceSelector(false);
-      setSelectedLineProductId(null);
-    },
-    [activeOrder, isLockedByOther, applyItemsUpdate]
-  );
-
-  const handleUndoLastPick = useCallback(async () => {
-    if (!activeOrder || !undoSnapshot || isLockedByOther) return;
-    await updateMaterialOrder(activeOrder.id, { items: undoSnapshot });
-    setUndoSnapshot(null);
-    setScanBanner({ type: 'info', message: 'Dernière action annulée.' });
-  }, [activeOrder, undoSnapshot, isLockedByOther, updateMaterialOrder]);
 
   const handleScannedCode = useCallback(
     async (rawCode: string) => {
-      if (!activeOrder || isLockedByOther) return;
-      const match = matchScannedCodeInOrder(activeOrder, rawCode, products, expectedItem);
+      if (!activeOrder) return;
+      const clean = rawCode.trim();
+      if (!clean) return;
+
+      const match = matchScannedCodeInOrder(
+        activeOrder,
+        clean,
+        products,
+        currentItem
+      );
 
       if (match.kind === 'expected_item' && match.matchedItem) {
-        await handlePickLine(match.matchedItem, match.matchedItem.quantity, rawCode);
+        await handleValidateLine(
+          match.matchedItem,
+          clean,
+          match.matchedItem.quantity
+        );
         return;
       }
 
       if (match.kind === 'other_order_item' && match.matchedItem) {
-        await handlePickLine(match.matchedItem, match.matchedItem.quantity, rawCode);
+        triggerScannerFeedback('error');
+        setActiveProductId(match.matchedItem.product_id);
+        setFeedbackBanner({
+          type: 'warn',
+          text: tr(
+            language,
+            `Article d'une autre ligne détecté (${match.matchedItem.product_ref}) — ligne sélectionnée.`,
+            `Item from another line detected (${match.matchedItem.product_ref}) — line selected.`,
+            `Artikel van een andere regel gedetecteerd (${match.matchedItem.product_ref}) — regel geselecteerd.`
+          ),
+        });
         return;
       }
 
       if (match.kind === 'already_picked_item' && match.matchedItem) {
         triggerScannerFeedback('error');
-        setScanBanner({
-          type: 'info',
-          message: `L'article ${match.matchedItem.product_ref} a déjà été pointé.`,
+        setFeedbackBanner({
+          type: 'warn',
+          text: tr(
+            language,
+            `La ligne ${match.matchedItem.product_ref} est déjà pointée.`,
+            `Line ${match.matchedItem.product_ref} is already picked.`,
+            `Regel ${match.matchedItem.product_ref} is al verzameld.`
+          ),
         });
         return;
       }
 
-      if (match.kind === 'catalog_substitute_candidate' && match.catalogProduct && expectedItem) {
+      if (match.kind === 'catalog_substitute_candidate' && match.catalogProduct) {
         triggerScannerFeedback('error');
-        setScanBanner({
+        setFeedbackBanner({
           type: 'error',
-          message: `Code hors commande (${match.catalogProduct.reference}). Utilisez « Remplacer » si vous souhaitez substituer l'article attendu.`,
+          text: tr(
+            language,
+            `Article hors commande (${match.catalogProduct.reference} — ${match.catalogProduct.brand} ${match.catalogProduct.model}).`,
+            `Product not in order (${match.catalogProduct.reference} — ${match.catalogProduct.brand} ${match.catalogProduct.model}).`,
+            `Artikel niet in bestelling (${match.catalogProduct.reference} — ${match.catalogProduct.brand} ${match.catalogProduct.model}).`
+          ),
         });
         return;
       }
 
       triggerScannerFeedback('error');
-      setScanBanner({
+      setFeedbackBanner({
         type: 'error',
-        message: `Code inconnu ou non attendu dans cette commande : "${rawCode}"`,
+        text: tr(
+          language,
+          `Code-barres inconnu : ${clean}`,
+          `Unknown barcode: ${clean}`,
+          `Onbekende streepjescode: ${clean}`
+        ),
       });
     },
-    [activeOrder, isLockedByOther, products, expectedItem, handlePickLine]
+    [activeOrder, currentItem, products, handleValidateLine, language]
   );
 
-  const handleFinishOrderReady = useCallback(async () => {
-    if (!activeOrder || !canFinishOrder(activeOrder) || isLockedByOther) return;
-    await markOrderReady(activeOrder.id, pickupZoneInput.trim() || 'Zone Retrait');
-
-    if (printReadyLabelOnFinish && selectedStationId) {
-      await rpcCreatePrintJob({
-        stationId: selectedStationId,
-        kind: 'order_label',
-        format: getScannerSelectedLabelFormat(),
-        payload: {
-          order_id: activeOrder.id,
-          order_number: activeOrder.order_number,
-          site_number: activeOrder.site_number,
-          site_name: activeOrder.site_name || '',
-          requester_name: activeOrder.requester_name,
-          pickup_zone: pickupZoneInput.trim() || 'Zone Retrait',
-          depot_name: activeOrder.depot_name || 'Dépôt Principal',
-        },
-        copies: 1,
-        dedupeKey: `order_ready_${activeOrder.id}`,
+  const handleMarkOrderReady = useCallback(async () => {
+    if (!activeOrder || !canFinishOrder(activeOrder)) return;
+    const res = await markOrderReady(activeOrder.id, pickupLocation);
+    if (res.success) {
+      triggerScannerFeedback('success');
+      setFeedbackBanner({
+        type: 'success',
+        text: tr(
+          language,
+          `Commande ${activeOrder.order_number} prête au retrait (${pickupLocation}) !`,
+          `Order ${activeOrder.order_number} ready for pickup (${pickupLocation})!`,
+          `Bestelling ${activeOrder.order_number} klaar voor afhaling (${pickupLocation})!`
+        ),
       });
+      if (autoPrintOrderSlip && canPrintLabels) {
+        let qrDataUrl = '';
+        try {
+          qrDataUrl = await generateQrCodeDataUrlWithTotLogo(
+            `TOT-ORDER:${activeOrder.order_number}`,
+            { size: 180, margin: 1 }
+          );
+        } catch {
+          qrDataUrl = '';
+        }
+        const slipHtml = renderOrderReadyLabelSheetHtml(
+          {
+            order_number: activeOrder.order_number,
+            site_number: activeOrder.site_number,
+            site_name: activeOrder.site_name,
+            requester_name: activeOrder.requester_name,
+            pickup_zone: pickupLocation,
+            depot_name: activeOrder.depot_name,
+            items_count: activeOrder.items.length,
+            qrDataUrl,
+          },
+          'avery_105x42',
+          1
+        );
+        const fullDoc = buildFullPrintableDocumentHtml(
+          slipHtml,
+          'avery_105x42',
+          `${tr(language, 'Bon Commande', 'Order Slip', 'Bestelbon')} ${activeOrder.order_number}`
+        );
+        await dispatchStationPrintDocument({
+          html: fullDoc,
+          format: 'avery_105x42',
+          copies: 1,
+        });
+      }
     }
+  }, [activeOrder, markOrderReady, pickupLocation, language, autoPrintOrderSlip, canPrintLabels]);
 
-    setScanBanner({
-      type: 'success',
-      message: `Commande ${activeOrder.order_number} marquée PRÊTE (${pickupZoneInput}).`,
-    });
-  }, [
-    activeOrder,
-    isLockedByOther,
-    markOrderReady,
-    pickupZoneInput,
-    printReadyLabelOnFinish,
-    selectedStationId,
-  ]);
-
+  // Global USB Barcode Scanner listener + Function keys F2, F4, F8
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F2' && expectedItem) {
+      if (e.key === 'F2' && currentItem) {
         e.preventDefault();
-        setCustomQtyPrompt(expectedItem.picked_quantity || expectedItem.quantity);
+        qtyInputRef.current?.focus();
+        qtyInputRef.current?.select();
         return;
       }
-      if (e.key === 'F4' && expectedItem) {
+      if (e.key === 'F4' && currentItem) {
         e.preventDefault();
-        handleMarkUnavailable(expectedItem);
+        setMissingModalItem(currentItem);
         return;
       }
       if (e.key === 'F8' && activeOrder && canFinishOrder(activeOrder)) {
         e.preventDefault();
-        handleFinishOrderReady();
+        handleMarkOrderReady();
         return;
       }
 
-      if (isEditableEventTarget(e.target)) return;
       const res = processKeyForBarcodeBurst(
         burstStateRef.current,
         e.key,
-        performance.now(),
+        e.timeStamp || performance.now(),
         {
-          isEditableTarget: false,
+          isEditableTarget: isEditableEventTarget(e.target),
           ctrlKey: e.ctrlKey,
           altKey: e.altKey,
           metaKey: e.metaKey,
@@ -358,64 +357,124 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
       );
       burstStateRef.current = res.state;
       if (res.committedCode) {
-        e.preventDefault();
         handleScannedCode(res.committedCode);
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [expectedItem, activeOrder, handleMarkUnavailable, handleFinishOrderReady, handleScannedCode]);
+  }, [currentItem, activeOrder, handleScannedCode, handleMarkOrderReady]);
 
-  const handlePrintProductLabel = async (item: MaterialOrderItem) => {
-    if (!selectedStationId) {
-      setScanBanner({
-        type: 'error',
-        message: "Aucun poste d'impression sélectionné.",
-      });
-      return;
-    }
-    const res = await rpcCreatePrintJob({
-      stationId: selectedStationId,
-      kind: 'product_label',
-      format: getScannerSelectedLabelFormat(),
-      payload: {
-        product_id: String(item.product_id),
-        product_ref: item.product_ref,
-      },
-      copies: 1,
+  const handleUndoLastPick = () => {
+    if (!activeOrder || lastPickedProductId == null) return;
+    unpickOrderItem(activeOrder.id, lastPickedProductId);
+    setFeedbackBanner({
+      type: 'warn',
+      text: tr(language, 'Dernier pointage annulé.', 'Last pick undone.', 'Laatste pick ongedaan gemaakt.'),
     });
-    if (res.error) {
-      setScanBanner({ type: 'error', message: res.error });
-    } else {
-      setScanBanner({
-        type: 'success',
-        message: `Étiquette ${item.product_ref} envoyée au poste d'impression.`,
-      });
-    }
+    setLastPickedProductId(null);
   };
 
-  const pickupZonesList = useMemo(() => {
-    const d = depots.find(
-      (dep) =>
-        dep.name.toLowerCase() === (activeOrder?.depot_name || 'Dépôt Principal').toLowerCase()
+  const handleConfirmMissing = async () => {
+    if (!activeOrder || !missingModalItem) return;
+    await ensureOrderAssigned(activeOrder);
+    updateOrderItemAvailability(
+      activeOrder.id,
+      missingModalItem.product_id,
+      true,
+      missingReason
     );
-    return d?.pickup_zones && d.pickup_zones.length > 0
-      ? d.pickup_zones
-      : ['Zone Retrait A', 'Zone Retrait B', 'Comptoir Magasin', 'Casier Extérieur'];
-  }, [depots, activeOrder]);
+    setMissingModalItem(null);
+    setFeedbackBanner({
+      type: 'warn',
+      text: tr(
+        language,
+        `Ligne ${missingModalItem.product_ref} marquée manquante.`,
+        `Line ${missingModalItem.product_ref} marked missing.`,
+        `Regel ${missingModalItem.product_ref} gemarkeerd als ontbrekend.`
+      ),
+    });
+  };
+
+  const handleConfirmSubstitute = async (newProd: Product) => {
+    if (!activeOrder || !substituteModalItem) return;
+    await ensureOrderAssigned(activeOrder);
+    await substituteOrderItem(
+      activeOrder.id,
+      substituteModalItem.product_id,
+      newProd,
+      tr(language, 'Équivalent magasin', 'Warehouse equivalent', 'Magazijn-equivalent')
+    );
+    setSubstituteModalItem(null);
+    setFeedbackBanner({
+      type: 'success',
+      text: tr(
+        language,
+        `Article remplacé par ${newProd.reference}.`,
+        `Item replaced by ${newProd.reference}.`,
+        `Artikel vervangen door ${newProd.reference}.`
+      ),
+    });
+  };
+
+  const handlePrintProductLabel = async (item: MaterialOrderItem) => {
+    const prod =
+      products.find((p) => String(p.id) === String(item.product_id)) ||
+      findCatalogProductByCode(item.product_ref, products);
+    if (!prod) return;
+    const visuals = await generateProductVisualsMap([prod], {
+      showQr: true,
+      showBarcode: true,
+    });
+    const sheetHtml = renderProductLabelsSheetHtml([prod], {
+      format: 'thermal_50x30',
+      showQr: true,
+      showBarcode: true,
+      showLocation: true,
+      showOem: true,
+      showPrice: false,
+      canViewPrices: false,
+      imagesCache: visuals,
+    });
+    const fullDoc = buildFullPrintableDocumentHtml(
+      sheetHtml,
+      'thermal_50x30',
+      `${tr(language, 'Étiquette', 'Label', 'Etiket')} ${prod.reference}`
+    );
+    await dispatchStationPrintDocument({
+      html: fullDoc,
+      format: 'thermal_50x30',
+      copies: 1,
+    });
+  };
+
+  const orderProgress = useMemo(
+    () => (activeOrder ? getOrderProgress(activeOrder) : null),
+    [activeOrder]
+  );
+
+  const pickupZoneOptions = useMemo(() => {
+    const d = depots.find((dp) => dp.name === activeOrder?.depot_name);
+    if (d?.pickup_zones && d.pickup_zones.length > 0) return d.pickup_zones;
+    return [
+      tr(language, 'Étagère A1', 'Shelf A1', 'Stelling A1'),
+      tr(language, 'Casier Retrait B', 'Pickup Bin B', 'Afhaalvak B'),
+      tr(language, 'Palette Zone Retrait', 'Pickup Zone Pallet', 'Pallet Afhaalzone'),
+      tr(language, 'Comptoir Magasin', 'Warehouse Counter', 'Magazijnbalie'),
+    ];
+  }, [depots, activeOrder?.depot_name, language]);
 
   return (
     <div className="grid grid-cols-12 h-full min-h-0 bg-slate-50 dark:bg-slate-950 divide-x divide-slate-200 dark:divide-slate-800">
-      {/* ZONE 1 (Gauche - 3 col) : File des commandes à préparer */}
-      <div className="col-span-3 flex flex-col min-h-0 bg-white dark:bg-slate-900">
+      {/* ZONE A: Left Queue of Orders to Prepare (3 cols) */}
+      <div className="col-span-3 flex flex-col h-full min-h-0 bg-white dark:bg-slate-900">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-2.5">
           <div className="flex items-center justify-between">
-            <h1 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">
-              {t('desktop_nav_preparation' as any, 'Préparation (Picking)')}
+            <h1 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider">
+              {t('desktop_nav_preparation')}
             </h1>
-            <span className="px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-orange-100 text-orange-700 dark:bg-orange-950/70 dark:text-orange-300">
-              {preparerOrders.length}
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-orange-100 text-orange-800 dark:bg-orange-950/70 dark:text-orange-300">
+              {preparableOrders.length}
             </span>
           </div>
           <div className="relative">
@@ -424,71 +483,73 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filtrer commande ou chantier..."
+              placeholder={tr(
+                language,
+                'Filtrer commande ou chantier...',
+                'Filter order or job site...',
+                'Filter bestelling of werf...'
+              )}
               className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
             />
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-          {preparerOrders.length === 0 ? (
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-200/70 dark:divide-slate-800">
+          {preparableOrders.length === 0 ? (
             <div className="p-6 text-center text-xs text-slate-400">
-              Aucune commande en attente de préparation.
+              {tr(
+                language,
+                'Aucune commande en attente de préparation.',
+                'No orders waiting for preparation.',
+                'Geen bestellingen in afwachting van voorbereiding.'
+              )}
             </div>
           ) : (
-            preparerOrders.map((ord) => {
-              const prog = getOrderProgress(ord);
-              const isMine =
-                ord.preparer_id && String(ord.preparer_id) === String(currentUser?.id);
-              const isSelected = activeOrder?.id === ord.id;
+            preparableOrders.map((o) => {
+              const prog = getOrderProgress(o);
+              const locked = isOrderLockedForUser(o, currentUser, hasManagePerm);
+              const isSelected = activeOrder?.id === o.id;
+
               return (
                 <button
-                  key={ord.id}
+                  key={o.id}
                   type="button"
-                  onClick={() => {
-                    setSelectedOrderId(ord.id);
-                    setSelectedLineProductId(null);
-                  }}
-                  className={`w-full text-left p-3.5 transition-colors space-y-1.5 ${
+                  disabled={locked}
+                  onClick={() => setSelectedOrderId(o.id)}
+                  className={`w-full text-left p-3.5 transition-colors flex flex-col gap-1.5 ${
                     isSelected
-                      ? 'bg-orange-50/90 dark:bg-orange-950/30 border-l-4 border-l-orange-600'
-                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
-                  }`}
+                      ? 'bg-orange-50 dark:bg-orange-950/40 border-l-4 border-l-orange-600'
+                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  } ${locked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs font-black text-slate-900 dark:text-white truncate">
-                      {ord.order_number}
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs font-black text-slate-900 dark:text-white">
+                      {o.order_number}
                     </span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        isMine
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : ord.preparer_id
-                          ? 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                      }`}
-                    >
-                      {isMine
-                        ? 'En cours par moi'
-                        : ord.preparer_name
-                        ? `Par ${ord.preparer_name}`
-                        : 'À préparer'}
+                    <span className="font-mono text-[11px] font-bold text-orange-600">
+                      {prog.processedLines}/{prog.totalLines}
                     </span>
                   </div>
                   <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate">
-                    Chantier : {ord.site_number}
+                    {o.site_number || '—'} • {o.requester_name}
                   </div>
-                  <div className="flex items-center justify-between text-[11px] text-slate-500">
-                    <span>{ord.requester_name}</span>
-                    <span className="font-mono font-bold">
-                      {prog.processedLines}/{prog.totalLines} lignes ({prog.percent}%)
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                  <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                     <div
                       className="h-full bg-orange-600 transition-all"
-                      style={{ width: `${prog.percent}%` }}
+                      style={{
+                        width: `${prog.percent}%`,
+                      }}
                     />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>{o.depot_name || tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot')}</span>
+                    <span>
+                      {o.preparer_name
+                        ? `👷 ${o.preparer_name}`
+                        : o.status === 'PREPARING'
+                        ? tr(language, 'En cours par moi', 'In progress by me', 'Bezig door mij')
+                        : tr(language, 'À préparer', 'To prepare', 'Te verzamelen')}
+                    </span>
                   </div>
                 </button>
               );
@@ -497,148 +558,155 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
         </div>
       </div>
 
-      {/* ZONE 2 (Centre - 5 col) : Tableau des lignes triées par emplacement */}
-      <div className="col-span-5 flex flex-col min-h-0 bg-white dark:bg-slate-900">
+      {/* ZONE B: Center Lines Table Sorted by Rack Location (5 cols) */}
+      <div className="col-span-5 flex flex-col h-full min-h-0 bg-white dark:bg-slate-900">
         {!activeOrder ? (
-          <div className="flex-1 flex items-center justify-center text-xs text-slate-400 p-8">
-            Sélectionnez une commande à préparer dans la colonne de gauche.
+          <div className="flex-1 flex items-center justify-center text-xs text-slate-400 p-6">
+            {tr(
+              language,
+              'Sélectionnez une commande à préparer dans la colonne de gauche.',
+              'Select an order to prepare from the left column.',
+              'Selecteer een te verzamelen bestelling in de linkerkolom.'
+            )}
           </div>
         ) : (
           <>
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
               <div>
                 <div className="flex items-center gap-2">
-                  <h2 className="font-mono text-sm font-black text-slate-900 dark:text-white">
+                  <span className="font-mono text-sm font-black text-slate-900 dark:text-white">
                     {activeOrder.order_number}
-                  </h2>
-                  <span className="text-xs text-slate-500">
-                    • {activeOrder.depot_name || 'Dépôt Principal'}
+                  </span>
+                  <span className="text-xs font-semibold text-slate-500">
+                    • {activeOrder.site_number || '—'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Trié par emplacement de casier croissant • {progress.processedLines}/
-                  {progress.totalLines} lignes traitées ({progress.pickedQuantity}/
-                  {progress.requestedQuantity} u.)
+                  {tr(
+                    language,
+                    'Lignes triées par emplacement (Rack / Casier) pour optimiser le parcours',
+                    'Lines sorted by location (Rack / Bin) to optimize picking route',
+                    'Regels gesorteerd op locatie (Rek / Vak) voor optimale looproute'
+                  )}
                 </p>
               </div>
-              {undoSnapshot && (
+              {lastPickedProductId != null && (
                 <button
                   type="button"
                   onClick={handleUndoLastPick}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  Annuler dernier pointage
+                  <Undo2 className="w-3.5 h-3.5 text-orange-500" />
+                  {tr(language, 'Annuler dernier pointage', 'Undo last pick', 'Laatste pick ongedaan maken')}
                 </button>
               )}
             </div>
 
-            {scanBanner && (
+            {feedbackBanner && (
               <div
-                className={`px-4 py-2 text-xs font-bold flex items-center justify-between ${
-                  scanBanner.type === 'success'
-                    ? 'bg-emerald-600 text-white'
-                    : scanBanner.type === 'error'
-                    ? 'bg-rose-600 text-white'
-                    : 'bg-sky-600 text-white'
+                className={`mx-4 mt-3 px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-between ${
+                  feedbackBanner.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200'
+                    : feedbackBanner.type === 'warn'
+                    ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200'
+                    : 'bg-rose-50 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200'
                 }`}
               >
-                <span>{scanBanner.message}</span>
+                <span>{feedbackBanner.text}</span>
                 <button
                   type="button"
-                  onClick={() => setScanBanner(null)}
-                  className="text-white/80 hover:text-white text-[11px]"
+                  onClick={() => setFeedbackBanner(null)}
+                  className="text-[10px] underline ml-2"
                 >
-                  Fermer
+                  OK
                 </button>
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto p-4">
               <table className="w-full text-left border-collapse text-xs">
-                <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] font-bold uppercase text-slate-500">
                   <tr>
-                    <th className="py-2 px-3">Casier</th>
-                    <th className="py-2 px-3">Article</th>
-                    <th className="py-2 px-3 text-right">Qté</th>
-                    <th className="py-2 px-3">État</th>
-                    <th className="py-2 px-3 text-right">Étiquette</th>
+                    <th className="py-2 px-2.5">{tr(language, 'Casier', 'Bin', 'Vak')}</th>
+                    <th className="py-2 px-2.5">{tr(language, 'Article', 'Item', 'Artikel')}</th>
+                    <th className="py-2 px-2 text-right">{tr(language, 'Qté', 'Qty', 'Aant')}</th>
+                    <th className="py-2 px-2.5">{tr(language, 'État', 'State', 'Status')}</th>
+                    {canPrintLabels && (
+                      <th className="py-2 px-2 text-right">{tr(language, 'Étiquette', 'Label', 'Etiket')}</th>
+                    )}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
                   {sortedItems.map((it) => {
-                    const loc = getItemRackLocation(it, products);
-                    const vStatus = getPickingLineVisualStatus(it);
-                    const isCurrentExpected =
-                      expectedItem && String(expectedItem.product_id) === String(it.product_id);
-                    const pQty =
-                      it.picked_quantity !== undefined
-                        ? it.picked_quantity
-                        : it.picked
-                        ? it.quantity
-                        : 0;
+                    const isCurrent =
+                      String(currentItem?.product_id) === String(it.product_id);
+                    const pickedQty = it.picked_quantity ?? (it.picked ? it.quantity : 0);
+                    const isMissing = Boolean(it.unavailable);
+                    const isPartial = !isMissing && it.picked && pickedQty > 0 && pickedQty < it.quantity;
+
                     return (
                       <tr
                         key={String(it.product_id)}
-                        onClick={() => setSelectedLineProductId(it.product_id)}
+                        onClick={() => setActiveProductId(it.product_id)}
                         className={`cursor-pointer transition-colors ${
-                          isCurrentExpected
-                            ? 'bg-orange-50 dark:bg-orange-950/40 font-semibold'
+                          isCurrent
+                            ? 'bg-orange-50/90 dark:bg-orange-950/40 font-semibold'
                             : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                         }`}
                       >
-                        <td className="py-2.5 px-3 font-mono font-black text-orange-600 dark:text-orange-400">
-                          {loc || '—'}
+                        <td className="py-2.5 px-2.5 font-mono font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                          {it.rack_location || '—'}
                         </td>
-                        <td className="py-2.5 px-3">
-                          <div className="font-mono font-bold text-slate-900 dark:text-white">
+                        <td className="py-2.5 px-2.5">
+                          <div className="font-mono text-[11px] font-bold text-orange-600">
                             {it.product_ref}
                           </div>
-                          <div className="text-[11px] text-slate-500 truncate max-w-[200px]">
+                          <div className="text-slate-900 dark:text-white truncate max-w-[200px]">
                             {it.product_name}
                           </div>
                         </td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold">
-                          {pQty}/{it.quantity}
+                        <td className="py-2.5 px-2 text-right font-mono font-black">
+                          {pickedQty}/{it.quantity}
                         </td>
-                        <td className="py-2.5 px-3">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                              vStatus === 'picked'
-                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                                : vStatus === 'partial'
-                                ? 'bg-amber-100 text-amber-800'
-                                : vStatus === 'missing'
-                                ? 'bg-rose-100 text-rose-800'
-                                : vStatus === 'replaced'
-                                ? 'bg-purple-100 text-purple-800'
-                                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                            }`}
+                        <td className="py-2.5 px-2.5 whitespace-nowrap">
+                          {isMissing ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700">
+                              {tr(language, 'Manquant', 'Missing', 'Ontbrekend')}
+                            </span>
+                          ) : isPartial ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">
+                              {tr(language, 'Partiel', 'Partial', 'Gedeeltelijk')}
+                            </span>
+                          ) : it.picked ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">
+                              {tr(language, 'Pointé', 'Picked', 'Verzameld')}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800">
+                              {tr(language, 'À prendre', 'To pick', 'Te pakken')}
+                            </span>
+                          )}
+                        </td>
+                        {canPrintLabels && (
+                          <td
+                            className="py-2.5 px-2 text-right"
+                            onClick={(e) => e.stopPropagation()}
                           >
-                            {vStatus === 'picked'
-                              ? 'Pointé'
-                              : vStatus === 'partial'
-                              ? 'Partiel'
-                              : vStatus === 'missing'
-                              ? 'Manquant'
-                              : vStatus === 'replaced'
-                              ? 'Remplacé'
-                              : 'À prendre'}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handlePrintProductLabel(it);
-                            }}
-                            title="Envoyer l'étiquette produit au poste d'impression"
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-orange-600 hover:bg-orange-50 dark:hover:bg-slate-800"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
+                            <button
+                              type="button"
+                              onClick={() => handlePrintProductLabel(it)}
+                              title={tr(
+                                language,
+                                'Imprimer étiquette article',
+                                'Print item label',
+                                'Artikeletiket afdrukken'
+                              )}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-orange-600"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -649,262 +717,336 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
         )}
       </div>
 
-      {/* ZONE 3 (Droite - 4 col) : Zone de scan active, article attendu en grand et clôture */}
-      <div className="col-span-4 flex flex-col min-h-0 bg-slate-50 dark:bg-slate-950 p-5 gap-4 overflow-y-auto">
-        <div className="p-3.5 rounded-xl bg-slate-900 text-white flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <div>
-              <div className="text-xs font-bold flex items-center gap-1.5">
-                <ScanBarcode className="w-4 h-4 text-orange-400" />
-                Douchette USB HID active
-              </div>
-              <div className="text-[10px] text-slate-400">
-                Scannez directement sans cliquer dans un champ (&lt; 50 ms)
-              </div>
-            </div>
+      {/* ZONE C: Right Active Scan & Validation Console (4 cols) */}
+      <div className="col-span-4 flex flex-col h-full min-h-0 bg-slate-50/70 dark:bg-slate-900/50 p-5 gap-4 overflow-y-auto">
+        {/* USB Barcode Input Box */}
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 text-xs font-black text-emerald-600 dark:text-emerald-400">
+              <Barcode className="w-4 h-4" />
+              {tr(language, 'Douchette USB HID active', 'USB HID Scanner active', 'USB HID-scanner actief')}
+            </span>
+            <span className="text-[10px] font-mono text-slate-400">
+              {tr(language, 'F2 Qté • F4 Manquant • F8 Prête', 'F2 Qty • F4 Missing • F8 Ready', 'F2 Aant • F4 Ontbr. • F8 Klaar')}
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              const next = !soundEnabled;
-              setSoundEnabled(next);
-              setScannerSoundEnabled(next);
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (manualScanCode.trim()) {
+                handleScannedCode(manualScanCode);
+                setManualScanCode('');
+              }
             }}
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200"
-            title={soundEnabled ? 'Son du scanner activé' : 'Son coupé'}
+            className="flex gap-2"
           >
-            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-          </button>
+            <input
+              type="text"
+              value={manualScanCode}
+              onChange={(e) => setManualScanCode(e.target.value)}
+              placeholder={tr(
+                language,
+                'Scanner ou saisir réf / code-barres + Entrée...',
+                'Scan or enter ref / barcode + Enter...',
+                'Scan of voer ref / streepjescode in + Enter...'
+              )}
+              className="flex-1 px-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+            />
+            <button
+              type="submit"
+              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-slate-900 dark:bg-slate-700 text-white"
+            >
+              OK
+            </button>
+          </form>
         </div>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!manualScanCode.trim()) return;
-            handleScannedCode(manualScanCode.trim());
-            setManualScanCode('');
-          }}
-          className="flex gap-2"
-        >
-          <input
-            type="text"
-            value={manualScanCode}
-            onChange={(e) => setManualScanCode(e.target.value)}
-            placeholder="Ou saisir une réf / code-barres + Entrée..."
-            className="flex-1 px-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-          />
-          <button
-            type="submit"
-            className="px-3 py-2 rounded-lg text-xs font-bold bg-slate-800 text-white hover:bg-slate-700"
-          >
-            Valider
-          </button>
-        </form>
-
-        {expectedItem ? (
+        {/* Active Line Card */}
+        {currentItem ? (
           <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border-2 border-orange-500/80 shadow-sm space-y-4">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <span className="text-[10px] font-black uppercase tracking-wider text-orange-600">
-                  Prochain article à prélever
+                  {tr(language, 'Prochain article à prélever', 'Next item to pick', 'Volgend te verzamelen artikel')}
                 </span>
-                <div className="font-mono text-xl font-black text-slate-900 dark:text-white mt-0.5">
-                  {expectedItem.product_ref}
-                </div>
-                <div className="text-sm font-bold text-slate-700 dark:text-slate-200">
-                  {expectedItem.product_name}
+                <h2 className="text-base font-black text-slate-900 dark:text-white mt-0.5">
+                  {currentItem.product_name}
+                </h2>
+                <div className="font-mono text-xs font-bold text-slate-500 mt-0.5">
+                  {tr(language, 'Réf :', 'Ref:', 'Ref:')} {currentItem.product_ref}
                 </div>
               </div>
-              <div className="px-3 py-2 rounded-xl bg-orange-50 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-800 text-right">
-                <div className="text-[10px] font-bold uppercase text-orange-600">Casier</div>
-                <div className="font-mono text-lg font-black text-orange-700 dark:text-orange-300 flex items-center gap-1">
-                  <MapPin className="w-4 h-4" />
-                  {getItemRackLocation(expectedItem, products) || 'N/A'}
+              <div className="px-3 py-1.5 rounded-xl bg-orange-50 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-900 text-right">
+                <div className="text-[10px] font-bold uppercase text-orange-600 flex items-center gap-1">
+                  <MapPin className="w-3 h-3" /> {tr(language, 'Casier', 'Bin', 'Vak')}
+                </div>
+                <div className="font-mono text-sm font-black text-slate-900 dark:text-white">
+                  {currentItem.rack_location || tr(language, 'Non défini', 'Not set', 'Niet ingesteld')}
                 </div>
               </div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-500">Quantité à prélever</span>
-              <span className="font-mono text-2xl font-black text-slate-900 dark:text-white">
-                {expectedItem.quantity} {expectedItem.unit || 'u'}
+            <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+              <div>
+                <span className="text-[11px] text-slate-500 block">
+                  {tr(language, 'Quantité à prélever', 'Quantity to pick', 'Te verzamelen aantal')}
+                </span>
+                <input
+                  ref={qtyInputRef}
+                  type="number"
+                  min={1}
+                  max={currentItem.quantity}
+                  value={qtyInput}
+                  onChange={(e) =>
+                    setQtyInput(Math.max(1, Number(e.target.value) || 1))
+                  }
+                  className="mt-1 w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-base font-black"
+                />
+              </div>
+              <div className="flex flex-col justify-end">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleValidateLine(currentItem, currentItem.product_ref, qtyInput)
+                  }
+                  className="w-full py-2.5 px-3 rounded-xl font-black text-xs bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-1.5 shadow-xs"
+                >
+                  <Check className="w-4 h-4" />
+                  {tr(language, 'Pointer conforme', 'Confirm pick', 'Pick bevestigen')} (×{qtyInput})
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  qtyInputRef.current?.focus();
+                  qtyInputRef.current?.select();
+                }}
+                className="py-2 px-3 rounded-lg font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+              >
+                {tr(language, 'Quantité (F2)', 'Quantity (F2)', 'Aantal (F2)')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMissingModalItem(currentItem)}
+                className="py-2 px-3 rounded-lg font-bold border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50"
+              >
+                {tr(language, 'Manquant (F4)', 'Missing (F4)', 'Ontbrekend (F4)')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSubstituteModalItem(currentItem);
+                  setSubstituteSearch('');
+                }}
+                className="col-span-2 py-2 px-3 rounded-lg font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-orange-500" />
+                {tr(
+                  language,
+                  'Remplacer par un autre article du catalogue',
+                  'Replace with another catalog item',
+                  'Vervangen door een ander catalogusartikel'
+                )}
+              </button>
+            </div>
+          </div>
+        ) : activeOrder ? (
+          <div className="p-5 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-center space-y-2">
+            <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+            <div className="text-sm font-black text-emerald-900 dark:text-emerald-200">
+              {tr(
+                language,
+                'Toutes les lignes ont été traitées !',
+                'All lines have been processed!',
+                'Alle regels zijn verwerkt!'
+              )}
+            </div>
+            <p className="text-xs text-emerald-700 dark:text-emerald-300">
+              {tr(
+                language,
+                "Choisissez l'emplacement de retrait ci-dessous puis validez la commande (F8).",
+                'Select the pickup location below and confirm the order (F8).',
+                'Kies hieronder de afhaallocatie en bevestig de bestelling (F8).'
+              )}
+            </p>
+          </div>
+        ) : null}
+
+        {/* Finish Order Card */}
+        {activeOrder && orderProgress && (
+          <div className="mt-auto p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-700 dark:text-slate-300">
+                {tr(language, 'Validation Commande Prête', 'Order Ready Confirmation', 'Bevestiging Bestelling Klaar')}
+              </span>
+              <span className="font-mono text-[11px] text-slate-500">
+                {orderProgress.pickedLines} {tr(language, 'pointé(s)', 'picked', 'verzameld')} •{' '}
+                {orderProgress.unavailableLines} {tr(language, 'manquant(s)', 'missing', 'ontbrekend')}
               </span>
             </div>
 
-            {customQtyPrompt !== null && (
-              <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 flex items-center gap-2">
-                <input
-                  type="number"
-                  min={1}
-                  max={expectedItem.quantity}
-                  value={customQtyPrompt}
-                  onChange={(e) => setCustomQtyPrompt(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-24 px-2.5 py-1.5 font-mono font-bold text-sm rounded border border-orange-300 bg-white dark:bg-slate-900"
-                />
-                <button
-                  type="button"
-                  onClick={() => handlePickLine(expectedItem, customQtyPrompt)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 text-white"
-                >
-                  Pointer Qté partielle
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCustomQtyPrompt(null)}
-                  className="text-xs text-slate-500"
-                >
-                  Annuler
-                </button>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                disabled={isLockedByOther}
-                onClick={() => handlePickLine(expectedItem, expectedItem.quantity)}
-                className="col-span-2 py-2.5 px-4 rounded-xl text-xs font-black bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white flex items-center justify-center gap-2 shadow-xs"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                Pointer conforme ({expectedItem.quantity})
-              </button>
-              <button
-                type="button"
-                disabled={isLockedByOther}
-                onClick={() => setCustomQtyPrompt(expectedItem.quantity)}
-                className="py-2 px-3 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                Quantité (F2)
-              </button>
-              <button
-                type="button"
-                disabled={isLockedByOther}
-                onClick={() => handleMarkUnavailable(expectedItem)}
-                className="py-2 px-3 rounded-lg text-xs font-bold border border-rose-200 text-rose-600 hover:bg-rose-50"
-              >
-                Manquant (F4)
-              </button>
-              <button
-                type="button"
-                disabled={isLockedByOther}
-                onClick={() => setShowReplaceSelector((v) => !v)}
-                className="col-span-2 py-2 px-3 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center gap-1.5"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Remplacer par un autre article du catalogue
-              </button>
-            </div>
-
-            {showReplaceSelector && (
-              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2">
-                <input
-                  type="text"
-                  value={replaceSearch}
-                  onChange={(e) => setReplaceSearch(e.target.value)}
-                  placeholder="Rechercher l'article de substitution..."
-                  className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700"
-                />
-                <div className="max-h-36 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-                  {products
-                    .filter((p) =>
-                      `${p.reference} ${p.brand} ${p.model}`
-                        .toLowerCase()
-                        .includes(replaceSearch.trim().toLowerCase())
-                    )
-                    .slice(0, 15)
-                    .map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => handleSubstituteLine(expectedItem, p)}
-                        className="w-full text-left py-1.5 px-2 hover:bg-orange-50 dark:hover:bg-slate-800 flex items-center justify-between"
-                      >
-                        <span className="font-mono font-bold">{p.reference}</span>
-                        <span className="truncate ml-2 text-slate-500">
-                          {p.brand} {p.model}
-                        </span>
-                      </button>
-                    ))}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          activeOrder && (
-            <div className="p-5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-center space-y-2">
-              <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
-              <div className="text-sm font-black text-emerald-900 dark:text-emerald-200">
-                Toutes les lignes ont été traitées !
-              </div>
-              <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                Choisissez la zone de retrait ci-dessous et validez « Commande prête (F8) ».
-              </p>
-            </div>
-          )
-        )}
-
-        {activeOrder && (
-          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 mt-auto">
-            <div className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300">
-              Validation Commande Prête
-            </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-500 mb-1">
-                Emplacement de retrait
+                {tr(language, 'Emplacement de retrait', 'Pickup location', 'Afhaallocatie')}
               </label>
-              <select
-                value={pickupZoneInput}
-                onChange={(e) => setPickupZoneInput(e.target.value)}
-                className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
-              >
-                {pickupZonesList.map((z) => (
-                  <option key={z} value={z}>
-                    {z}
-                  </option>
+              <input
+                type="text"
+                list="desktop-prep-zones"
+                value={pickupLocation}
+                onChange={(e) => setPickupLocation(e.target.value)}
+                className="w-full px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+              />
+              <datalist id="desktop-prep-zones">
+                {pickupZoneOptions.map((z) => (
+                  <option key={z} value={z} />
                 ))}
-              </select>
+              </datalist>
             </div>
 
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <label className="inline-flex items-center gap-2 cursor-pointer">
+            {canPrintLabels && (
+              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={printReadyLabelOnFinish}
-                  onChange={(e) => setPrintReadyLabelOnFinish(e.target.checked)}
+                  checked={autoPrintOrderSlip}
+                  onChange={(e) => setAutoPrintOrderSlip(e.target.checked)}
                   className="rounded text-orange-600"
                 />
-                <span className="font-semibold text-slate-700 dark:text-slate-300">
-                  Imprimer l'étiquette de commande
-                </span>
+                {tr(
+                  language,
+                  "Imprimer l'étiquette de commande (QR retrait)",
+                  'Print order label (pickup QR)',
+                  'Bestelbon-etiket afdrukken (afhaal-QR)'
+                )}
               </label>
-              {stations.length > 0 && (
-                <select
-                  value={selectedStationId}
-                  onChange={(e) => setSelectedStationId(e.target.value)}
-                  className="px-2 py-1 text-[11px] rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
-                >
-                  {stations.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} {s.is_online ? '●' : '○'}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+            )}
 
             <button
               type="button"
-              disabled={!canFinishOrder(activeOrder) || isLockedByOther}
-              onClick={handleFinishOrderReady}
-              className="w-full py-2.5 px-4 rounded-xl text-xs font-black bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white shadow-sm flex items-center justify-center gap-2"
+              disabled={!canFinishOrder(activeOrder)}
+              onClick={handleMarkOrderReady}
+              className="w-full py-2.5 px-4 rounded-xl font-black text-xs bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white shadow-xs transition-colors"
             >
-              <UserCheck className="w-4 h-4" />
-              Commande prête au retrait (F8)
+              {tr(language, 'Commande prête au retrait (F8)', 'Order ready for pickup (F8)', 'Bestelling klaar voor afhaling (F8)')}
             </button>
           </div>
         )}
       </div>
+
+      {/* Missing Reason Modal */}
+      {missingModalItem && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
+              {tr(language, 'Déclarer manquant :', 'Declare missing:', 'Markeer als ontbrekend:')}{' '}
+              {missingModalItem.product_ref}
+            </h3>
+            <select
+              value={missingReason}
+              onChange={(e) => setMissingReason(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
+            >
+              <option value="Rupture de stock en rayon">
+                {tr(language, 'Rupture de stock en rayon', 'Out of stock on shelf', 'Niet op voorraad in schap')}
+              </option>
+              <option value="Article introuvable à l'emplacement">
+                {tr(language, "Article introuvable à l'emplacement", 'Item not found at location', 'Artikel niet gevonden op locatie')}
+              </option>
+              <option value="Article endommagé / non conforme">
+                {tr(language, 'Article endommagé / non conforme', 'Damaged / non-compliant item', 'Artikel beschadigd / niet-conform')}
+              </option>
+            </select>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMissingModalItem(null)}
+                className="px-3 py-1.5 rounded-lg font-bold border border-slate-200 dark:border-slate-700"
+              >
+                {t('common_cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmMissing}
+                className="px-4 py-1.5 rounded-lg font-bold bg-rose-600 text-white"
+              >
+                {tr(language, 'Confirmer manquant', 'Confirm missing', 'Ontbrekend bevestigen')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Substitute Item Modal */}
+      {substituteModalItem && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">
+              {tr(language, 'Remplacer', 'Replace', 'Vervang')} {substituteModalItem.product_ref} —{' '}
+              {substituteModalItem.product_name}
+            </h3>
+            <input
+              type="text"
+              value={substituteSearch}
+              onChange={(e) => setSubstituteSearch(e.target.value)}
+              placeholder={tr(
+                language,
+                'Rechercher un article de remplacement...',
+                'Search a replacement item...',
+                'Zoek een vervangend artikel...'
+              )}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
+            />
+            <div className="max-h-60 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+              {products
+                .filter((p) => {
+                  const q = substituteSearch.toLowerCase().trim();
+                  if (!q) return true;
+                  return `${p.reference} ${p.brand} ${p.model}`
+                    .toLowerCase()
+                    .includes(q);
+                })
+                .slice(0, 25)
+                .map((p) => (
+                  <div
+                    key={p.id}
+                    className="py-2 flex items-center justify-between gap-2"
+                  >
+                    <div>
+                      <span className="font-mono font-bold text-orange-600 mr-2">
+                        {p.reference}
+                      </span>
+                      <span className="font-semibold">
+                        {p.brand} {p.model}
+                      </span>
+                      <span className="ml-2 text-slate-400 font-mono">
+                        (Stock: {p.quantity})
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmSubstitute(p)}
+                      className="px-3 py-1 rounded-lg bg-orange-600 text-white font-bold"
+                    >
+                      {tr(language, 'Choisir', 'Select', 'Kiezen')}
+                    </button>
+                  </div>
+                ))}
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSubstituteModalItem(null)}
+                className="px-3 py-1.5 rounded-lg font-bold border border-slate-200 dark:border-slate-700"
+              >
+                {tr(language, 'Fermer', 'Close', 'Sluiten')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,6 +1,7 @@
 export type DesktopPageId =
   | 'dashboard'
   | 'inventory'
+  | 'audit'
   | 'movements'
   | 'orders'
   | 'preparation'

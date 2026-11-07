@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
-import { formatCurrency } from '../utils/crypto';
+import { formatCurrency, isUserAllowedForDepot } from '../utils/crypto';
 import {
   buildClosedDepotNamesSet,
   filterInventoryProducts,
@@ -31,6 +31,7 @@ import {
 export const InventoryView: React.FC = () => {
   const {
     products,
+    stockLevels,
     depots,
     subCategories,
     setActiveProductId,
@@ -87,14 +88,24 @@ export const InventoryView: React.FC = () => {
     return products.filter((p) => p.store_name && closedDepotNames.has(p.store_name.toLowerCase().trim())).length;
   }, [products, closedDepotNames]);
 
-  // Unique stores & suppliers for filter dropdowns (filter out closed stores for lambda users)
+  // Unique stores & suppliers for filter dropdowns (filter out closed stores for lambda users & respect allowed_depots)
   const uniqueStores = useMemo(() => {
-    const rawStores = Array.from(new Set(products.map((p) => p.store_name).filter(Boolean))) as string[];
+    const names = new Set<string>();
+    depots.forEach((d) => {
+      if (d.name) names.add(d.name);
+    });
+    products.forEach((p) => {
+      if (p.store_name) names.add(p.store_name);
+    });
+    (stockLevels || []).forEach((sl) => {
+      if (sl.depot_name) names.add(sl.depot_name);
+    });
+    const rawStores = Array.from(names).filter((st) => isUserAllowedForDepot(currentUser, st));
     if (isLambdaUser) {
       return rawStores.filter((st) => !closedDepotNames.has(st.toLowerCase().trim()));
     }
     return rawStores;
-  }, [products, isLambdaUser, closedDepotNames]);
+  }, [depots, products, stockLevels, currentUser, isLambdaUser, closedDepotNames]);
 
   const uniqueSuppliers = useMemo(() => {
     const s = new Set<string>();
@@ -122,10 +133,14 @@ export const InventoryView: React.FC = () => {
         isLambdaUser,
         includeClosedDepots,
         closedDepotNames,
+        stockLevels,
+        currentUser,
       }
     ).sort((a, b) => `${a.brand} ${a.model}`.localeCompare(`${b.brand} ${b.model}`, 'fr'));
   }, [
     products,
+    stockLevels,
+    currentUser,
     searchQuery,
     stockStatus,
     selectedSubCat,
@@ -526,7 +541,7 @@ export const InventoryView: React.FC = () => {
 
             return (
               <div
-                key={p.id}
+                key={`${p.id}::${p.store_name || ''}`}
                 onClick={() => setActiveProductId(p.id)}
                 className={`bg-[#f7ecdf] dark:bg-slate-900 rounded-2xl border ${
                   isClosedDepot

@@ -20,6 +20,7 @@ import {
   verifySignedLicenseToken,
 } from '../services/licenseTokenService';
 import { masterSupabase } from '../services/masterSupabase';
+import { EDGE_FUNCTIONS, MASTER_EDGE_FUNCTIONS } from '../constants/edgeFunctions';
 import type { SignedLicenseToken } from '../types';
 
 const rootDir = process.cwd();
@@ -259,7 +260,7 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
 
       const res = await discoverLicenseByProjectUrl(projectUrl, anonKey, accessToken, {
         invokeFn: async (fnName, { body }) => {
-          expect(fnName).toBe('APP_TOT-Stock_licenses');
+          expect(fnName).toBe(MASTER_EDGE_FUNCTIONS.licenses);
           expect(body.action).toBe('discover');
           expect(body.client_supabase_url).toBe(projectUrl);
           expect(body.client_anon_key).toBe(anonKey);
@@ -506,15 +507,31 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
         },
         functions: {
           invoke: vi.fn(async (fnName: string, args: any) => {
-            if (fnName === 'sync-license') {
-              syncedTokens.push(args?.body?.signed_token);
+            if (fnName === EDGE_FUNCTIONS.syncLicense) {
+              const tok = args?.body?.signed_token;
+              syncedTokens.push(tok);
+              if (tok) {
+                const row = {
+                  id: 1,
+                  license_key: tok.license_key,
+                  plan: tok.plan,
+                  modules: tok.modules,
+                  max_depots: tok.max_depots,
+                  expires_at: tok.expires_at,
+                  raw_token: JSON.stringify(tok),
+                  signature: tok.signature,
+                  verified_at: new Date().toISOString(),
+                };
+                writtenLicenseConfig.push([row]);
+                config.licenseConfigRows = [row];
+              }
               return { data: { success: true }, error: null };
             }
             return { data: null, error: null };
           }),
         },
         from: vi.fn((table: string) => {
-          if (table === 'app_settings') {
+          if (table === 'core_app_settings') {
             return {
               select: () => ({
                 in: async () => ({
@@ -536,7 +553,7 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
               },
             };
           }
-          if (table === 'license_config') {
+          if (table === 'core_license_config') {
             return {
               select: () => ({
                 limit: async () => ({
@@ -550,7 +567,7 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
               },
             };
           }
-          if (table === 'users') {
+          if (table === 'core_users') {
             return {
               select: () => ({
                 eq: () => ({
@@ -568,7 +585,7 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
               }),
             };
           }
-          if (table === 'roles') {
+          if (table === 'core_roles') {
             return {
               select: () => ({
                 eq: () => ({
@@ -720,7 +737,7 @@ describe('v28 & v31 — Découverte automatique de licence par URL de projet et 
 
       invokeSpy.mockImplementation(async (fnName: string, options: any) => {
         const body = options?.body || {};
-        expect(fnName).toBe('APP_TOT-Stock_licenses');
+        expect(fnName).toBe(MASTER_EDGE_FUNCTIONS.licenses);
         expect(body.action).toBe('discover');
         expect(body.client_supabase_url).toBe(projectUrl);
         expect(body.client_anon_key).toBe(anonKey);

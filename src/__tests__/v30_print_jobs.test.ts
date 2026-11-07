@@ -37,7 +37,7 @@ describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRe
     });
   });
 
-  it('exécute les 10 suites de tests SQL PostgreSQL (00..08 idempotent, upgrade 1.0.0->1.1.0, RLS/RPC, dépôts, claim, limites, anon, dedupe_key, purge RLS v37, conversion id bigint IDENTITY v39)', async () => {
+  it('exécute les suites de tests SQL PostgreSQL (00..11 idempotent, upgrade 1.0.0->2.1.0, RLS/RPC, dépôts, claim, limites, anon, dedupe_key, purge RLS v37, renommage core_/stk_ et vues de compatibilité v42)', async () => {
     const passedSuites = await runPrintJobsSqlTests();
     expect(passedSuites).toEqual([
       '1a_fresh_install_and_idempotent_two_passes_ok',
@@ -50,7 +50,13 @@ describe('Prompt v30 — Impression d’étiquettes à distance (SQL 08, labelRe
       '7_anon_zero_privileges_on_tables_and_functions',
       '8_dedupe_key_prevents_duplicate_pending_jobs',
       '9_rls_purge_parasite_and_recursive_policies_and_diagnostic_ok',
-      '10_legacy_identity_bigint_id_conversion_and_idempotent_ok',
+      '10_legacy_db_rename_compat_views_and_drop_views_ok',
+      '11_lot1_e2e_in_out_and_diagnostic_ok',
+      '12_lot2_multi_depot_exact_stock_and_transfer_ok',
+      '13_lot3_inventory_audit_depot_b_isolated_ok',
+      '14_v41_missing_columns_recreated_and_idempotent_ok',
+      '15_v41_legacy_double_count_triggers_purged_ok',
+      '16_v43_inventory_audits_rls_and_tables_without_policies_ok',
     ]);
   }, 45000);
 

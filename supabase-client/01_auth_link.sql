@@ -1,7 +1,8 @@
 -- =========================================================================
 -- TOT STOCK - SCRIPT 01 : AUTH LINK (01_auth_link.sql)
--- Liaison entre Supabase Auth (auth.users) et les profils métier (public.users)
--- Rejouable : oui
+-- Description : Liaison entre Supabase Auth (auth.users) et les profils métier (public.core_users)
+-- Dépendances : auth.users (Supabase Auth), 00_complete_tot_stock_schema.sql / 09_core_prefixes.sql
+-- Rejouable : oui (idempotent)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------
@@ -18,56 +19,48 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'users'
+    WHERE table_schema = 'public' AND table_name = 'core_users'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (01_auth_link.sql) : La table public.users est absente. Exécutez d''abord le schéma de base (supabase/migrations/20261003_complete_tot_stock_schema.sql).';
+    RAISE EXCEPTION 'Prérequis manquant (01_auth_link.sql) : La table public.core_users est absente. Exécutez d''abord le schéma de base (00_complete_tot_stock_schema.sql ou 09_core_prefixes.sql).';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'email'
+    WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'email'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (01_auth_link.sql) : La colonne public.users.email est absente.';
+    RAISE EXCEPTION 'Prérequis manquant (01_auth_link.sql) : La colonne public.core_users.email est absente.';
   END IF;
 END $$;
 
--- 1. Harmonisation de la table public.users et de public.audit_logs :
+-- 1. Harmonisation de la table public.core_users et de public.core_audit_logs :
 --    - Rendre 'pin' et 'pin_hash' optionnels (NULL) pour l'authentification Auth
---    - Assurer les colonnes d'audit (action, severity, details) sur public.audit_logs
+--    - Assurer les colonnes d'audit (app, action, severity, details) sur public.core_audit_logs
 --    - Nettoyer UNIQUEMENT les triggers obsolètes explicitement nommés et justifiés
---    (Note architecture : La conversion de users.id en TEXT ne se fait plus automatiquement ici.
---     Elle est fournie dans la migration dédiée et documentée : 01b_migrate_users_id_to_text.sql)
 DO $$
 BEGIN
-  -- Suppression ciblée et justifiée des anciens triggers obsolètes :
-  -- 1. trg_users_enforce_pin : exigeait un PIN numérique à 4 chiffres, incompatible avec l'authentification par mot de passe Auth.
-  DROP TRIGGER IF EXISTS trg_users_enforce_pin ON public.users;
-  -- 2. trg_sync_user_to_auth : ancien trigger de synchronisation bidirectionnelle causant des boucles de récursion et des blocages.
-  DROP TRIGGER IF EXISTS trg_sync_user_to_auth ON public.users;
-  -- 3. trg_users_auto_id_int : forçait un ID entier séquentiel lors de l'insertion, causant des conflits avec les nouveaux identifiants.
-  DROP TRIGGER IF EXISTS trg_users_auto_id_int ON public.users;
+  DROP TRIGGER IF EXISTS trg_users_enforce_pin ON public.core_users;
+  DROP TRIGGER IF EXISTS trg_sync_user_to_auth ON public.core_users;
+  DROP TRIGGER IF EXISTS trg_users_auto_id_int ON public.core_users;
 
-  -- Rendre pin optionnel (NULL) si la colonne existe encore
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pin'
+    WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'pin'
   ) THEN
-    ALTER TABLE public.users ALTER COLUMN pin DROP NOT NULL;
-    ALTER TABLE public.users ALTER COLUMN pin SET DEFAULT '';
+    ALTER TABLE public.core_users ALTER COLUMN pin DROP NOT NULL;
+    ALTER TABLE public.core_users ALTER COLUMN pin SET DEFAULT '';
   END IF;
 
-  -- Rendre pin_hash optionnel si la colonne existe
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pin_hash'
+    WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'pin_hash'
   ) THEN
-    ALTER TABLE public.users ALTER COLUMN pin_hash DROP NOT NULL;
-    ALTER TABLE public.users ALTER COLUMN pin_hash SET DEFAULT '';
+    ALTER TABLE public.core_users ALTER COLUMN pin_hash DROP NOT NULL;
+    ALTER TABLE public.core_users ALTER COLUMN pin_hash SET DEFAULT '';
   END IF;
 
-  -- S'assurer que public.audit_logs existe et dispose des colonnes action, severity, details (Point 5)
-  CREATE TABLE IF NOT EXISTS public.audit_logs (
+  CREATE TABLE IF NOT EXISTS public.core_audit_logs (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    app TEXT DEFAULT 'stock',
     timestamp TIMESTAMPTZ DEFAULT now(),
     user_id TEXT,
     user_name TEXT,
@@ -78,7 +71,8 @@ BEGIN
     created_at TIMESTAMPTZ DEFAULT now()
   );
 
-  ALTER TABLE public.audit_logs
+  ALTER TABLE public.core_audit_logs
+    ADD COLUMN IF NOT EXISTS app TEXT DEFAULT 'stock',
     ADD COLUMN IF NOT EXISTS action TEXT,
     ADD COLUMN IF NOT EXISTS severity TEXT DEFAULT 'INFO',
     ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb,
@@ -86,39 +80,39 @@ BEGIN
 
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'type'
+    WHERE table_schema = 'public' AND table_name = 'core_audit_logs' AND column_name = 'type'
   ) THEN
-    ALTER TABLE public.audit_logs ALTER COLUMN type DROP NOT NULL;
-    ALTER TABLE public.audit_logs ALTER COLUMN type SET DEFAULT 'SYSTEM';
+    ALTER TABLE public.core_audit_logs ALTER COLUMN type DROP NOT NULL;
+    ALTER TABLE public.core_audit_logs ALTER COLUMN type SET DEFAULT 'SYSTEM';
   END IF;
 
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'category'
+    WHERE table_schema = 'public' AND table_name = 'core_audit_logs' AND column_name = 'category'
   ) THEN
-    ALTER TABLE public.audit_logs ALTER COLUMN category DROP NOT NULL;
-    ALTER TABLE public.audit_logs ALTER COLUMN category SET DEFAULT 'SYSTEM';
+    ALTER TABLE public.core_audit_logs ALTER COLUMN category DROP NOT NULL;
+    ALTER TABLE public.core_audit_logs ALTER COLUMN category SET DEFAULT 'SYSTEM';
   END IF;
 
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'title'
+    WHERE table_schema = 'public' AND table_name = 'core_audit_logs' AND column_name = 'title'
   ) THEN
-    ALTER TABLE public.audit_logs ALTER COLUMN title DROP NOT NULL;
-    ALTER TABLE public.audit_logs ALTER COLUMN title SET DEFAULT '';
+    ALTER TABLE public.core_audit_logs ALTER COLUMN title DROP NOT NULL;
+    ALTER TABLE public.core_audit_logs ALTER COLUMN title SET DEFAULT '';
   END IF;
 
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'description'
+    WHERE table_schema = 'public' AND table_name = 'core_audit_logs' AND column_name = 'description'
   ) THEN
-    ALTER TABLE public.audit_logs ALTER COLUMN description DROP NOT NULL;
-    ALTER TABLE public.audit_logs ALTER COLUMN description SET DEFAULT '';
+    ALTER TABLE public.core_audit_logs ALTER COLUMN description DROP NOT NULL;
+    ALTER TABLE public.core_audit_logs ALTER COLUMN description SET DEFAULT '';
   END IF;
 END $$;
 
 -- 2. Ajout des colonnes requises si absentes (sans droit universel '*' par défaut)
-ALTER TABLE public.users
+ALTER TABLE public.core_users
   ADD COLUMN IF NOT EXISTS auth_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS must_change_pin BOOLEAN DEFAULT false,
   ADD COLUMN IF NOT EXISTS is_preparer BOOLEAN DEFAULT false,
@@ -129,14 +123,14 @@ ALTER TABLE public.users
   ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT false,
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
-ALTER TABLE public.users ALTER COLUMN allowed_depots SET DEFAULT '{}'::TEXT[];
-ALTER TABLE public.users ALTER COLUMN role_id SET DEFAULT 4;
+ALTER TABLE public.core_users ALTER COLUMN allowed_depots SET DEFAULT '{}'::TEXT[];
+ALTER TABLE public.core_users ALTER COLUMN role_id SET DEFAULT 4;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_user_id ON public.users (auth_user_id);
-CREATE INDEX IF NOT EXISTS idx_users_email_lower ON public.users (LOWER(email));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_user_id ON public.core_users (auth_user_id);
+CREATE INDEX IF NOT EXISTS idx_users_email_lower ON public.core_users (LOWER(email));
 
 -- 3. Rapprochement automatique des comptes existants par correspondance d'email (uniquement si non encore liés)
-UPDATE public.users u
+UPDATE public.core_users u
 SET auth_user_id = a.id,
     updated_at = now()
 FROM auth.users a
@@ -146,13 +140,6 @@ WHERE u.auth_user_id IS NULL
   AND LOWER(TRIM(u.email)) = LOWER(TRIM(a.email));
 
 -- 4. Fonction trigger lors de la création ou confirmation d'un utilisateur dans auth.users
--- Sécurité V18 & Point 5 (v23) :
---   - Ne lit JAMAIS raw_user_meta_data->>'role_id' (contrôlé par le client)
---   - N'attribue JAMAIS le rôle 0 ni allowed_depots = ARRAY['*'] automatiquement
---   - Lie uniquement un profil métier préexistant (créé par un administrateur via admin-users)
---     dont l'e-mail a été confirmé et dont auth_user_id est encore NULL.
---   - En cas d'erreur, journalise dans public.audit_logs (action = 'AUTH_LINK_FAILED',
---     severity = 'ERROR', details avec SQLERRM et l'e-mail masqué) puis retourne NEW.
 CREATE OR REPLACE FUNCTION public.handle_auth_user_created()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -163,7 +150,7 @@ DECLARE
   v_masked_email TEXT;
 BEGIN
   IF NEW.email IS NOT NULL AND NEW.email_confirmed_at IS NOT NULL THEN
-    UPDATE public.users
+    UPDATE public.core_users
     SET auth_user_id = NEW.id,
         updated_at = now()
     WHERE auth_user_id IS NULL
@@ -178,8 +165,9 @@ EXCEPTION WHEN OTHERS THEN
       ELSE left(split_part(NEW.email, '@', 1), 2) || '***@' || split_part(NEW.email, '@', 2)
     END;
 
-    INSERT INTO public.audit_logs (
+    INSERT INTO public.core_audit_logs (
       id,
+      app,
       user_id,
       action,
       severity,
@@ -187,6 +175,7 @@ EXCEPTION WHEN OTHERS THEN
       created_at
     ) VALUES (
       gen_random_uuid()::text,
+      'stock',
       NEW.id::text,
       'AUTH_LINK_FAILED',
       'ERROR',

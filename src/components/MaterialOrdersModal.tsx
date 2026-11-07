@@ -738,8 +738,31 @@ export const MaterialOrdersModal: React.FC = () => {
   }, [subCategories]);
 
   const availablePickerCategories = useMemo(() => {
+    const cats = new Set<string>();
+    products.forEach((p) => {
+      const pDepot = (p.store_name || '').trim();
+      if (currentCartDepot && pDepot && pDepot !== currentCartDepot) {
+        return;
+      }
+      const catName = (
+        p.sub_category_id ? subCategoryMap.get(p.sub_category_id) || '' : p.tags || ''
+      ).trim();
+      if (catName) {
+        cats.add(catName);
+      }
+    });
+    if (cats.size > 0) {
+      return Array.from(cats).sort((a, b) => a.localeCompare(b, 'fr'));
+    }
     return subCategories.map((s) => s.name);
-  }, [subCategories]);
+  }, [products, currentCartDepot, subCategoryMap, subCategories]);
+
+  const effectivePickerCategory = useMemo(() => {
+    if (pickerSelectedCategory === 'ALL') return 'ALL';
+    return availablePickerCategories.includes(pickerSelectedCategory)
+      ? pickerSelectedCategory
+      : 'ALL';
+  }, [pickerSelectedCategory, availablePickerCategories]);
 
   // Filtered products in picker respecting mono-depot rule
   const pickerProducts = useMemo(() => {
@@ -749,7 +772,7 @@ export const MaterialOrdersModal: React.FC = () => {
         return false;
       }
       const catName = p.sub_category_id ? subCategoryMap.get(p.sub_category_id) || '' : p.tags || '';
-      if (pickerSelectedCategory !== 'ALL' && catName !== pickerSelectedCategory) {
+      if (effectivePickerCategory !== 'ALL' && catName !== effectivePickerCategory) {
         return false;
       }
       if (pickerSearchQuery.trim()) {
@@ -765,7 +788,7 @@ export const MaterialOrdersModal: React.FC = () => {
       }
       return true;
     });
-  }, [products, currentCartDepot, subCategoryMap, pickerSelectedCategory, pickerSearchQuery]);
+  }, [products, currentCartDepot, subCategoryMap, effectivePickerCategory, pickerSearchQuery]);
 
   const handleQuickAddProductToCart = (prod: (typeof products)[0]) => {
     const res = addToOrderCart(prod, 1);
@@ -1812,13 +1835,26 @@ export const MaterialOrdersModal: React.FC = () => {
                     {tr(language, 'Parcourez le catalogue ou scannez des références pour ajouter les articles dont vous avez besoin sur chantier.', 'Browse the catalog or scan barcodes to add items needed for your job site.')}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setOrderCartModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-md shadow-orange-500/20 transition cursor-pointer"
-                >
-                  {tr(language, 'Consulter le catalogue matériel', 'Browse catalog')}
-                </button>
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddProductPickerOpen(true);
+                      setPickerFeedbackMsg(null);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-md shadow-orange-500/20 transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <PlusCircle className="w-4 h-4" />
+                    <span>{tr(language, '+ Ajouter un article', '+ Add an item')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOrderCartModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs transition cursor-pointer"
+                  >
+                    {tr(language, 'Consulter le catalogue matériel', 'Browse catalog')}
+                  </button>
+                </div>
               </div>
             ) : (
               <form onSubmit={handleOrderSubmit} className="space-y-4">
@@ -3193,20 +3229,20 @@ export const MaterialOrdersModal: React.FC = () => {
               setIsAddProductPickerOpen(false);
             }
           }}
-          className="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fadeIn"
+          className="fixed inset-0 z-60 flex items-center justify-center p-2.5 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fadeIn"
         >
-          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[88vh] animate-scaleUp">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col h-[86dvh] sm:h-[82vh] max-h-[88dvh] animate-scaleUp">
             {/* Header */}
-            <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-orange-50/50 dark:bg-orange-950/20">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-orange-500 text-white flex items-center justify-center shadow-md shadow-orange-500/20">
+            <div className="shrink-0 p-3.5 sm:p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-orange-50/50 dark:bg-orange-950/20">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-orange-500 text-white flex items-center justify-center shadow-md shadow-orange-500/20 shrink-0">
                   <PlusCircle className="w-5 h-5" />
                 </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white truncate">
                     {tr(language, 'Ajouter des Articles au Panier', 'Add Items to Cart')}
                   </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                     {currentCartDepot
                       ? (tr(language, `Articles du dépôt : ${currentCartDepot}`, `Depot items: ${currentCartDepot}`))
                       : (tr(language, 'Recherchez un article dans le catalogue', 'Search catalog'))}
@@ -3216,7 +3252,7 @@ export const MaterialOrdersModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsAddProductPickerOpen(false)}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -3224,50 +3260,71 @@ export const MaterialOrdersModal: React.FC = () => {
 
             {/* Mono-depot banner indicator */}
             {currentCartDepot && (
-              <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900/60 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center justify-between">
-                <span>🏢 Dépôt exclusif de la commande : <strong>{currentCartDepot}</strong></span>
-                <span className="text-[10px] text-amber-600 dark:text-amber-400">Règle mono-dépôt</span>
+              <div className="shrink-0 px-3.5 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900/60 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2">
+                <span className="truncate">🏢 Dépôt exclusif de la commande : <strong>{currentCartDepot}</strong></span>
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 shrink-0">Règle mono-dépôt</span>
               </div>
             )}
 
             {/* Success notice */}
             {pickerFeedbackMsg && (
-              <div className="mx-4 mt-3 p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fadeIn">
+              <div className="shrink-0 mx-3.5 mt-2.5 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fadeIn">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>{pickerFeedbackMsg}</span>
+                <span className="truncate">{pickerFeedbackMsg}</span>
               </div>
             )}
 
-            {/* Search bar & Category filters */}
-            <div className="p-3 border-b border-slate-100 dark:border-slate-800 space-y-2">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={pickerSearchQuery}
-                  onChange={(e) => setPickerSearchQuery(e.target.value)}
-                  placeholder={tr(language, 'Rechercher par référence, désignation, marque...', 'Search by ref, name, brand...')}
-                  className="w-full pl-9 pr-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border-none outline-none font-medium"
-                  autoFocus
-                />
-                {pickerSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setPickerSearchQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            {/* Search bar & Compact Category filters (Single-row, never overflows vertically) */}
+            <div className="shrink-0 p-3 border-b border-slate-100 dark:border-slate-800 space-y-2 bg-slate-50/40 dark:bg-slate-900/40">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 min-w-0">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={pickerSearchQuery}
+                    onChange={(e) => setPickerSearchQuery(e.target.value)}
+                    placeholder={tr(language, 'Rechercher par référence, désignation, marque...', 'Search by ref, name, brand...')}
+                    className="w-full pl-9 pr-7 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700/70 outline-none focus:border-orange-400 font-medium text-slate-900 dark:text-white"
+                    autoFocus
+                  />
+                  {pickerSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setPickerSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Compact Category Dropdown */}
+                {availablePickerCategories.length > 0 && (
+                  <select
+                    aria-label={tr(language, 'Filtrer par catégorie', 'Filter by category')}
+                    value={effectivePickerCategory}
+                    onChange={(e) => setPickerSelectedCategory(e.target.value)}
+                    className="max-w-[150px] sm:max-w-[180px] py-2 px-2.5 text-xs font-bold rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700/70 text-slate-700 dark:text-slate-200 outline-none focus:border-orange-400 truncate cursor-pointer shrink-0"
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                    <option value="ALL">
+                      {tr(language, 'Toutes catégories', 'All categories')} ({availablePickerCategories.length})
+                    </option>
+                    {availablePickerCategories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
                 )}
               </div>
 
-              {/* Categories Pills */}
-              <div className="flex flex-wrap items-center gap-1.5 pb-1 text-[10px] font-bold">
+              {/* Single-row horizontal scrollable category chips (no multi-line wrapping) */}
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5 text-[10px] font-bold whitespace-nowrap">
                 <button
                   type="button"
                   onClick={() => setPickerSelectedCategory('ALL')}
                   className={`px-2.5 py-1 rounded-lg shrink-0 transition cursor-pointer ${
-                    pickerSelectedCategory === 'ALL'
+                    effectivePickerCategory === 'ALL'
                       ? 'bg-orange-500 text-white shadow-2xs'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
                   }`}
@@ -3280,7 +3337,7 @@ export const MaterialOrdersModal: React.FC = () => {
                     type="button"
                     onClick={() => setPickerSelectedCategory(cat)}
                     className={`px-2.5 py-1 rounded-lg shrink-0 transition cursor-pointer ${
-                      pickerSelectedCategory === cat
+                      effectivePickerCategory === cat
                         ? 'bg-orange-500 text-white shadow-2xs'
                         : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
                     }`}
@@ -3292,9 +3349,9 @@ export const MaterialOrdersModal: React.FC = () => {
             </div>
 
             {/* Products List */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 overscroll-contain">
               {pickerProducts.length === 0 ? (
-                <div className="py-8 text-center text-slate-400 text-xs">
+                <div className="py-10 text-center text-slate-400 text-xs">
                   <p className="font-bold">{tr(language, 'Aucun article trouvé', 'No items found')}</p>
                   {currentCartDepot && (
                     <p className="text-[11px] text-slate-400 mt-1">
@@ -3305,47 +3362,50 @@ export const MaterialOrdersModal: React.FC = () => {
               ) : (
                 pickerProducts.map((prod) => {
                   const alreadyInCart = orderCart.find((it) => String(it.product_id) === String(prod.id));
+                  const categoryLabel = prod.sub_category_id
+                    ? subCategoryMap.get(prod.sub_category_id)
+                    : prod.tags || prod.store_name;
                   return (
                     <div
                       key={prod.id}
-                      className="p-2.5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-orange-300 dark:hover:border-orange-800/60 bg-white dark:bg-slate-900 transition flex items-center justify-between gap-3 text-xs shadow-2xs"
+                      className="p-3 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-orange-300 dark:hover:border-orange-800/60 bg-white dark:bg-slate-900 transition flex items-center justify-between gap-3 text-xs shadow-2xs"
                     >
-                      <div className="min-w-0 flex-1">
+                      <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-mono font-bold text-orange-600 dark:text-orange-400 text-[11px]">
+                          <span className="px-1.5 py-0.5 rounded-md bg-orange-50 dark:bg-orange-950/60 font-mono font-bold text-orange-600 dark:text-orange-400 text-[11px] shrink-0">
                             {prod.reference}
                           </span>
-                          <span className="font-bold text-slate-900 dark:text-white truncate">
+                          <span className="font-bold text-slate-900 dark:text-white text-xs sm:text-[13px] leading-snug break-words">
                             {prod.brand} {prod.model}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                          <span>{prod.sub_category_id ? subCategoryMap.get(prod.sub_category_id) : prod.tags || prod.store_name}</span>
-                          <span>•</span>
-                          <span className="font-bold text-slate-600 dark:text-slate-300">
+                        <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-slate-500 dark:text-slate-400">
+                          {categoryLabel && (
+                            <span className="truncate max-w-[170px]">{categoryLabel}</span>
+                          )}
+                          <span className="px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-300 shrink-0">
                             Stock : {prod.quantity}
                           </span>
                           {canViewPrices && prod.unit_price && prod.unit_price > 0 && (
-                            <>
-                              <span>•</span>
-                              <span>{formatCurrency(prod.unit_price)}</span>
-                            </>
+                            <span className="font-semibold text-slate-700 dark:text-slate-300 shrink-0">
+                              {formatCurrency(prod.unit_price)}
+                            </span>
                           )}
                         </div>
                       </div>
 
-                      <div className="shrink-0 flex items-center gap-2">
+                      <div className="shrink-0 flex flex-col sm:flex-row items-end sm:items-center gap-1.5">
                         {alreadyInCart && (
-                          <span className="text-[10px] font-black text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/60 px-2 py-0.5 rounded-md border border-orange-200 dark:border-orange-800">
+                          <span className="text-[10px] font-black text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/60 px-2 py-0.5 rounded-md border border-orange-200 dark:border-orange-800 whitespace-nowrap">
                             {alreadyInCart.quantity} au panier
                           </span>
                         )}
                         <button
                           type="button"
                           onClick={() => handleQuickAddProductToCart(prod)}
-                          className="py-1.5 px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs transition active:scale-95 cursor-pointer flex items-center gap-1"
+                          className="py-1.5 px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs transition active:scale-95 cursor-pointer flex items-center gap-1 whitespace-nowrap"
                         >
-                          <Plus className="w-3.5 h-3.5" />
+                          <Plus className="w-3.5 h-3.5 shrink-0" />
                           <span>{tr(language, 'Ajouter', 'Add')}</span>
                         </button>
                       </div>
@@ -3356,7 +3416,7 @@ export const MaterialOrdersModal: React.FC = () => {
             </div>
 
             {/* Footer */}
-            <div className="p-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-between">
+            <div className="shrink-0 p-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex items-center justify-between gap-2">
               <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
                 {orderCart.length} {tr(language, 'article(s) au panier', 'item(s) in cart')}
               </span>

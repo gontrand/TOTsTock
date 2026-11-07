@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { tr } from '../../i18n/dutchTranslator';
 import { useApp } from '../../context/AppContext';
-import { formatCurrency, playScanBeep } from '../../utils/crypto';
+import { formatCurrency, isUserAllowedForDepot, playScanBeep } from '../../utils/crypto';
 import { findCatalogProductByCode } from '../../services/orderPickingLogic';
 import {
   buildClosedDepotNamesSet,
@@ -25,6 +25,12 @@ import {
 } from '../../services/desktopInventoryLogic';
 import { DesktopProductDetailPanel } from '../components/DesktopProductDetailPanel';
 import { DesktopProductFormDrawer } from '../components/DesktopProductFormDrawer';
+import { requestGuardedNavigation } from '../../services/unsavedChangesGuard';
+import {
+  readLocalPreferenceValue,
+  setUserPreference,
+  subscribeUserPreferences,
+} from '../../services/userPreferencesService';
 import {
   Search,
   Filter,
@@ -63,6 +69,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
 }) => {
   const {
     products,
+    stockLevels,
     depots,
     subCategories,
     activeProductId,
@@ -70,9 +77,13 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
     productFormState,
     setProductFormState,
     setPrintLabelsModal,
+    setScanState,
     addToCart,
     setBatchCartModalOpen,
     userHasPermission,
+    currentUser,
+    canTransferBetweenDepots,
+    openStockTransferModal,
     language,
     t,
   } = useApp();
@@ -110,6 +121,10 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   // Persisted column visibility
   const [visibleColumns, setVisibleColumns] = useState<InventoryColumnId[]>(() => {
     try {
+      const prefCols = readLocalPreferenceValue('desktop_inventory_columns');
+      if (Array.isArray(prefCols) && prefCols.length > 0) {
+        return prefCols as InventoryColumnId[];
+      }
       const saved = localStorage.getItem(INVENTORY_COLUMNS_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -128,6 +143,8 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   // Persisted density ('normal' | 'compact')
   const [density, setDensity] = useState<'normal' | 'compact'>(() => {
     try {
+      const prefDensity = readLocalPreferenceValue('desktop_inventory_density');
+      if (prefDensity === 'compact' || prefDensity === 'normal') return prefDensity;
       const saved = localStorage.getItem(INVENTORY_DENSITY_STORAGE_KEY);
       if (saved === 'compact' || saved === 'normal') return saved;
     } catch {
@@ -135,6 +152,17 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
     }
     return 'normal';
   });
+
+  useEffect(() => {
+    return subscribeUserPreferences((prefs) => {
+      if (Array.isArray(prefs.desktop_inventory_columns) && prefs.desktop_inventory_columns.length > 0) {
+        setVisibleColumns(prefs.desktop_inventory_columns as InventoryColumnId[]);
+      }
+      if (prefs.desktop_inventory_density === 'compact' || prefs.desktop_inventory_density === 'normal') {
+        setDensity(prefs.desktop_inventory_density);
+      }
+    });
+  }, []);
 
   // Selection state (checkboxes + Shift+Click)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -217,12 +245,22 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   const hasClosedDepots = closedDepotNames.size > 0;
 
   const uniqueStores = useMemo(() => {
-    const raw = Array.from(new Set(products.map((p) => p.store_name).filter(Boolean))) as string[];
+    const names = new Set<string>();
+    depots.forEach((d) => {
+      if (d.name) names.add(d.name);
+    });
+    products.forEach((p) => {
+      if (p.store_name) names.add(p.store_name);
+    });
+    (stockLevels || []).forEach((sl) => {
+      if (sl.depot_name) names.add(sl.depot_name);
+    });
+    const raw = Array.from(names).filter((st) => isUserAllowedForDepot(currentUser, st));
     if (isLambdaUser) {
       return raw.filter((st) => !closedDepotNames.has(st.toLowerCase().trim()));
     }
     return raw;
-  }, [products, isLambdaUser, closedDepotNames]);
+  }, [depots, products, stockLevels, currentUser, isLambdaUser, closedDepotNames]);
 
   const uniqueSuppliers = useMemo(() => {
     const s = new Set<string>();
@@ -258,11 +296,15 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
         isLambdaUser,
         includeClosedDepots,
         closedDepotNames,
+        stockLevels,
+        currentUser,
       }
     );
     return sortInventoryProducts(filtered, sortColumn, sortDirection, subCategories);
   }, [
     products,
+    stockLevels,
+    currentUser,
     searchQuery,
     stockStatus,
     selectedSubCat,
@@ -323,9 +365,11 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
         : [...prev, colId];
       if (next.length === 0) return prev;
       try {
-        localStorage.setItem(INVENTORY_COLUMNS_STORAGE_KEY, JSON.stringify(next));
+        setUserPreference('desktop_inventory_columns', next);
       } catch {
-        // Ignore
+        try {
+          localStorage.setItem(INVENTORY_COLUMNS_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
       }
       return next;
     });
@@ -334,9 +378,11 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   const toggleDensity = (nextDensity: 'normal' | 'compact') => {
     setDensity(nextDensity);
     try {
-      localStorage.setItem(INVENTORY_DENSITY_STORAGE_KEY, nextDensity);
+      setUserPreference('desktop_inventory_density', nextDensity);
     } catch {
-      // Ignore
+      try {
+        localStorage.setItem(INVENTORY_DENSITY_STORAGE_KEY, nextDensity);
+      } catch {}
     }
   };
 
@@ -596,7 +642,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             </p>
             {lastUsbScannedRef && (
               <div className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
-                Dernier scan : {lastUsbScannedRef}
+                {tr(language, 'Dernier scan :', 'Last scan:', 'Laatste scan:')} {lastUsbScannedRef}
               </div>
             )}
           </div>
@@ -694,20 +740,44 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                 <div className="absolute right-0 mt-1.5 w-52 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl p-2 z-30 text-xs space-y-1">
                   {DEFAULT_INVENTORY_COLUMNS.filter((c) =>
                     c === 'unit_price' ? canViewPrices : true
-                  ).map((colId) => (
-                    <label
-                      key={colId}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.includes(colId)}
-                        onChange={() => toggleColumnVisibility(colId)}
-                        className="rounded border-slate-300 text-orange-600"
-                      />
-                      <span className="capitalize">{colId.replace('_', ' ')}</span>
-                    </label>
-                  ))}
+                  ).map((colId) => {
+                    const colLabel =
+                      colId === 'reference'
+                        ? tr(language, 'Référence', 'Reference', 'Referentie')
+                        : colId === 'designation'
+                        ? tr(language, 'Désignation', 'Designation', 'Omschrijving')
+                        : colId === 'brand'
+                        ? tr(language, 'Marque', 'Brand', 'Merk')
+                        : colId === 'category'
+                        ? tr(language, 'Catégorie', 'Category', 'Categorie')
+                        : colId === 'store_name'
+                        ? tr(language, 'Dépôt', 'Depot', 'Depot')
+                        : colId === 'location'
+                        ? tr(language, 'Emplacement', 'Location', 'Locatie')
+                        : colId === 'quantity'
+                        ? tr(language, 'Quantité', 'Quantity', 'Aantal')
+                        : colId === 'min_stock_alert'
+                        ? tr(language, 'Seuil', 'Min Alert', 'Drempel')
+                        : colId === 'unit_price'
+                        ? tr(language, 'Prix HT', 'Unit Price', 'Eenheidsprijs')
+                        : colId === 'status'
+                        ? tr(language, 'État', 'State', 'Status')
+                        : colId;
+                    return (
+                      <label
+                        key={colId}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={visibleColumns.includes(colId)}
+                          onChange={() => toggleColumnVisibility(colId)}
+                          className="rounded border-slate-300 text-orange-600"
+                        />
+                        <span>{colLabel}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -821,6 +891,34 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                 <ArrowLeftRight className="w-3.5 h-3.5 text-emerald-400" />
                 <span>{t('desktop_bulk_movement')}</span>
               </button>
+              {canTransferBetweenDepots && (
+                <button
+                  type="button"
+                  data-testid="desktop-bulk-transfer-btn"
+                  onClick={() => {
+                    const defaultSrc =
+                      selectedStore || selectedProducts[0]?.store_name || undefined;
+                    openStockTransferModal({
+                      sourceDepot: defaultSrc,
+                      items: selectedProducts.map((p) => ({
+                        productId: p.id,
+                        quantity: 1,
+                      })),
+                    });
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 font-semibold flex items-center gap-1.5 transition cursor-pointer text-sky-200"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-sky-400" />
+                  <span>
+                    {tr(
+                      language,
+                      'Transférer la sélection',
+                      'Transfer selection',
+                      'Selectie overdragen'
+                    )}
+                  </span>
+                </button>
+              )}
               {canExportCsv && (
                 <button
                   type="button"
@@ -843,18 +941,19 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
         )}
 
         {/* Data Table Container */}
-        <div
-          ref={tableContainerRef}
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-          className="flex-1 overflow-y-auto overflow-x-auto p-4 desktop-printable-table-area"
-        >
-          <table
-            role="grid"
-            aria-label={tr(language, "Tableau d'inventaire", 'Inventory table', 'Voorraadtabel')}
-            className="w-full border-collapse bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 text-xs"
+        <div className="flex-1 min-h-0 flex flex-col p-4 desktop-printable-table-area">
+          <div
+            ref={tableContainerRef}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-auto bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800"
           >
-            <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800/95 border-b border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 select-none">
-              <tr>
+            <table
+              role="grid"
+              aria-label={tr(language, "Tableau d'inventaire", 'Inventory table', 'Voorraadtabel')}
+              className="w-full border-collapse bg-white dark:bg-slate-900 text-xs"
+            >
+              <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 shadow-[0_1px_0_0_rgba(226,232,240,1)] dark:shadow-[0_1px_0_0_rgba(51,65,85,1)] text-slate-600 dark:text-slate-300 select-none">
+                <tr className="bg-slate-100 dark:bg-slate-800">
                 <th className="w-10 px-3 py-2.5 text-center no-print">
                   <input
                     type="checkbox"
@@ -1018,8 +1117,15 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
 
                   return (
                     <tr
-                      key={p.id}
-                      onClick={() => setActiveProductId(p.id)}
+                      key={`${p.id}::${p.store_name || ''}`}
+                      onClick={() => {
+                        if (String(activeProductId) !== String(p.id)) {
+                          requestGuardedNavigation(
+                            () => setActiveProductId(p.id),
+                            ['desktop-product-inline']
+                          );
+                        }
+                      }}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         setContextMenu({
@@ -1143,7 +1249,8 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                 </tr>
               )}
             </tbody>
-          </table>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -1164,14 +1271,34 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
           <button
             type="button"
             onClick={() => {
-              setActiveProductId(contextMenu.productId);
+              const targetId = contextMenu.productId;
               setContextMenu(null);
+              requestGuardedNavigation(() => setActiveProductId(targetId), ['desktop-product-inline']);
             }}
             className="w-full px-3 py-2 rounded-lg text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
           >
             <ExternalLink className="w-3.5 h-3.5 text-orange-600" />
             <span>{tr(language, 'Ouvrir la fiche', 'Open details', 'Details openen')}</span>
           </button>
+          {userHasPermission('perm_prod_edit') && (
+            <button
+              type="button"
+              onClick={() => {
+                const prod = products.find((p) => p.id === contextMenu.productId);
+                setContextMenu(null);
+                if (prod) {
+                  requestGuardedNavigation(() => {
+                    setPrefillNewCode(null);
+                    setProductFormState({ open: true, product: prod });
+                  });
+                }
+              }}
+              className="w-full px-3 py-2 rounded-lg text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-amber-600" />
+              <span>{tr(language, 'Éditer le formulaire', 'Edit in form', 'Formulier bewerken')}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -1202,7 +1329,8 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             onClick={() => {
               const prod = products.find((p) => p.id === contextMenu.productId);
               if (prod) {
-                addToCart(prod, -1);
+                setScanState({ open: false, mode: 'OUT' });
+                addToCart(prod, 1);
                 setBatchCartModalOpen(true);
               }
               setContextMenu(null);
@@ -1212,6 +1340,25 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             <ArrowLeftRight className="w-3.5 h-3.5 text-emerald-600" />
             <span>{tr(language, 'Nouveau mouvement', 'New movement', 'Nieuwe beweging')}</span>
           </button>
+          {canTransferBetweenDepots && (
+            <button
+              type="button"
+              onClick={() => {
+                const prod = products.find((p) => p.id === contextMenu.productId);
+                setContextMenu(null);
+                if (prod) {
+                  openStockTransferModal({
+                    sourceDepot: prod.store_name || undefined,
+                    items: [{ productId: prod.id, quantity: 1 }],
+                  });
+                }
+              }}
+              className="w-full px-3 py-2 rounded-lg text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5 text-sky-600" />
+              <span>{tr(language, 'Transférer', 'Transfer', 'Overdragen')}</span>
+            </button>
+          )}
         </div>
       )}
 

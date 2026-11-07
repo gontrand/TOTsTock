@@ -62,7 +62,9 @@ export async function runPrintJobsSqlTests() {
   const results = [];
 
   // ---------------------------------------------------------------------------
-  // TEST 1A : Exécution sur une base vide (00 à 08 + 07) puis 2 passages d'affilée (idempotent)
+  // TEST 1A : Exécution sur une base vide (00 à 09 + 08 + 07) puis 2 passages d'affilée (idempotent)
+  // Vérifie : seules les tables préfixées core_* et stk_* existent (aucune vue de compatibilité inutile sur base neuve),
+  // schema_version = '2.0.0', min_schema_version = '1.0.0', et diagnostic_installation() = OK.
   // ---------------------------------------------------------------------------
   const db = new PGlite();
   await db.exec(AUTH_STUB_SQL);
@@ -70,12 +72,18 @@ export async function runPrintJobsSqlTests() {
   const orderedScripts = [
     '00_complete_tot_stock_schema.sql',
     '01_auth_link.sql',
+    '01b_migrate_users_id_to_text.sql',
+    '09_core_prefixes.sql',
     '02_rls_hardening.sql',
     '03_rpc_stock_and_orders.sql',
     '04_mouvements_et_depots_vehicules.sql',
     '05_rpc_admin_users.sql',
     '06_install_additional_roles.sql',
     '08_print_jobs.sql',
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
     '07_app_compat.sql',
   ];
 
@@ -89,10 +97,10 @@ export async function runPrintJobsSqlTests() {
   }
 
   const compatRes = await db.query(
-    `SELECT schema_version, min_schema_version FROM public.app_compat WHERE id = 1;`
+    `SELECT schema_version, min_schema_version FROM public.core_app_compat WHERE id = 1;`
   );
   if (
-    compatRes.rows[0]?.schema_version !== '1.1.0' ||
+    compatRes.rows[0]?.schema_version !== '2.4.0' ||
     compatRes.rows[0]?.min_schema_version !== '1.0.0'
   ) {
     throw new Error(
@@ -100,30 +108,55 @@ export async function runPrintJobsSqlTests() {
     );
   }
 
+  // Sur base neuve : aucune vue de compatibilité ne doit avoir été créée
+  const freshViewsRes = await db.query(`
+    SELECT c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind = 'v';
+  `);
+  if (freshViewsRes.rows.length !== 0) {
+    throw new Error(
+      `Sur une base neuve, aucune vue de compatibilité ne devait être créée, trouvé : ${JSON.stringify(freshViewsRes.rows)}`
+    );
+  }
+
   const diagRes = await db.query(`SELECT * FROM public.diagnostic_installation();`);
   const koRows = diagRes.rows.filter(
     (r) => r.check_key !== 'super_admin_linked' && (r.status === 'KO' || r.status === 'ERREUR')
   );
-  if (koRows.length > 0 || diagRes.rows.length < 10) {
+  if (koRows.length > 0 || diagRes.rows.length < 12) {
     throw new Error(
       `diagnostic_installation() a échoué après double passage : ${JSON.stringify(diagRes.rows)}`
+    );
+  }
+  const prefixedDiagRow = diagRes.rows.find((r) => r.check_key === 'prefixed_tables');
+  const compatViewsDiagRow = diagRes.rows.find((r) => r.check_key === 'compat_views_present');
+  if (prefixedDiagRow?.status !== 'OK' || compatViewsDiagRow?.status !== 'OK') {
+    throw new Error(
+      `Sur base neuve, prefixed_tables et compat_views_present doivent être OK : ${JSON.stringify({ prefixedDiagRow, compatViewsDiagRow })}`
     );
   }
   results.push('1a_fresh_install_and_idempotent_two_passes_ok');
 
   // ---------------------------------------------------------------------------
-  // TEST 1B : Mise à niveau d'une base existante en version 1.0.0 vers 1.1.0 via 08_print_jobs.sql seul
+  // TEST 1B : Mise à niveau d'une base existante en version 1.0.0 vers 2.0.0 via 08_print_jobs.sql seul
   // ---------------------------------------------------------------------------
   const dbUpgrade = new PGlite();
   await dbUpgrade.exec(AUTH_STUB_SQL);
   const v100Scripts = [
     '00_complete_tot_stock_schema.sql',
     '01_auth_link.sql',
+    '09_core_prefixes.sql',
     '02_rls_hardening.sql',
     '03_rpc_stock_and_orders.sql',
     '04_mouvements_et_depots_vehicules.sql',
     '05_rpc_admin_users.sql',
     '06_install_additional_roles.sql',
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
     '07_app_compat.sql',
   ];
   for (const s of v100Scripts) {
@@ -131,9 +164,9 @@ export async function runPrintJobsSqlTests() {
   }
   // Simuler l'état 1.0.0 avant le script 08
   await dbUpgrade.exec(`
-    DROP TABLE IF EXISTS public.print_jobs CASCADE;
-    DROP TABLE IF EXISTS public.print_stations CASCADE;
-    UPDATE public.app_compat SET schema_version = '1.0.0', min_schema_version = '1.0.0' WHERE id = 1;
+    DROP TABLE IF EXISTS public.stk_print_jobs CASCADE;
+    DROP TABLE IF EXISTS public.stk_print_stations CASCADE;
+    UPDATE public.core_app_compat SET schema_version = '1.0.0', min_schema_version = '1.0.0' WHERE id = 1;
   `);
 
   // Exécuter uniquement 08_print_jobs.sql (mise à niveau seule)
@@ -142,18 +175,18 @@ export async function runPrintJobsSqlTests() {
   await dbUpgrade.exec(readClientScript('08_print_jobs.sql'));
 
   const upgCompat = await dbUpgrade.query(
-    `SELECT schema_version, min_schema_version FROM public.app_compat WHERE id = 1;`
+    `SELECT schema_version, min_schema_version FROM public.core_app_compat WHERE id = 1;`
   );
-  if (upgCompat.rows[0]?.schema_version !== '1.1.0') {
-    throw new Error(`La mise à niveau 1.0.0 -> 1.1.0 n'a pas mis à jour schema_version.`);
+  if (upgCompat.rows[0]?.schema_version !== '2.0.0') {
+    throw new Error(`La mise à niveau via 08_print_jobs.sql n'a pas mis à jour schema_version vers 2.0.0.`);
   }
   const upgDiag = await dbUpgrade.query(`SELECT * FROM public.diagnostic_installation();`);
   const upgKoRows = upgDiag.rows.filter(
     (r) => r.check_key !== 'super_admin_linked' && (r.status === 'KO' || r.status === 'ERREUR')
   );
-  if (upgKoRows.length > 0 || upgDiag.rows.length < 10) {
+  if (upgKoRows.length > 0 || upgDiag.rows.length < 12) {
     throw new Error(
-      `diagnostic_installation() a échoué après mise à niveau 1.0.0 -> 1.1.0 : ${JSON.stringify(upgDiag.rows)}`
+      `diagnostic_installation() a échoué après mise à niveau : ${JSON.stringify(upgDiag.rows)}`
     );
   }
   await dbUpgrade.close();
@@ -168,7 +201,7 @@ export async function runPrintJobsSqlTests() {
   const UUID_ADMIN = '00000000-0000-4000-8000-000000000099';
 
   await db.exec(`
-    INSERT INTO public.roles (id, name, permissions)
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES
       (10, 'Role Sans Impression', ARRAY['perm_inventory_view']::text[]),
       (20, 'Role Avec Impression', ARRAY['perm_menu_print_labels', 'perm_menu_order_prep', 'perm_orders_create']::text[])
@@ -182,7 +215,7 @@ export async function runPrintJobsSqlTests() {
       ('${UUID_ADMIN}', 'admin@test.local')
     ON CONFLICT (id) DO NOTHING;
 
-    INSERT INTO public.users (id, name, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
+    INSERT INTO public.core_users (id, name, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
     VALUES
       ('user-no-perm', 'Sans Droit', 'noperm@test.local', '', 10, false, ARRAY['Dépôt Nord']::text[], true, '${UUID_NO_PERM}'),
       ('user-depot-a', 'Magasinier Nord', 'depota@test.local', '', 20, false, ARRAY['Dépôt Nord']::text[], true, '${UUID_DEPOT_A}'),
@@ -269,7 +302,6 @@ export async function runPrintJobsSqlTests() {
   );
 
   await setAuthUser(UUID_DEPOT_A);
-  // user-depot-a tente de réclamer (claim_print_jobs) ou lire (list_station_print_jobs) les travaux du Poste Sud
   await expectSqlFailure(
     () => db.query(`SELECT * FROM public.claim_print_jobs($1::uuid);`, [stationSudId]),
     'propriétaire'
@@ -295,7 +327,6 @@ export async function runPrintJobsSqlTests() {
       `claim_print_jobs devait renvoyer 1 travail au 1er appel et 0 au 2nd appel, reçu : ${claim1.rows.length} puis ${claim2.rows.length}`
     );
   }
-  // Terminer le travail réclamé
   await db.query(`SELECT public.complete_print_job($1::uuid, true, NULL);`, [claim1.rows[0].id]);
   results.push('5_claim_print_jobs_idempotent_single_claim');
 
@@ -303,7 +334,6 @@ export async function runPrintJobsSqlTests() {
   // TEST 6 : Limites respectées : copies entre 1 et 100, payload <= 2048 octets et sans HTML, 30 PENDING max par poste
   // ---------------------------------------------------------------------------
   await setAuthUser(UUID_DEPOT_A);
-  // 6a. copies invalides (0 et 101)
   await expectSqlFailure(
     () =>
       db.query(
@@ -321,7 +351,6 @@ export async function runPrintJobsSqlTests() {
     'copies'
   );
 
-  // 6b. payload > 2048 octets
   const hugePayload = JSON.stringify({
     product_id: 'P1',
     blob: 'A'.repeat(2200),
@@ -335,7 +364,6 @@ export async function runPrintJobsSqlTests() {
     '2048'
   );
 
-  // 6c. payload contenant des balises HTML
   await expectSqlFailure(
     () =>
       db.query(
@@ -345,9 +373,8 @@ export async function runPrintJobsSqlTests() {
     'html'
   );
 
-  // 6d. Plafond de 30 travaux PENDING maximum par poste
   await db.exec(`
-    INSERT INTO public.print_jobs (station_id, created_by, kind, format, payload, copies, status, created_at)
+    INSERT INTO public.stk_print_jobs (station_id, created_by, kind, format, payload, copies, status, created_at)
     SELECT
       '${stationNordId}'::uuid,
       'user-admin',
@@ -369,23 +396,22 @@ export async function runPrintJobsSqlTests() {
     '30 travaux'
   );
 
-  // Nettoyer les 30 travaux de test
-  await db.exec(`DELETE FROM public.print_jobs WHERE station_id = '${stationNordId}'::uuid;`);
+  await db.exec(`DELETE FROM public.stk_print_jobs WHERE station_id = '${stationNordId}'::uuid;`);
   results.push('6_limits_30_pending_copies_1_100_payload_2048_enforced');
 
   // ---------------------------------------------------------------------------
-  // TEST 7 : anon n'a aucun droit sur print_stations, print_jobs ni sur les fonctions d'impression
+  // TEST 7 : anon n'a aucun droit sur stk_print_stations, stk_print_jobs ni sur les fonctions d'impression
   // ---------------------------------------------------------------------------
   const anonTableGrants = await db.query(`
     SELECT table_name, privilege_type
     FROM information_schema.role_table_grants
     WHERE table_schema = 'public'
       AND grantee = 'anon'
-      AND table_name IN ('print_stations', 'print_jobs');
+      AND table_name IN ('stk_print_stations', 'stk_print_jobs');
   `);
   if (anonTableGrants.rows.length > 0) {
     throw new Error(
-      `Le rôle anon possède des droits sur print_stations/print_jobs : ${JSON.stringify(anonTableGrants.rows)}`
+      `Le rôle anon possède des droits sur stk_print_stations/stk_print_jobs : ${JSON.stringify(anonTableGrants.rows)}`
     );
   }
 
@@ -428,7 +454,6 @@ export async function runPrintJobsSqlTests() {
     throw new Error('Le premier travail avec dedupe_key aurait dû être créé.');
   }
 
-  // Deuxième appel avec la même dedupe_key tant que le 1er est PENDING -> rejeté (contrainte unique 23505)
   await expectSqlFailure(
     () =>
       db.query(
@@ -438,7 +463,6 @@ export async function runPrintJobsSqlTests() {
     ''
   );
 
-  // Annuler le premier travail (passe en CANCELLED), puis vérifier qu'un nouvel envoi avec la même dedupe_key est autorisé
   await db.query(`SELECT public.cancel_print_job($1::uuid);`, [job1.rows[0].id]);
   const job2 = await db.query(
     `SELECT public.create_print_job($1::uuid, 'order_label', 'bin_90x50', '{"order_id":"ORD1","order_number":"CMD-2026-900"}'::jsonb, 1, 'order:CMD-2026-900') AS id;`,
@@ -450,68 +474,65 @@ export async function runPrintJobsSqlTests() {
   results.push('8_dedupe_key_prevents_duplicate_pending_jobs');
 
   // ---------------------------------------------------------------------------
-  // TEST 9 (v37) : Purge intégrale des règles RLS parasites / récursives et contrôle diagnostic
+  // TEST 9 (v37 / v42) : Purge intégrale des règles RLS parasites / récursives et contrôle diagnostic
   // ---------------------------------------------------------------------------
-  // 9.1 Créer la table optionnelle material_order_items (si présente sur d'anciennes bases)
-  //     et injecter des règles RLS parasites aux noms inventés + une règle récursive sur users
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS public.material_order_items (
+    CREATE TABLE IF NOT EXISTS public.stk_material_order_items (
       id SERIAL PRIMARY KEY,
       order_id BIGINT,
       product_id TEXT,
       quantity INTEGER DEFAULT 1
     );
-    ALTER TABLE public.material_order_items ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.stk_material_order_items ENABLE ROW LEVEL SECURITY;
 
-    GRANT SELECT, INSERT, UPDATE, DELETE ON public.users TO anon;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON public.core_users TO anon;
 
-    DROP POLICY IF EXISTS "Allow public access to users" ON public.users;
-    CREATE POLICY "Allow public access to users" ON public.users
+    DROP POLICY IF EXISTS "Allow public access to users" ON public.core_users;
+    CREATE POLICY "Allow public access to users" ON public.core_users
       FOR ALL TO public USING (true);
 
-    DROP POLICY IF EXISTS "Accès total users" ON public.users;
-    CREATE POLICY "Accès total users" ON public.users
+    DROP POLICY IF EXISTS "Accès total users" ON public.core_users;
+    CREATE POLICY "Accès total users" ON public.core_users
       FOR ALL TO public USING (true) WITH CHECK (true);
 
-    DROP POLICY IF EXISTS "Legacy recursive read users" ON public.users;
-    CREATE POLICY "Legacy recursive read users" ON public.users
+    DROP POLICY IF EXISTS "Legacy recursive read users" ON public.core_users;
+    CREATE POLICY "Legacy recursive read users" ON public.core_users
       FOR SELECT TO authenticated
       USING (
         EXISTS (
-          SELECT 1 FROM public.users u_rec
+          SELECT 1 FROM public.core_users u_rec
           WHERE u_rec.auth_user_id = auth.uid()
-            AND (u_rec.role_id = 0 OR u_rec.id = users.id)
+            AND (u_rec.role_id = 0 OR u_rec.id = core_users.id)
         )
       );
 
-    DROP POLICY IF EXISTS "Legacy order policy referencing users" ON public.material_orders;
-    CREATE POLICY "Legacy order policy referencing users" ON public.material_orders
+    DROP POLICY IF EXISTS "Legacy order policy referencing users" ON public.stk_material_orders;
+    CREATE POLICY "Legacy order policy referencing users" ON public.stk_material_orders
       FOR INSERT TO authenticated
       WITH CHECK (
         EXISTS (
-          SELECT 1 FROM public.users u_ord
+          SELECT 1 FROM public.core_users u_ord
           WHERE u_ord.auth_user_id = auth.uid()
         )
       );
 
-    DROP POLICY IF EXISTS "Allow public access to products" ON public.products;
-    CREATE POLICY "Allow public access to products" ON public.products
+    DROP POLICY IF EXISTS "Allow public access to products" ON public.stk_products;
+    CREATE POLICY "Allow public access to products" ON public.stk_products
       FOR ALL TO public USING (true) WITH CHECK (true);
 
-    DROP POLICY IF EXISTS "Legacy public order items" ON public.material_order_items;
-    CREATE POLICY "Legacy public order items" ON public.material_order_items
+    DROP POLICY IF EXISTS "Legacy public order items" ON public.stk_material_order_items;
+    CREATE POLICY "Legacy public order items" ON public.stk_material_order_items
       FOR ALL TO public USING (true);
 
-    DROP POLICY IF EXISTS "Parasite public print_stations" ON public.print_stations;
-    CREATE POLICY "Parasite public print_stations" ON public.print_stations
+    DROP POLICY IF EXISTS "Parasite public print_stations" ON public.stk_print_stations;
+    CREATE POLICY "Parasite public print_stations" ON public.stk_print_stations
       FOR ALL TO public USING (true);
 
-    DROP POLICY IF EXISTS "Parasite anon print_jobs" ON public.print_jobs;
-    CREATE POLICY "Parasite anon print_jobs" ON public.print_jobs
+    DROP POLICY IF EXISTS "Parasite anon print_jobs" ON public.stk_print_jobs;
+    CREATE POLICY "Parasite anon print_jobs" ON public.stk_print_jobs
       FOR ALL TO anon USING (true);
   `);
 
-  // 9.1b Vérifier que la règle récursive parasite provoque bien l'erreur 42P17 lors d'un INSERT dans material_orders avant purge
   await expectSqlFailure(
     () =>
       db.exec(`
@@ -519,18 +540,17 @@ export async function runPrintJobsSqlTests() {
         SET LOCAL ROLE authenticated;
         SELECT set_config('request.jwt.claim.sub', '${UUID_DEPOT_A}', true);
         SELECT set_config('request.jwt.claim.role', 'authenticated', true);
-        INSERT INTO public.material_orders (
+        INSERT INTO public.stk_material_orders (
           id, order_number, requester_id, requester_name, site_number, site_name, status, items
         ) VALUES (
           'ord-rec-fail', 'CMD-REC-FAIL', 'user-depot-a', 'Magasinier Nord', 'CH-100', 'Chantier', 'PENDING', '[]'::jsonb
         );
         COMMIT;
       `),
-    'infinite recursion detected in policy for relation "users"'
+    'infinite recursion detected in policy for relation "core_users"'
   );
   await db.exec(`ROLLBACK;`);
 
-  // 9.2 Vérifier qu'AVANT rejeu des scripts de durcissement, diagnostic_installation() détecte les règles USING (true) en ERREUR
   const diagBeforePurge = await db.query(`SELECT * FROM public.diagnostic_installation();`);
   const permissiveRowBefore = diagBeforePurge.rows.find(
     (r) => r.check_key === 'permissive_rls_policies'
@@ -541,27 +561,27 @@ export async function runPrintJobsSqlTests() {
     );
   }
   if (
-    !permissiveRowBefore.details.includes('users') ||
-    !permissiveRowBefore.details.includes('products')
+    !permissiveRowBefore.details.includes('core_users') ||
+    !permissiveRowBefore.details.includes('stk_products')
   ) {
     throw new Error(
-      `permissive_rls_policies devait citer users et products, reçu : ${permissiveRowBefore.details}`
+      `permissive_rls_policies devait citer core_users et stk_products, reçu : ${permissiveRowBefore.details}`
     );
   }
 
-  // 9.3 Exécuter les scripts 02, 03, 04, 05, 07, 08 (et rejouer 02, 05, 08, 07 pour vérifier l'idempotence)
   for (const scriptToReplay of [
     '02_rls_hardening.sql',
     '03_rpc_stock_and_orders.sql',
     '04_mouvements_et_depots_vehicules.sql',
     '05_rpc_admin_users.sql',
     '08_print_jobs.sql',
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
     '07_app_compat.sql',
   ]) {
     await db.exec(readClientScript(scriptToReplay));
   }
 
-  // 9.4 Vérifier que la fonction utilitaire temporaire _tot_drop_all_policies_on_table n'existe plus
   const helperFnRes = await db.query(`
     SELECT proname FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -571,39 +591,49 @@ export async function runPrintJobsSqlTests() {
     throw new Error('La fonction temporaire _tot_drop_all_policies_on_table aurait dû être supprimée en fin de script 02.');
   }
 
-  // 9.5 Vérifier qu'il ne reste QUE les règles attendues sur chaque table (aucune règle parasite ne survit)
   const expectedPoliciesByTable = {
-    users: ['Authenticated read users'],
-    products: ['Admin write products', 'Authenticated read products'],
-    stock_movements: ['Authenticated insert stock_movements', 'Authenticated read stock_movements'],
-    movements: ['Authenticated insert movements', 'Authenticated read movements'],
-    material_orders: [
+    core_users: ['Authenticated read core_users'],
+    stk_products: ['Admin write products', 'Authenticated read products'],
+    stk_movements: ['Authenticated insert stk_movements', 'Authenticated read stk_movements'],
+    stk_material_orders: [
       'Authenticated insert material_orders',
       'Authenticated read material_orders',
       'Authenticated update material_orders',
     ],
-    material_order_items: [
-      'Authenticated read material_order_items',
-      'Authenticated write material_order_items',
+    stk_material_order_items: [
+      'Read stk_material_order_items',
+      'Write stk_material_order_items',
     ],
-    depots: ['Admin write depots', 'Authenticated read depots'],
-    app_settings: ['Admin write app_settings', 'Anon public settings', 'Authenticated read app_settings'],
-    company_settings: [
+    stk_depots: ['Admin write depots', 'Authenticated read depots'],
+    core_app_settings: ['Admin write app_settings', 'Anon public settings', 'Authenticated read app_settings'],
+    core_company_settings: [
       'Admin write company_settings',
       'Anon public company_settings',
       'Authenticated read company_settings',
     ],
-    license_config: ['Authenticated read license_config'],
-    roles: ['Admin write roles', 'Authenticated read roles'],
-    departments: ['Admin write departments', 'Authenticated read departments'],
-    projects: ['Admin write projects', 'Authenticated read projects'],
-    sub_categories: ['Admin write sub_categories', 'Authenticated read sub_categories'],
-    stock_levels: ['Admin write stock_levels', 'Authenticated read stock_levels'],
-    audit_logs: ['Authenticated insert audit_logs', 'Authenticated read audit_logs'],
-    processed_operations: ['User read self processed_operations'],
-    app_compat: ['Lecture de la compatibilité', 'Modification compatibilité admin'],
-    print_stations: [],
-    print_jobs: [],
+    core_license_config: ['Authenticated read license_config'],
+    core_roles: ['Admin write roles', 'Authenticated read roles'],
+    core_departments: ['Admin write departments', 'Authenticated read departments'],
+    core_projects: ['Admin write core_projects', 'Authenticated read core_projects'],
+    stk_sub_categories: ['Admin write sub_categories', 'Authenticated read sub_categories'],
+    stk_stock_levels: ['Admin write stk_stock_levels', 'Authenticated read stk_stock_levels'],
+    core_audit_logs: ['Authenticated insert audit_logs', 'Authenticated read audit_logs'],
+    core_processed_operations: ['User read self processed_operations'],
+    core_app_compat: ['Lecture de la compatibilité', 'Modification compatibilité admin'],
+    stk_inventory_audits: [
+      'Authenticated insert stk_inventory_audits',
+      'Authenticated read stk_inventory_audits',
+      'SuperAdmin delete stk_inventory_audits',
+      'SuperAdmin update stk_inventory_audits',
+    ],
+    stk_inventory_audit_items: [
+      'Authenticated insert stk_inventory_audit_items',
+      'Authenticated read stk_inventory_audit_items',
+      'SuperAdmin delete stk_inventory_audit_items',
+      'SuperAdmin update stk_inventory_audit_items',
+    ],
+    stk_print_stations: [],
+    stk_print_jobs: [],
   };
 
   for (const [tableName, expectedNames] of Object.entries(expectedPoliciesByTable)) {
@@ -620,17 +650,16 @@ export async function runPrintJobsSqlTests() {
     }
   }
 
-  // 9.6 Vérifier qu'anon ne peut ni lire ni écrire public.users (ni par privilège de table ni sous SET LOCAL ROLE anon)
   const anonUsersPrivRes = await db.query(`
     SELECT
-      has_table_privilege('anon', 'public.users', 'SELECT') AS can_select,
-      has_table_privilege('anon', 'public.users', 'INSERT') AS can_insert,
-      has_table_privilege('anon', 'public.users', 'UPDATE') AS can_update,
-      has_table_privilege('anon', 'public.users', 'DELETE') AS can_delete;
+      has_table_privilege('anon', 'public.core_users', 'SELECT') AS can_select,
+      has_table_privilege('anon', 'public.core_users', 'INSERT') AS can_insert,
+      has_table_privilege('anon', 'public.core_users', 'UPDATE') AS can_update,
+      has_table_privilege('anon', 'public.core_users', 'DELETE') AS can_delete;
   `);
   const anonPriv = anonUsersPrivRes.rows[0];
   if (anonPriv.can_select || anonPriv.can_insert || anonPriv.can_update || anonPriv.can_delete) {
-    throw new Error(`Le rôle anon conserve des privilèges sur public.users : ${JSON.stringify(anonPriv)}`);
+    throw new Error(`Le rôle anon conserve des privilèges sur public.core_users : ${JSON.stringify(anonPriv)}`);
   }
 
   await expectSqlFailure(
@@ -638,36 +667,22 @@ export async function runPrintJobsSqlTests() {
       db.exec(`
         BEGIN;
         SET LOCAL ROLE anon;
-        SELECT count(*) FROM public.users;
+        SELECT count(*) FROM public.core_users;
         COMMIT;
       `),
     'permission denied'
   );
   await db.exec(`ROLLBACK;`);
 
-  await expectSqlFailure(
-    () =>
-      db.exec(`
-        BEGIN;
-        SET LOCAL ROLE anon;
-        INSERT INTO public.users (id, name, role_id) VALUES ('pirate-anon', 'Pirate', 0);
-        COMMIT;
-      `),
-    'permission denied'
-  );
-  await db.exec(`ROLLBACK;`);
-
-  // 9.7 Vérifier que l'insertion d'une commande (material_orders) et la lecture de users
-  //     par un utilisateur authentifié autorisé réussissent sous RLS actif sans erreur de récursion 42P17
   await db.exec(`
     BEGIN;
     SET LOCAL ROLE authenticated;
     SELECT set_config('request.jwt.claim.sub', '${UUID_DEPOT_A}', true);
     SELECT set_config('request.jwt.claim.role', 'authenticated', true);
 
-    SELECT id, name, role_id FROM public.users WHERE id = 'user-depot-a';
+    SELECT id, name, role_id FROM public.core_users WHERE id = 'user-depot-a';
 
-    INSERT INTO public.material_orders (
+    INSERT INTO public.stk_material_orders (
       id,
       order_number,
       requester_id,
@@ -690,13 +705,12 @@ export async function runPrintJobsSqlTests() {
   `);
 
   const insertedOrderRes = await db.query(
-    `SELECT order_number, status FROM public.material_orders WHERE order_number = 'CMD-RLS-NON-RECURSIVE-001';`
+    `SELECT order_number, status FROM public.stk_material_orders WHERE order_number = 'CMD-RLS-NON-RECURSIVE-001';`
   );
   if (insertedOrderRes.rows.length !== 1) {
     throw new Error('La commande insérée sous le rôle authenticated est introuvable.');
   }
 
-  // 9.8 Vérifier que diagnostic_installation() renvoie désormais OK sur permissive_rls_policies et aucune ligne KO/ERREUR
   const diagAfterPurge = await db.query(`SELECT * FROM public.diagnostic_installation();`);
   const permissiveRowAfter = diagAfterPurge.rows.find(
     (r) => r.check_key === 'permissive_rls_policies'
@@ -715,9 +729,8 @@ export async function runPrintJobsSqlTests() {
     );
   }
 
-  // 9.9 Vérifier que si on recrée ensuite une règle USING (true) pour public, diagnostic_installation() renvoie ERREUR
   await db.exec(`
-    CREATE POLICY "Allow public access to users" ON public.users
+    CREATE POLICY "Allow public access to users" ON public.core_users
       FOR ALL TO public USING (true);
   `);
   const diagWithRogueAgain = await db.query(`SELECT * FROM public.diagnostic_installation();`);
@@ -733,30 +746,92 @@ export async function runPrintJobsSqlTests() {
       `diagnostic_installation() devait renvoyer ERREUR après recréation d'une règle USING (true) pour public, reçu : ${JSON.stringify(permissiveRogueRow)}`
     );
   }
-  // Nettoyage final
-  await db.exec(`DROP POLICY IF EXISTS "Allow public access to users" ON public.users;`);
+  await db.exec(`DROP POLICY IF EXISTS "Allow public access to users" ON public.core_users;`);
   results.push('9_rls_purge_parasite_and_recursive_policies_and_diagnostic_ok');
 
   // ---------------------------------------------------------------------------
-  // TEST 10 (v39) : Base ancienne avec stock_movements.id bigint GENERATED BY DEFAULT AS IDENTITY
-  // contenant 2 lignes -> rejeu de 02, 03, 04, 05, 06, 07, 08 -> aucune erreur, id de type text,
-  // 2 lignes conservées (ids '1' et '2'), process_stock_movement insère un id texte généré,
-  // rejeu idempotent, absence de ligne parasite _tot_drop_all_policies_on_table au script 02,
-  // et message clair « conversion impossible : <objet dépendant> » si une vue/FK bloque la conversion.
+  // TEST 10 (v39 + v42) : Base ancienne avec les ANCIENS noms de tables (users, products,
+  // stock_movements avec id bigint GENERATED BY DEFAULT AS IDENTITY contenant 2 lignes,
+  // movements, audit_logs, stock_levels, depots, roles, etc.)
+  // -> exécution de 09_core_prefixes.sql puis 02..08 + 07 deux fois ->
+  // 0 erreur, renommage complet vers core_* et stk_*, id converti en text,
+  // les 2 lignes historiques ('1' et '2') sont préservées dans stk_movements,
+  // les vues de compatibilité (public.products, public.stock_movements, public.users) fonctionnent,
+  // diagnostic_installation() signale compat_views_present = 'ATTENTION',
+  // puis 10_drop_compat_views.sql supprime les vues et compat_views_present passe à 'OK'.
   // ---------------------------------------------------------------------------
   const dbLegacy = new PGlite();
   await dbLegacy.exec(AUTH_STUB_SQL);
-  await dbLegacy.exec(readClientScript('00_complete_tot_stock_schema.sql'));
-  await dbLegacy.exec(readClientScript('01_auth_link.sql'));
 
-  // Préparer stock_movements (ainsi que movements, audit_logs, stock_levels) avec id bigint GENERATED BY DEFAULT AS IDENTITY
-  // et insérer 2 lignes historiques dans stock_movements
+  // Construire une vraie base ancienne 1.x avec les anciens noms de tables non préfixés
   await dbLegacy.exec(`
-    INSERT INTO public.products (id, reference, brand, model, store_name, quantity, min_stock_alert)
-    VALUES ('prod-legacy-1', 'REF-LEG-001', 'Bosch', 'Perceuse 18V', 'Dépôt Nord', 10, 2)
-    ON CONFLICT (id) DO NOTHING;
+    CREATE TABLE public.roles (
+      id BIGINT PRIMARY KEY,
+      name TEXT NOT NULL,
+      permissions TEXT[] DEFAULT '{}'::text[]
+    );
+    INSERT INTO public.roles (id, name, permissions) VALUES
+      (0, 'Super Administrateur', ARRAY['*']),
+      (1, 'Administrateur', ARRAY['perm_mov_out', 'perm_stock_in', 'perm_prod_movement_direct']);
 
-    DROP TABLE IF EXISTS public.stock_movements CASCADE;
+    CREATE TABLE public.departments (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      name TEXT NOT NULL,
+      manager_id TEXT,
+      deputy_manager_ids TEXT[] DEFAULT '{}'::text[]
+    );
+
+    CREATE TABLE public.users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      trigram TEXT,
+      email TEXT,
+      pin TEXT DEFAULT '',
+      role_id BIGINT DEFAULT 3,
+      is_blocked BOOLEAN DEFAULT false,
+      allowed_depots TEXT[] DEFAULT ARRAY['*']::text[],
+      is_preparer BOOLEAN DEFAULT false,
+      auth_user_id UUID
+    );
+
+    CREATE TABLE public.projects (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      project_number TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      department_id TEXT,
+      manager_id TEXT,
+      deputy_manager_ids TEXT[] DEFAULT '{}'::text[]
+    );
+
+    CREATE TABLE public.sub_categories (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      name TEXT NOT NULL,
+      category TEXT
+    );
+
+    CREATE TABLE public.depots (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT DEFAULT 'FIXED',
+      is_active BOOLEAN DEFAULT true
+    );
+    INSERT INTO public.depots (id, name, type, is_active)
+    VALUES ('depot-nord-id', 'Dépôt Nord', 'FIXED', true);
+
+    CREATE TABLE public.products (
+      id TEXT PRIMARY KEY,
+      reference TEXT NOT NULL,
+      brand TEXT,
+      model TEXT,
+      store_name TEXT DEFAULT 'Dépôt Nord',
+      shelf_name TEXT,
+      quantity NUMERIC DEFAULT 0,
+      min_stock_alert NUMERIC DEFAULT 2,
+      unit_price NUMERIC DEFAULT 0
+    );
+    INSERT INTO public.products (id, reference, brand, model, store_name, quantity, min_stock_alert, unit_price)
+    VALUES ('prod-legacy-1', 'REF-LEG-001', 'Bosch', 'Perceuse 18V', 'Dépôt Nord', 10, 2, 150);
+
     CREATE TABLE public.stock_movements (
       id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
       product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
@@ -765,6 +840,7 @@ export async function runPrintJobsSqlTests() {
       user_name TEXT,
       movement_type TEXT NOT NULL CHECK (movement_type IN ('IN', 'OUT')),
       quantity_changed NUMERIC(10,2) NOT NULL,
+      reason TEXT,
       site_number TEXT,
       department_name TEXT,
       depot_name TEXT,
@@ -773,104 +849,100 @@ export async function runPrintJobsSqlTests() {
       order_number TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    INSERT INTO public.stock_movements (product_id, product_ref, user_id, user_name, movement_type, quantity_changed, depot_name)
+    VALUES
+      ('prod-legacy-1', 'REF-LEG-001', 'user-leg-admin', 'Admin Legacy', 'IN', 6, 'Dépôt Nord'),
+      ('prod-legacy-1', 'REF-LEG-001', 'user-leg-admin', 'Admin Legacy', 'IN', 4, 'Dépôt Nord');
 
-    DROP TABLE IF EXISTS public.movements CASCADE;
-    CREATE TABLE public.movements (
-      id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-      product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
-      product_ref TEXT,
-      user_id TEXT,
-      user_name TEXT,
-      movement_type TEXT NOT NULL CHECK (movement_type IN ('IN', 'OUT')),
-      quantity_changed NUMERIC(10,2) NOT NULL,
-      site_number TEXT,
-      department_name TEXT,
-      depot_name TEXT,
-      dest_depot_name TEXT,
-      total_cost NUMERIC(10,2) DEFAULT 0,
-      order_number TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    INSERT INTO public.movements (product_id, product_ref, user_id, user_name, movement_type, quantity_changed, depot_name)
-    VALUES ('prod-legacy-1', 'REF-LEG-001', 'user-admin', 'Super Admin', 'IN', 10, 'Dépôt Nord');
-
-    DELETE FROM public.audit_logs;
-    ALTER TABLE public.audit_logs ALTER COLUMN id DROP DEFAULT;
-    ALTER TABLE public.audit_logs ALTER COLUMN id TYPE BIGINT USING id::bigint;
-    ALTER TABLE public.audit_logs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY;
-    INSERT INTO public.audit_logs (user_id, user_name, action)
-    VALUES ('user-admin', 'Super Admin', 'LEGACY_INIT');
-
-    DROP TABLE IF EXISTS public.stock_levels CASCADE;
     CREATE TABLE public.stock_levels (
       id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
       product_id TEXT NOT NULL,
       depot_name TEXT NOT NULL,
       quantity NUMERIC NOT NULL DEFAULT 0,
-      min_stock NUMERIC DEFAULT 0,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now(),
       CONSTRAINT uq_product_depot UNIQUE (product_id, depot_name)
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_levels_product_depot ON public.stock_levels (product_id, depot_name);
     INSERT INTO public.stock_levels (product_id, depot_name, quantity)
     VALUES ('prod-legacy-1', 'Dépôt Nord', 10);
 
-    INSERT INTO public.stock_movements (product_id, product_ref, user_id, user_name, movement_type, quantity_changed, depot_name)
-    VALUES
-      ('prod-legacy-1', 'REF-LEG-001', 'user-admin', 'Super Admin', 'IN', 6, 'Dépôt Nord'),
-      ('prod-legacy-1', 'REF-LEG-001', 'user-admin', 'Super Admin', 'IN', 4, 'Dépôt Nord');
-  `);
-
-  // 10.1 Vérifier que si une vue dépend de stock_movements.id, l'erreur remonte avec « conversion impossible : ... » sans rien modifier
-  await dbLegacy.exec(`
-    CREATE VIEW public.v_blocking_stock_movements AS
-    SELECT id, product_id FROM public.stock_movements;
-  `);
-  await dbLegacy.exec(readClientScript('02_rls_hardening.sql'));
-  await expectSqlFailure(
-    () => dbLegacy.exec(readClientScript('03_rpc_stock_and_orders.sql')),
-    'conversion impossible :'
-  );
-  // Vérifier que stock_movements.id est toujours bigint et que stock_movements_backup_ids n'a pas été laissé modifié suite au rollback
-  const colStillBigint = await dbLegacy.query(`
-    SELECT data_type, is_identity
-    FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'stock_movements' AND column_name = 'id';
-  `);
-  if (colStillBigint.rows[0]?.data_type !== 'bigint' || colStillBigint.rows[0]?.is_identity !== 'YES') {
-    throw new Error(
-      `Après échec sur vue dépendante, stock_movements.id devait rester bigint IDENTITY sans modification, reçu : ${JSON.stringify(colStillBigint.rows[0])}`
+    CREATE TABLE public.audit_logs (
+      id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      user_id TEXT,
+      user_name TEXT,
+      action TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
     );
-  }
-  await dbLegacy.exec(`DROP VIEW public.v_blocking_stock_movements;`);
+    INSERT INTO public.audit_logs (user_id, user_name, action)
+    VALUES ('user-leg-admin', 'Admin Legacy', 'LEGACY_INIT');
 
-  // 10.2 Rejeu complet de 02, 03, 04, 05, 06, 07, 08 (et vérification qu'aucune ligne _tot_drop_all_policies_on_table n'est émise par 02)
-  const script02Results = await dbLegacy.exec(readClientScript('02_rls_hardening.sql'));
-  const spurious02Output = script02Results.filter(
-    (stmtRes) =>
-      (stmtRes.fields && stmtRes.fields.some((f) => f.name === '_tot_drop_all_policies_on_table')) ||
-      (Array.isArray(stmtRes.rows) && stmtRes.rows.length > 0)
-  );
-  if (spurious02Output.length > 0) {
-    throw new Error(
-      `02_rls_hardening.sql a renvoyé des lignes de résultat parasites : ${JSON.stringify(spurious02Output)}`
+    CREATE TABLE public.material_orders (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      order_number TEXT NOT NULL,
+      requester_id TEXT,
+      requester_name TEXT,
+      status TEXT DEFAULT 'PENDING',
+      items JSONB DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT now()
     );
-  }
 
-  for (const s of [
+    CREATE TABLE public.app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE public.company_settings (
+      id TEXT PRIMARY KEY DEFAULT 'default_company',
+      company_name TEXT DEFAULT 'TOT Legacy'
+    );
+
+    CREATE TABLE public.license_config (
+      id TEXT PRIMARY KEY DEFAULT 'active_license',
+      plan_type TEXT DEFAULT 'free',
+      max_references INT DEFAULT 50,
+      max_depots INT DEFAULT 1
+    );
+
+    CREATE TABLE public.processed_operations (
+      operation_id UUID PRIMARY KEY,
+      user_id TEXT,
+      result JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    -- Ancien déclencheur qui comptait les mouvements en double sur stock_movements
+    CREATE OR REPLACE FUNCTION public.process_stock_movement()
+    RETURNS TRIGGER LANGUAGE plpgsql AS $$
+    BEGIN
+      UPDATE public.products SET quantity = COALESCE(quantity, 0) + COALESCE(NEW.quantity_changed, 0) WHERE id = NEW.product_id;
+      RETURN NEW;
+    END;
+    $$;
+    CREATE TRIGGER trg_process_stock_movement
+      AFTER INSERT ON public.stock_movements
+      FOR EACH ROW EXECUTE FUNCTION public.process_stock_movement();
+  `);
+
+  // 10.1 Exécuter la chaîne complète de migration (09 -> 02 -> 03 -> 04 -> 05 -> 06 -> 08 -> 07) DEUX FOIS (idempotence)
+  const legacyMigrationSteps = [
+    '09_core_prefixes.sql',
+    '02_rls_hardening.sql',
     '03_rpc_stock_and_orders.sql',
     '04_mouvements_et_depots_vehicules.sql',
     '05_rpc_admin_users.sql',
     '06_install_additional_roles.sql',
-    '07_app_compat.sql',
     '08_print_jobs.sql',
-  ]) {
-    await dbLegacy.exec(readClientScript(s));
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
+    '07_app_compat.sql',
+  ];
+
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of legacyMigrationSteps) {
+      await dbLegacy.exec(readClientScript(s));
+    }
   }
 
-  // 10.3 Vérifier que stock_movements.id, movements.id, audit_logs.id et stock_levels.id sont maintenant de type 'text' et is_identity = 'NO'
-  for (const tName of ['stock_movements', 'movements', 'audit_logs', 'stock_levels']) {
+  // 10.2 Vérifier que stk_movements.id, core_audit_logs.id et stk_stock_levels.id sont de type 'text' et is_identity = 'NO'
+  for (const tName of ['stk_movements', 'core_audit_logs', 'stk_stock_levels']) {
     const colAfterConv = await dbLegacy.query(
       `SELECT data_type, is_identity
        FROM information_schema.columns
@@ -884,10 +956,25 @@ export async function runPrintJobsSqlTests() {
     }
   }
 
-  // 10.4 Vérifier que les 2 lignes historiques sont conservées avec les ids '1' et '2'
+  // 10.3 Vérifier la présence de la colonne app DEFAULT 'stock' sur core_audit_logs et core_processed_operations
+  for (const tName of ['core_audit_logs', 'core_processed_operations']) {
+    const appCol = await dbLegacy.query(
+      `SELECT column_name, data_type, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'app';`,
+      [tName]
+    );
+    if (appCol.rows.length !== 1 || !String(appCol.rows[0].column_default || '').includes('stock')) {
+      throw new Error(
+        `La colonne app DEFAULT 'stock' est absente sur ${tName} : ${JSON.stringify(appCol.rows)}`
+      );
+    }
+  }
+
+  // 10.4 Vérifier que les 2 lignes historiques sont conservées dans stk_movements avec les ids '1' et '2'
   const preservedRows = await dbLegacy.query(`
     SELECT id, product_id, quantity_changed
-    FROM public.stock_movements
+    FROM public.stk_movements
     ORDER BY id ASC;
   `);
   if (
@@ -896,24 +983,20 @@ export async function runPrintJobsSqlTests() {
     preservedRows.rows[1].id !== '2'
   ) {
     throw new Error(
-      `Les 2 lignes historiques de stock_movements ('1' et '2') devaient être conservées, reçu : ${JSON.stringify(preservedRows.rows)}`
+      `Les 2 lignes historiques de stk_movements ('1' et '2') devaient être conservées, reçu : ${JSON.stringify(preservedRows.rows)}`
     );
   }
 
-  // 10.5 Exécuter un process_stock_movement ultérieur et vérifier qu'il insère avec un id texte généré
+  // 10.5 Exécuter un process_stock_movement ultérieur et vérifier qu'il insère dans stk_movements, core_audit_logs (app='stock') et core_processed_operations (app='stock')
   const UUID_LEG_ADMIN = '00000000-0000-4000-8000-000000000199';
   await dbLegacy.exec(`
     INSERT INTO auth.users (id, email)
     VALUES ('${UUID_LEG_ADMIN}', 'legadmin@test.local')
     ON CONFLICT (id) DO NOTHING;
 
-    INSERT INTO public.users (id, name, trigram, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
+    INSERT INTO public.core_users (id, name, trigram, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
     VALUES ('user-leg-admin', 'Admin Legacy', 'ADM', 'legadmin@test.local', '', 0, false, ARRAY['*']::text[], true, '${UUID_LEG_ADMIN}')
     ON CONFLICT (id) DO UPDATE SET role_id = 0, auth_user_id = EXCLUDED.auth_user_id, is_blocked = false;
-
-    INSERT INTO public.depots (id, name, type, is_active)
-    VALUES ('depot-nord-id', 'Dépôt Nord', 'FIXED', true)
-    ON CONFLICT (name) DO NOTHING;
 
     SELECT set_config('request.jwt.claim.sub', '${UUID_LEG_ADMIN}', false);
   `);
@@ -925,7 +1008,7 @@ export async function runPrintJobsSqlTests() {
       'Dépôt Nord',
       'IN',
       5,
-      'Réappro test v39',
+      'Réappro test v42',
       NULL,
       'Logistique',
       NULL,
@@ -934,56 +1017,896 @@ export async function runPrintJobsSqlTests() {
       'STOCK_DIRECT_MOVE'
     ) AS res;
   `);
-  if (!moveRes.rows[0]?.res) {
-    throw new Error('process_stock_movement a échoué après conversion de stock_movements.id.');
+  if (!moveRes.rows[0]?.res || Number(moveRes.rows[0].res.new_quantity) !== 15) {
+    throw new Error(`process_stock_movement a échoué après renommage v42 : ${JSON.stringify(moveRes.rows[0])}`);
   }
 
-  const allMovsAfterRpc = await dbLegacy.query(`
-    SELECT id, quantity_changed
-    FROM public.stock_movements
-    ORDER BY created_at ASC, id ASC;
+  // Vérifier que les vues de compatibilité (public.products, public.stock_movements, public.movements, public.users) fonctionnent en lecture/écriture pour authenticated et sont interdites à anon
+  const viaCompatViewProducts = await dbLegacy.query(
+    `SELECT id, quantity FROM public.products WHERE id = 'prod-legacy-1';`
+  );
+  if (Number(viaCompatViewProducts.rows[0]?.quantity) !== 15) {
+    throw new Error(
+      `La vue de compatibilité public.products devait refléter quantity=15, reçu : ${JSON.stringify(viaCompatViewProducts.rows)}`
+    );
+  }
+  const viaCompatViewMovs = await dbLegacy.query(
+    `SELECT count(*)::int AS cnt FROM public.stock_movements WHERE product_id = 'prod-legacy-1';`
+  );
+  if (viaCompatViewMovs.rows[0]?.cnt !== 3) {
+    throw new Error(
+      `La vue de compatibilité public.stock_movements devait compter 3 lignes, reçu : ${JSON.stringify(viaCompatViewMovs.rows)}`
+    );
+  }
+
+  // Vérifier qu'anon n'a aucun droit sur la vue de compatibilité public.users ni public.products
+  await expectSqlFailure(
+    () =>
+      dbLegacy.exec(`
+        BEGIN;
+        SET LOCAL ROLE anon;
+        SELECT count(*) FROM public.users;
+        COMMIT;
+      `),
+    'permission denied'
+  );
+  await dbLegacy.exec(`ROLLBACK;`);
+
+  // 10.6 Vérifier diagnostic_installation() sur la base migrée : prefixed_tables = OK, compat_views_present = ATTENTION
+  const diagLegacyWithViews = await dbLegacy.query(`SELECT * FROM public.diagnostic_installation();`);
+  const legPrefixedRow = diagLegacyWithViews.rows.find((r) => r.check_key === 'prefixed_tables');
+  const legCompatViewsRow = diagLegacyWithViews.rows.find((r) => r.check_key === 'compat_views_present');
+  if (legPrefixedRow?.status !== 'OK') {
+    throw new Error(`Sur base migrée, prefixed_tables devait être OK : ${JSON.stringify(legPrefixedRow)}`);
+  }
+  if (legCompatViewsRow?.status !== 'ATTENTION') {
+    throw new Error(
+      `Sur base migrée avec vues de compatibilité, compat_views_present devait être ATTENTION : ${JSON.stringify(legCompatViewsRow)}`
+    );
+  }
+
+  // 10.7 Exécuter 10_drop_compat_views.sql -> supprime les vues de compatibilité sans toucher aux tables physiques core_* / stk_*
+  await dbLegacy.exec(readClientScript('10_drop_compat_views.sql'));
+  const viewsAfterDrop = await dbLegacy.query(`
+    SELECT c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind = 'v';
   `);
-  if (allMovsAfterRpc.rows.length !== 3) {
+  if (viewsAfterDrop.rows.length !== 0) {
     throw new Error(
-      `Attendu 3 lignes dans stock_movements après process_stock_movement, reçu : ${JSON.stringify(allMovsAfterRpc.rows)}`
-    );
-  }
-  const generatedRow = allMovsAfterRpc.rows.find((r) => r.id !== '1' && r.id !== '2');
-  if (!generatedRow || typeof generatedRow.id !== 'string' || generatedRow.id.length < 10) {
-    throw new Error(
-      `La nouvelle ligne insérée par process_stock_movement devait avoir un id texte généré, reçu : ${JSON.stringify(generatedRow)}`
+      `Après 10_drop_compat_views.sql, aucune vue de compatibilité ne devait subsister : ${JSON.stringify(viewsAfterDrop.rows)}`
     );
   }
 
-  // 10.6 Rejeu idempotent de 02, 03, 04, 05, 06, 07, 08
-  for (const s of [
+  const diagLegacyAfterDropViews = await dbLegacy.query(`SELECT * FROM public.diagnostic_installation();`);
+  const legCompatViewsAfterDrop = diagLegacyAfterDropViews.rows.find(
+    (r) => r.check_key === 'compat_views_present'
+  );
+  if (legCompatViewsAfterDrop?.status !== 'OK') {
+    throw new Error(
+      `Après 10_drop_compat_views.sql, compat_views_present devait passer à OK : ${JSON.stringify(legCompatViewsAfterDrop)}`
+    );
+  }
+  const rowsStillIntact = await dbLegacy.query(`SELECT id FROM public.stk_movements;`);
+  if (rowsStillIntact.rows.length !== 3) {
+    throw new Error('10_drop_compat_views.sql ne devait altérer aucune table physique stk_movements.');
+  }
+
+  await dbLegacy.close();
+  results.push('10_legacy_db_rename_compat_views_and_drop_views_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 11 (LOT 1 v40) : Test de bout en bout SQL — process_stock_movement IN puis OUT
+  // par un utilisateur authentifié → stk_movements, stk_stock_levels et stk_products.quantity cohérents
+  // + Contrôle diagnostic_installation() 'stock_movements_rpc'
+  // ---------------------------------------------------------------------------
+  await setAuthUser(UUID_ADMIN);
+  await db.exec(`
+    INSERT INTO public.stk_depots (id, name, type, is_active)
+    VALUES ('dep-lot1-main', 'Magasin Central', 'FIXED', true)
+    ON CONFLICT (name) DO UPDATE SET is_active = true;
+
+    INSERT INTO public.stk_products (id, reference, brand, model, quantity, min_stock_alert, unit_price, store_name)
+    VALUES ('prod-lot1-e2e', 'REF-LOT1-E2E', 'Hilti', 'Perfo TE-30', 0, 2, 420, 'Magasin Central')
+    ON CONFLICT (id) DO UPDATE SET quantity = 0, store_name = 'Magasin Central';
+
+    DELETE FROM public.stk_stock_levels WHERE product_id = 'prod-lot1-e2e';
+    DELETE FROM public.stk_movements WHERE product_id = 'prod-lot1-e2e';
+  `);
+
+  const inRpc = await db.query(`
+    SELECT public.process_stock_movement(
+      'aaaaaaaa-1111-4000-8000-000000000001'::uuid,
+      'prod-lot1-e2e',
+      'Magasin Central',
+      'IN',
+      12,
+      'Réception commande fournisseur',
+      NULL,
+      'Logistique',
+      NULL,
+      'RACK-A1',
+      '{"product_ref":"REF-LOT1-E2E","min_alert":3}'::jsonb,
+      'IN'
+    ) AS res;
+  `);
+  const inJson = inRpc.rows[0]?.res;
+  if (!inJson || inJson.success !== true || Number(inJson.new_quantity) !== 12 || Number(inJson.depot_quantity) !== 12) {
+    throw new Error(`LOT 1 E2E IN inattendu : ${JSON.stringify(inJson)}`);
+  }
+
+  const outRpc = await db.query(`
+    SELECT public.process_stock_movement(
+      'aaaaaaaa-1111-4000-8000-000000000002'::uuid,
+      'prod-lot1-e2e',
+      'Magasin Central',
+      'OUT',
+      5,
+      'Sortie chantier CH-100',
+      'CH-100',
+      'Électricité',
+      NULL,
+      NULL,
+      '{"product_ref":"REF-LOT1-E2E"}'::jsonb,
+      'OUT'
+    ) AS res;
+  `);
+  const outJson = outRpc.rows[0]?.res;
+  if (!outJson || outJson.success !== true || Number(outJson.new_quantity) !== 7 || Number(outJson.depot_quantity) !== 7) {
+    throw new Error(`LOT 1 E2E OUT inattendu : ${JSON.stringify(outJson)}`);
+  }
+
+  const e2eMovs = await db.query(
+    `SELECT movement_type, quantity_changed, depot_name FROM public.stk_movements WHERE product_id = 'prod-lot1-e2e' ORDER BY created_at ASC;`
+  );
+  if (e2eMovs.rows.length !== 2) {
+    throw new Error(`Attendu 2 lignes dans stk_movements pour prod-lot1-e2e, reçu ${e2eMovs.rows.length}`);
+  }
+  const e2eLevel = await db.query(
+    `SELECT quantity, rack_location, min_alert FROM public.stk_stock_levels WHERE product_id = 'prod-lot1-e2e' AND depot_name = 'Magasin Central';`
+  );
+  if (Number(e2eLevel.rows[0]?.quantity) !== 7 || e2eLevel.rows[0]?.rack_location !== 'RACK-A1') {
+    throw new Error(`stk_stock_levels incohérent après IN+OUT : ${JSON.stringify(e2eLevel.rows[0])}`);
+  }
+  const e2eProd = await db.query(`SELECT quantity FROM public.stk_products WHERE id = 'prod-lot1-e2e';`);
+  if (Number(e2eProd.rows[0]?.quantity) !== 7) {
+    throw new Error(`stk_products.quantity incohérent après IN+OUT : ${JSON.stringify(e2eProd.rows[0])}`);
+  }
+
+  const diagCheck = await db.query(
+    `SELECT check_key, status, details FROM public.diagnostic_installation() WHERE check_key = 'stock_movements_rpc';`
+  );
+  if (diagCheck.rows.length !== 1 || diagCheck.rows[0].status !== 'OK') {
+    throw new Error(`Le contrôle stock_movements_rpc de diagnostic_installation() devait être OK : ${JSON.stringify(diagCheck.rows)}`);
+  }
+  results.push('11_lot1_e2e_in_out_and_diagnostic_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 12 (LOT 2 v40) : Une même référence dans 3 dépôts (10, 4 et 0 unités)
+  // ---------------------------------------------------------------------------
+  await setAuthUser(UUID_ADMIN);
+  await db.exec(`
+    UPDATE public.core_license_config
+    SET
+      plan_type = 'pro',
+      max_depots = 10,
+      signed_token = '{"plan":"pro","max_depots":10,"max_references":1000,"signature":"ed25519_valid_sig_lot2_test"}'
+    WHERE id = 'active_license';
+
+    INSERT INTO public.stk_depots (id, name, type, is_active) VALUES
+      ('dep-lot2-a', 'Dépôt A', 'FIXED', true),
+      ('dep-lot2-b', 'Dépôt B', 'FIXED', true),
+      ('dep-lot2-c', 'Dépôt C', 'VEHICLE', true)
+    ON CONFLICT (name) DO UPDATE SET is_active = true;
+
+    INSERT INTO public.stk_products (id, reference, brand, model, quantity, min_stock_alert, unit_price, store_name, shelf_name)
+    VALUES ('prod-lot2-multi', 'REF-LOT2-MULTI', 'Legrand', 'Disjoncteur DNX3 16A', 0, 2, 18.5, 'Dépôt A', 'A-01')
+    ON CONFLICT (id) DO UPDATE SET quantity = 0, store_name = 'Dépôt A', shelf_name = 'A-01';
+
+    DELETE FROM public.stk_stock_levels WHERE product_id = 'prod-lot2-multi';
+    DELETE FROM public.stk_movements WHERE product_id = 'prod-lot2-multi';
+  `);
+
+  await db.query(`
+    SELECT public.process_stock_movement(
+      'bbbbbbbb-2222-4000-8000-000000000001'::uuid,
+      'prod-lot2-multi', 'Dépôt A', 'IN', 10,
+      'Dotation initiale Dépôt A', NULL, 'Logistique', NULL, 'RACK-A01',
+      '{"product_ref":"REF-LOT2-MULTI","min_alert":3}'::jsonb, 'IN'
+    );
+  `);
+  await db.query(`
+    SELECT public.process_stock_movement(
+      'bbbbbbbb-2222-4000-8000-000000000002'::uuid,
+      'prod-lot2-multi', 'Dépôt B', 'IN', 4,
+      'Dotation initiale Dépôt B', NULL, 'Logistique', NULL, 'RACK-B02',
+      '{"product_ref":"REF-LOT2-MULTI","min_alert":2}'::jsonb, 'IN'
+    );
+  `);
+  await db.query(`
+    SELECT public.process_stock_movement(
+      'bbbbbbbb-2222-4000-8000-000000000003'::uuid,
+      'prod-lot2-multi', 'Dépôt C', 'INVENTORY', 0,
+      'Initialisation à 0 Dépôt C', NULL, 'Logistique', NULL, 'VAN-C1',
+      '{"product_ref":"REF-LOT2-MULTI","min_alert":1}'::jsonb, 'INVENTORY'
+    );
+  `);
+
+  const lot2InitialLevels = await db.query(
+    `SELECT depot_name, quantity, rack_location, min_alert FROM public.stk_stock_levels WHERE product_id = 'prod-lot2-multi' ORDER BY depot_name ASC;`
+  );
+  if (
+    lot2InitialLevels.rows.length !== 3 ||
+    Number(lot2InitialLevels.rows[0].quantity) !== 10 ||
+    Number(lot2InitialLevels.rows[1].quantity) !== 4 ||
+    Number(lot2InitialLevels.rows[2].quantity) !== 0
+  ) {
+    throw new Error(`LOT 2 stk_stock_levels initiaux inattendus : ${JSON.stringify(lot2InitialLevels.rows)}`);
+  }
+  const lot2InitialProd = await db.query(`SELECT quantity FROM public.stk_products WHERE id = 'prod-lot2-multi';`);
+  if (Number(lot2InitialProd.rows[0]?.quantity) !== 14) {
+    throw new Error(`LOT 2 stk_products.quantity initial attendu = 14, reçu ${lot2InitialProd.rows[0]?.quantity}`);
+  }
+
+  const outDepotB = await db.query(`
+    SELECT public.process_stock_movement(
+      'bbbbbbbb-2222-4000-8000-000000000004'::uuid,
+      'prod-lot2-multi', 'Dépôt B', 'OUT', 3,
+      'Sortie chantier depuis Dépôt B', 'CH-200', 'Électricité', NULL, NULL,
+      '{"product_ref":"REF-LOT2-MULTI"}'::jsonb, 'OUT'
+    ) AS res;
+  `);
+  const outBJson = outDepotB.rows[0]?.res;
+  if (!outBJson || Number(outBJson.depot_quantity) !== 1 || Number(outBJson.new_quantity) !== 11) {
+    throw new Error(`LOT 2 OUT Dépôt B inattendu : ${JSON.stringify(outBJson)}`);
+  }
+
+  let outBRejected = false;
+  try {
+    await db.query(`
+      SELECT public.process_stock_movement(
+        'bbbbbbbb-2222-4000-8000-000000000005'::uuid,
+        'prod-lot2-multi', 'Dépôt B', 'OUT', 5,
+        'Tentative sortie excessive Dépôt B', 'CH-200', 'Électricité', NULL, NULL,
+        '{"product_ref":"REF-LOT2-MULTI"}'::jsonb, 'OUT'
+      );
+    `);
+  } catch (err) {
+    if (String(err.message || err).includes('Stock insuffisant')) {
+      outBRejected = true;
+    } else {
+      throw err;
+    }
+  }
+  if (!outBRejected) {
+    throw new Error('LOT 2 : la sortie de 5 dans le Dépôt B (stock=1) aurait dû être refusée.');
+  }
+
+  const transferAC = await db.query(`
+    SELECT public.process_stock_movement(
+      'bbbbbbbb-2222-4000-8000-000000000006'::uuid,
+      'prod-lot2-multi', 'Dépôt A', 'TRANSFER', 4,
+      'Réappro véhicule C depuis Dépôt A', NULL, 'Logistique', 'Dépôt C', 'VAN-C1-BAC2',
+      '{"product_ref":"REF-LOT2-MULTI"}'::jsonb, 'TRANSFER'
+    ) AS res;
+  `);
+  const transferJson = transferAC.rows[0]?.res;
+  if (
+    !transferJson ||
+    Number(transferJson.depot_quantity) !== 6 ||
+    Number(transferJson.dest_depot_quantity) !== 4 ||
+    Number(transferJson.new_quantity) !== 11
+  ) {
+    throw new Error(`LOT 2 TRANSFER A -> C inattendu : ${JSON.stringify(transferJson)}`);
+  }
+  results.push('12_lot2_multi_depot_exact_stock_and_transfer_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 13 (LOT 3 v40) : Un audit (mouvement INVENTORY) sur le Dépôt B
+  // met à jour uniquement le Dépôt B et stk_products.quantity
+  // ---------------------------------------------------------------------------
+  const auditDepotB = await db.query(`
+    SELECT public.process_stock_movement(
+      'cccccccc-3333-4000-8000-000000000001'::uuid,
+      'prod-lot2-multi', 'Dépôt B', 'INVENTORY', 9,
+      'Régularisation Inventaire Physique TOT (Audit Dépôt B)', 'INV-REGUL', 'Régularisation Inventaire', NULL, NULL,
+      '{"product_ref":"REF-LOT2-MULTI","audit_id":"audit-lot3-b"}'::jsonb, 'INVENTORY_AUDIT'
+    ) AS res;
+  `);
+  const auditBJson = auditDepotB.rows[0]?.res;
+  if (!auditBJson || Number(auditBJson.depot_quantity) !== 9 || Number(auditBJson.new_quantity) !== 19) {
+    throw new Error(`LOT 3 INVENTORY Dépôt B inattendu : ${JSON.stringify(auditBJson)}`);
+  }
+
+  const levelsAfterAuditB = await db.query(
+    `SELECT depot_name, quantity FROM public.stk_stock_levels WHERE product_id = 'prod-lot2-multi' ORDER BY depot_name ASC;`
+  );
+  if (
+    Number(levelsAfterAuditB.rows[0].quantity) !== 6 ||
+    Number(levelsAfterAuditB.rows[1].quantity) !== 9 ||
+    Number(levelsAfterAuditB.rows[2].quantity) !== 4
+  ) {
+    throw new Error(
+      `LOT 3 : l'audit sur le Dépôt B ne devait modifier ni A (6) ni C (4), reçu : ${JSON.stringify(levelsAfterAuditB.rows)}`
+    );
+  }
+  const prodAfterAuditB = await db.query(`SELECT quantity FROM public.stk_products WHERE id = 'prod-lot2-multi';`);
+  if (Number(prodAfterAuditB.rows[0]?.quantity) !== 19) {
+    throw new Error(`LOT 3 : stk_products.quantity attendu = 19 après audit Dépôt B, reçu ${prodAfterAuditB.rows[0]?.quantity}`);
+  }
+  results.push('13_lot3_inventory_audit_depot_b_isolated_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 14 (B1 v41) : Base existante avec colonnes manquantes
+  // ---------------------------------------------------------------------------
+  await db.exec(`
+    ALTER TABLE public.stk_products DROP COLUMN IF EXISTS updated_at CASCADE;
+    ALTER TABLE public.stk_stock_levels DROP COLUMN IF EXISTS updated_at CASCADE;
+    ALTER TABLE public.stk_stock_levels DROP COLUMN IF EXISTS rack_location CASCADE;
+    ALTER TABLE public.stk_depots DROP COLUMN IF EXISTS phone CASCADE;
+  `);
+
+  const replayScripts02To08 = [
     '02_rls_hardening.sql',
     '03_rpc_stock_and_orders.sql',
     '04_mouvements_et_depots_vehicules.sql',
     '05_rpc_admin_users.sql',
     '06_install_additional_roles.sql',
-    '07_app_compat.sql',
     '08_print_jobs.sql',
-  ]) {
-    await dbLegacy.exec(readClientScript(s));
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
+    '07_app_compat.sql',
+  ];
+
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of replayScripts02To08) {
+      await db.exec(readClientScript(s));
+    }
   }
 
-  const rowsAfterReplay = await dbLegacy.query(`SELECT id FROM public.stock_movements;`);
-  if (rowsAfterReplay.rows.length !== 3) {
-    throw new Error('Le rejeu idempotent de 02..08 a altéré les lignes de stock_movements.');
+  const recreatedCols = await db.query(`
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND (
+        (table_name = 'stk_products' AND column_name = 'updated_at')
+        OR (table_name = 'stk_stock_levels' AND column_name IN ('updated_at', 'rack_location'))
+        OR (table_name = 'stk_depots' AND column_name = 'phone')
+      )
+    ORDER BY table_name ASC, column_name ASC;
+  `);
+  if (recreatedCols.rows.length !== 4) {
+    throw new Error(
+      `B1 v41 : les 4 colonnes supprimées devaient être recréées par 02..08, reçu : ${JSON.stringify(recreatedCols.rows)}`
+    );
+  }
+  results.push('14_v41_missing_columns_recreated_and_idempotent_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 15 (B2 v41) : Déclencheurs hérités qui comptent les mouvements en double
+  // ---------------------------------------------------------------------------
+  await db.exec(`
+    CREATE OR REPLACE FUNCTION public.process_stock_movement()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      UPDATE public.stk_products
+      SET quantity = COALESCE(quantity, 0) + COALESCE(NEW.quantity_changed, 0)
+      WHERE id = NEW.product_id;
+      RETURN NEW;
+    END;
+    $$;
+
+    CREATE TRIGGER trg_process_stock_movement
+      AFTER INSERT ON public.stk_movements
+      FOR EACH ROW
+      EXECUTE FUNCTION public.process_stock_movement();
+
+    CREATE OR REPLACE FUNCTION public.fn_legacy_custom_double_count()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      UPDATE public.stk_products
+      SET quantity = COALESCE(quantity, 0) + COALESCE(NEW.quantity_changed, 0)
+      WHERE id = NEW.product_id;
+      RETURN NEW;
+    END;
+    $$;
+
+    CREATE TRIGGER trg_legacy_custom_double_count
+      AFTER INSERT ON public.stk_movements
+      FOR EACH ROW
+      EXECUTE FUNCTION public.fn_legacy_custom_double_count();
+  `);
+
+  const diagBeforeTriggerPurge = await db.query(
+    `SELECT check_key, status, details FROM public.diagnostic_installation() WHERE check_key = 'unknown_stock_triggers';`
+  );
+  if (
+    diagBeforeTriggerPurge.rows.length !== 1 ||
+    diagBeforeTriggerPurge.rows[0].status !== 'ERREUR' ||
+    !diagBeforeTriggerPurge.rows[0].details.includes('trg_process_stock_movement') ||
+    !diagBeforeTriggerPurge.rows[0].details.includes('trg_legacy_custom_double_count')
+  ) {
+    throw new Error(
+      `B2 v41 : diagnostic_installation() devait signaler ERREUR sur unknown_stock_triggers avant purge : ${JSON.stringify(diagBeforeTriggerPurge.rows)}`
+    );
   }
 
-  await dbLegacy.close();
-  results.push('10_legacy_identity_bigint_id_conversion_and_idempotent_ok');
+  for (const s of replayScripts02To08) {
+    await db.exec(readClientScript(s));
+  }
+
+  const diagAfterTriggerPurge = await db.query(
+    `SELECT check_key, status, details FROM public.diagnostic_installation() WHERE check_key IN ('unknown_stock_triggers', 'stock_consistency');`
+  );
+  for (const row of diagAfterTriggerPurge.rows) {
+    if (row.status !== 'OK') {
+      throw new Error(
+        `B2 v41 : le contrôle ${row.check_key} devait être OK après purge des déclencheurs hérités, reçu : ${JSON.stringify(row)}`
+      );
+    }
+  }
+
+  await setAuthUser(UUID_ADMIN);
+  const qtyBeforeIn1 = await db.query(
+    `SELECT quantity FROM public.stk_products WHERE id = 'prod-lot1-e2e';`
+  );
+  const startQty = Number(qtyBeforeIn1.rows[0]?.quantity ?? 0);
+
+  await db.query(`
+    SELECT public.process_stock_movement(
+      'eeeeeeee-5555-4000-8000-000000000001'::uuid,
+      'prod-lot1-e2e',
+      'Magasin Central',
+      'IN',
+      1,
+      'Vérification absence double comptage B2 v41',
+      NULL,
+      'Logistique',
+      NULL,
+      NULL,
+      '{"product_ref":"REF-LOT1-E2E"}'::jsonb,
+      'IN'
+    );
+  `);
+
+  const qtyAfterIn1 = await db.query(
+    `SELECT quantity FROM public.stk_products WHERE id = 'prod-lot1-e2e';`
+  );
+  const endQty = Number(qtyAfterIn1.rows[0]?.quantity ?? 0);
+  if (endQty !== startQty + 1) {
+    throw new Error(
+      `B2 v41 : après un mouvement IN de 1, stk_products.quantity devait augmenter de 1 (${startQty} -> ${startQty + 1}), reçu ${endQty}`
+    );
+  }
+  results.push('15_v41_legacy_double_count_triggers_purged_ok');
+
+  // ---------------------------------------------------------------------------
+  // TEST 16 (LOT 4 v43) : Historique des audits (stk_inventory_audits & stk_inventory_audit_items)
+  // - Admin (rôle 0) et utilisateur avec perm_menu_inventory_audit / perm_inventory_validate écrivent et lisent
+  // - anon refusé (zéro droit)
+  // - Opérateur sans perm_menu_inventory_audit ni perm_inventory_validate ne lit pas et n'écrit pas
+  // - UPDATE / DELETE réservés au rôle 0
+  // - Diagnostic tables_without_rls_policies détecte une table avec RLS activé et 0 règle
+  // - fix_inventory_audits.sql rejouable 2 fois
+  // ---------------------------------------------------------------------------
+  const UUID_AUDITOR = '00000000-0000-4000-8000-000000000050';
+  await db.exec(`
+    INSERT INTO public.core_roles (id, name, permissions)
+    VALUES (30, 'Role Auditeur', ARRAY['perm_menu_inventory_audit']::text[])
+    ON CONFLICT (id) DO UPDATE SET permissions = EXCLUDED.permissions;
+
+    INSERT INTO auth.users (id, email)
+    VALUES ('${UUID_AUDITOR}', 'auditor@test.local')
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO public.core_users (id, name, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
+    VALUES ('user-auditor', 'Auditeur Stock', 'auditor@test.local', '', 30, false, ARRAY['Dépôt Nord']::text[], false, '${UUID_AUDITOR}')
+    ON CONFLICT (id) DO UPDATE SET role_id = 30, auth_user_id = EXCLUDED.auth_user_id, is_blocked = false;
+  `);
+
+  // 16.1 Admin (rôle 0) écrit et lit dans stk_inventory_audits et stk_inventory_audit_items
+  await db.exec(`
+    BEGIN;
+    SET LOCAL ROLE authenticated;
+    SELECT set_config('request.jwt.claim.sub', '${UUID_ADMIN}', true);
+    SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+
+    INSERT INTO public.stk_inventory_audits (
+      id, depot_name, auditor_id, auditor_name, status, items_counted, items_with_diff, total_diff_cost
+    ) VALUES (
+      'AUD-V43-ADMIN-1', 'Magasin Central', 'user-admin', 'Super Admin', 'COMPLETED', 2, 1, -18.5
+    );
+
+    INSERT INTO public.stk_inventory_audit_items (
+      id, audit_id, product_id, product_ref, product_name, theoretical_qty, physical_count, difference, unit_price, diff_cost
+    ) VALUES (
+      'AUD-V43-ADMIN-1-IT1', 'AUD-V43-ADMIN-1', 'prod-lot1-e2e', 'REF-LOT1-E2E', 'Perfo TE-30', 10, 9, -1, 18.5, -18.5
+    );
+    COMMIT;
+  `);
+
+  // 16.2 Utilisateur avec perm_menu_inventory_audit lit l'audit et peut en insérer un, mais ne peut ni UPDATE ni DELETE
+  await db.exec(`
+    BEGIN;
+    SET LOCAL ROLE authenticated;
+    SELECT set_config('request.jwt.claim.sub', '${UUID_AUDITOR}', true);
+    SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+
+    INSERT INTO public.stk_inventory_audits (
+      id, depot_name, auditor_id, auditor_name, status, items_counted, items_with_diff, total_diff_cost
+    ) VALUES (
+      'AUD-V43-AUDITOR-1', 'Dépôt Nord', 'user-auditor', 'Auditeur Stock', 'COMPLETED', 1, 0, 0
+    );
+    COMMIT;
+  `);
+
+  await db.exec(`
+    SET ROLE authenticated;
+    SELECT set_config('request.jwt.claim.sub', '${UUID_AUDITOR}', false);
+    SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+  `);
+  const auditorReadRes = await db.query(
+    `SELECT id FROM public.stk_inventory_audits ORDER BY id ASC;`
+  );
+  if (auditorReadRes.rows.length !== 2) {
+    throw new Error(
+      `L'auditeur avec perm_menu_inventory_audit devait lire les 2 audits, reçu : ${JSON.stringify(auditorReadRes.rows)}`
+    );
+  }
+  const auditorDelRes = await db.query(
+    `DELETE FROM public.stk_inventory_audits WHERE id = 'AUD-V43-ADMIN-1' RETURNING id;`
+  );
+  if (auditorDelRes.rows.length !== 0) {
+    throw new Error(`Un auditeur non rôle 0 ne doit pas pouvoir supprimer un audit.`);
+  }
+  await db.exec(`RESET ROLE;`);
+
+  // 16.3 Opérateur sans droit (UUID_NO_PERM : n'a que perm_inventory_view) ne lit rien (0 ligne) et ne peut pas insérer
+  await db.exec(`
+    SET ROLE authenticated;
+    SELECT set_config('request.jwt.claim.sub', '${UUID_NO_PERM}', false);
+    SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+  `);
+  const noPermReadAudits = await db.query(`SELECT id FROM public.stk_inventory_audits;`);
+  const noPermReadItems = await db.query(`SELECT id FROM public.stk_inventory_audit_items;`);
+  if (noPermReadAudits.rows.length !== 0 || noPermReadItems.rows.length !== 0) {
+    throw new Error(
+      `Un opérateur sans perm_menu_inventory_audit ni perm_inventory_validate ne doit lire aucun audit, reçu : ${noPermReadAudits.rows.length} audits, ${noPermReadItems.rows.length} items`
+    );
+  }
+  await expectSqlFailure(
+    () =>
+      db.query(`
+        INSERT INTO public.stk_inventory_audits (id, depot_name, auditor_id, auditor_name, status)
+        VALUES ('AUD-FORBIDDEN', 'Dépôt Nord', 'user-no-perm', 'Sans Droit', 'COMPLETED');
+      `),
+    'row-level security'
+  );
+  await db.exec(`RESET ROLE;`);
+
+  // 16.4 anon refusé sur stk_inventory_audits et stk_inventory_audit_items
+  await expectSqlFailure(
+    () =>
+      db.exec(`
+        BEGIN;
+        SET LOCAL ROLE anon;
+        SELECT count(*) FROM public.stk_inventory_audits;
+        COMMIT;
+      `),
+    'permission denied'
+  );
+  await db.exec(`ROLLBACK;`);
+
+  await expectSqlFailure(
+    () =>
+      db.exec(`
+        BEGIN;
+        SET LOCAL ROLE anon;
+        SELECT count(*) FROM public.stk_inventory_audit_items;
+        COMMIT;
+      `),
+    'permission denied'
+  );
+  await db.exec(`ROLLBACK;`);
+
+  // 16.5 Contrôle diagnostic tables_without_rls_policies (« Tables sans règle d'accès »)
+  await setAuthUser(UUID_ADMIN);
+  const diagBeforeDropAuditPol = await db.query(
+    `SELECT check_key, check_label, status, details FROM public.diagnostic_installation() WHERE check_key = 'tables_without_rls_policies';`
+  );
+  if (diagBeforeDropAuditPol.rows[0]?.status !== 'OK') {
+    throw new Error(
+      `tables_without_rls_policies devait être OK, reçu : ${JSON.stringify(diagBeforeDropAuditPol.rows[0])}`
+    );
+  }
+
+  // Supprimer les politiques de stk_inventory_audits pour simuler une table avec RLS activé et 0 règle
+  await db.exec(`
+    DROP POLICY IF EXISTS "Authenticated read stk_inventory_audits" ON public.stk_inventory_audits;
+    DROP POLICY IF EXISTS "Authenticated insert stk_inventory_audits" ON public.stk_inventory_audits;
+    DROP POLICY IF EXISTS "SuperAdmin update stk_inventory_audits" ON public.stk_inventory_audits;
+    DROP POLICY IF EXISTS "SuperAdmin delete stk_inventory_audits" ON public.stk_inventory_audits;
+  `);
+
+  const diagWithoutAuditPol = await db.query(
+    `SELECT check_key, check_label, status, details FROM public.diagnostic_installation() WHERE check_key = 'tables_without_rls_policies';`
+  );
+  if (
+    diagWithoutAuditPol.rows[0]?.status !== 'ERREUR' ||
+    !String(diagWithoutAuditPol.rows[0]?.details || '').includes('stk_inventory_audits')
+  ) {
+    throw new Error(
+      `tables_without_rls_policies devait signaler ERREUR sur stk_inventory_audits quand 0 règle RLS : ${JSON.stringify(diagWithoutAuditPol.rows[0])}`
+    );
+  }
+
+  // Rejouer fix_inventory_audits.sql deux fois d'affilée (idempotent) -> rétablit les règles RLS
+  await db.exec(readClientScript('fix_inventory_audits.sql'));
+  await db.exec(readClientScript('fix_inventory_audits.sql'));
+
+  const diagAfterFixAudit = await db.query(
+    `SELECT check_key, check_label, status, details FROM public.diagnostic_installation() WHERE check_key = 'tables_without_rls_policies';`
+  );
+  if (diagAfterFixAudit.rows[0]?.status !== 'OK') {
+    throw new Error(
+      `Après fix_inventory_audits.sql, tables_without_rls_policies devait repasser à OK : ${JSON.stringify(diagAfterFixAudit.rows[0])}`
+    );
+  }
+  results.push('16_v43_inventory_audits_rls_and_tables_without_policies_ok');
 
   await db.close();
   return results;
 }
 
+export async function runLegacySchemaSqlTests() {
+  const results = [];
+  const installScripts = [
+    '00_complete_tot_stock_schema.sql',
+    '09_core_prefixes.sql',
+    '01_auth_link.sql',
+    '01b_migrate_users_id_to_text.sql',
+    '02_rls_hardening.sql',
+    '03_rpc_stock_and_orders.sql',
+    '04_mouvements_et_depots_vehicules.sql',
+    '05_rpc_admin_users.sql',
+    '06_install_additional_roles.sql',
+    '08_print_jobs.sql',
+    '11_suite_tables.sql',
+    '12_user_preferences.sql',
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
+    '07_app_compat.sql',
+  ];
+
+  // ---------------------------------------------------------------------------
+  // (a) Table héritée `categories` avec `id text` sans séquence (rejeu 2 fois, données conservées)
+  // ---------------------------------------------------------------------------
+  const dbCatText = new PGlite();
+  await dbCatText.exec(AUTH_STUB_SQL);
+  await dbCatText.exec(`
+    CREATE TABLE public.categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+    INSERT INTO public.categories (id, name)
+    VALUES ('cat-legacy-txt-1', 'Outillage Manuel');
+
+    CREATE TABLE public.sub_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT
+    );
+    INSERT INTO public.sub_categories (id, name, category)
+    VALUES ('sub-legacy-1', 'Tournevis Isolés', 'Électricité');
+  `);
+
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of installScripts) {
+      await dbCatText.exec(readClientScript(s));
+    }
+  }
+
+  const catTextRows = await dbCatText.query(
+    `SELECT id, name FROM public.stk_categories ORDER BY name ASC;`
+  );
+  const catTextNames = catTextRows.rows.map((r) => r.name);
+  if (!catTextNames.includes('Outillage Manuel') || !catTextNames.includes('Électricité')) {
+    throw new Error(
+      `(a) categories id text : données attendues ['Électricité', 'Outillage Manuel'], reçu ${JSON.stringify(catTextRows.rows)}`
+    );
+  }
+  const preservedTxtRow = catTextRows.rows.find((r) => r.name === 'Outillage Manuel');
+  if (preservedTxtRow?.id !== 'cat-legacy-txt-1') {
+    throw new Error(
+      `(a) categories id text : l'identifiant historique 'cat-legacy-txt-1' devait être conservé, reçu ${JSON.stringify(preservedTxtRow)}`
+    );
+  }
+  await dbCatText.close();
+  results.push('v44_lot1_a_legacy_categories_id_text_no_seq_two_passes_ok');
+
+  // ---------------------------------------------------------------------------
+  // (b) Table héritée `categories` avec `bigserial` (séquence sous l'ancien nom categories_id_seq)
+  // ---------------------------------------------------------------------------
+  const dbCatBigserial = new PGlite();
+  await dbCatBigserial.exec(AUTH_STUB_SQL);
+  await dbCatBigserial.exec(`
+    CREATE TABLE public.categories (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE
+    );
+    INSERT INTO public.categories (name) VALUES ('Plomberie'), ('CVC');
+  `);
+
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of installScripts) {
+      await dbCatBigserial.exec(readClientScript(s));
+    }
+  }
+
+  const catSerialRows = await dbCatBigserial.query(
+    `SELECT id, name FROM public.stk_categories ORDER BY id ASC;`
+  );
+  if (
+    catSerialRows.rows.length < 2 ||
+    catSerialRows.rows[0].name !== 'Plomberie' ||
+    catSerialRows.rows[1].name !== 'CVC'
+  ) {
+    throw new Error(
+      `(b) categories bigserial : données non conservées : ${JSON.stringify(catSerialRows.rows)}`
+    );
+  }
+  const seqPrivRes = await dbCatBigserial.query(`
+    SELECT pg_get_serial_sequence('public.stk_categories', 'id') AS seq_name,
+           has_sequence_privilege('authenticated', pg_get_serial_sequence('public.stk_categories', 'id'), 'USAGE, SELECT') AS auth_has_priv;
+  `);
+  if (!seqPrivRes.rows[0]?.seq_name || seqPrivRes.rows[0]?.auth_has_priv !== true) {
+    throw new Error(
+      `(b) categories bigserial : droits séquence manquants pour authenticated : ${JSON.stringify(seqPrivRes.rows[0])}`
+    );
+  }
+  await dbCatBigserial.close();
+  results.push('v44_lot1_b_legacy_categories_bigserial_two_passes_ok');
+
+  // ---------------------------------------------------------------------------
+  // (c) Base neuve (rejeu 2 fois)
+  // ---------------------------------------------------------------------------
+  const dbCatFresh = new PGlite();
+  await dbCatFresh.exec(AUTH_STUB_SQL);
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of installScripts) {
+      await dbCatFresh.exec(readClientScript(s));
+    }
+  }
+  await dbCatFresh.exec(`INSERT INTO public.stk_categories (name) VALUES ('EPI & Sécurité');`);
+  const catFreshRows = await dbCatFresh.query(
+    `SELECT id, name FROM public.stk_categories WHERE name = 'EPI & Sécurité';`
+  );
+  if (catFreshRows.rows.length !== 1) {
+    throw new Error(`(c) base neuve : insertion dans stk_categories en échec.`);
+  }
+  await dbCatFresh.close();
+  results.push('v44_lot1_c_fresh_db_categories_two_passes_ok');
+
+  // ---------------------------------------------------------------------------
+  // (d) Test « base héritée complète » :
+  // Création préalable des 26 anciennes tables renommées par les scripts 09 et 11
+  // sous leur ancien nom avec des colonnes minimales et des types d'identifiants variés
+  // (texte, entier / bigserial, uuid), puis rejeu complet 2 fois : 0 erreur.
+  // ---------------------------------------------------------------------------
+  const dbFullLegacy = new PGlite();
+  await dbFullLegacy.exec(AUTH_STUB_SQL);
+
+  await dbFullLegacy.exec(`
+    -- 1. Tables avec identifiant ENTIER / BIGSERIAL
+    CREATE TABLE public.roles (id BIGINT PRIMARY KEY, name TEXT);
+    INSERT INTO public.roles (id, name) VALUES (0, 'Super Admin'), (1, 'Admin');
+
+    CREATE TABLE public.departments (id BIGSERIAL PRIMARY KEY, name TEXT);
+    INSERT INTO public.departments (name) VALUES ('Électricité');
+
+    CREATE TABLE public.users (id BIGSERIAL PRIMARY KEY, name TEXT);
+    INSERT INTO public.users (name) VALUES ('Ancien Utilisateur');
+
+    CREATE TABLE public.stock_levels (id BIGSERIAL PRIMARY KEY, product_id TEXT);
+    CREATE TABLE public.stock_movements (id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, product_id TEXT, movement_type TEXT, quantity_changed NUMERIC);
+    CREATE TABLE public.movements (id BIGSERIAL PRIMARY KEY, product_id TEXT);
+    CREATE TABLE public.audit_logs (id BIGSERIAL PRIMARY KEY, action TEXT);
+    CREATE TABLE public.login_logs (id BIGSERIAL PRIMARY KEY, user_name TEXT);
+    CREATE TABLE public.sub_categories (id BIGSERIAL PRIMARY KEY, name TEXT);
+    INSERT INTO public.sub_categories (name) VALUES ('Disjoncteurs');
+    CREATE TABLE public.app_compat (id INT PRIMARY KEY);
+
+    -- 2. Tables avec identifiant TEXTE (sans séquence)
+    CREATE TABLE public.categories (id TEXT PRIMARY KEY, name TEXT);
+    INSERT INTO public.categories (id, name) VALUES ('cat-txt-01', 'Câblage');
+
+    CREATE TABLE public.projects (id TEXT PRIMARY KEY, project_number TEXT);
+    CREATE TABLE public.company_settings (id TEXT PRIMARY KEY, value TEXT);
+    INSERT INTO public.company_settings (id, value) VALUES ('default_company', 'TOT Legacy');
+
+    CREATE TABLE public.app_settings (id TEXT PRIMARY KEY, value TEXT);
+    INSERT INTO public.app_settings (id, value) VALUES ('default_app', 'TOT App');
+
+    CREATE TABLE public.license_config (id INT PRIMARY KEY, plan TEXT);
+    INSERT INTO public.license_config (id, plan) VALUES (1, 'free');
+
+    CREATE TABLE public.depots (id TEXT PRIMARY KEY, name TEXT);
+    INSERT INTO public.depots (id, name) VALUES ('dep-old-1', 'Dépôt Historique');
+
+    CREATE TABLE public.products (id TEXT PRIMARY KEY, reference TEXT);
+    INSERT INTO public.products (id, reference) VALUES ('prd-old-1', 'REF-OLD-1');
+
+    CREATE TABLE public.material_orders (id TEXT PRIMARY KEY, order_number TEXT);
+    CREATE TABLE public.material_order_items (id INT PRIMARY KEY);
+    CREATE TABLE public.inventory_audits (id TEXT PRIMARY KEY);
+    CREATE TABLE public.inventory_audit_items (id TEXT PRIMARY KEY);
+    CREATE TABLE public.order_preparations_log (id TEXT PRIMARY KEY);
+
+    -- 3. Tables avec identifiant UUID
+    CREATE TABLE public.processed_operations (operation_id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+    CREATE TABLE public.files (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+    CREATE TABLE public.print_stations (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+    CREATE TABLE public.print_jobs (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+  `);
+
+  for (let pass = 1; pass <= 2; pass += 1) {
+    for (const s of installScripts) {
+      await dbFullLegacy.exec(readClientScript(s));
+    }
+  }
+
+  // Vérifier qu'aucune des 26 anciennes tables n'est restée une table physique (toutes renommées en core_* / stk_*)
+  const remainingOldTables = await dbFullLegacy.query(`
+    SELECT c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND c.relname IN (
+        'roles', 'departments', 'users', 'projects',
+        'company_settings', 'app_settings', 'license_config', 'app_compat',
+        'audit_logs', 'login_logs', 'processed_operations', 'files',
+        'sub_categories', 'categories', 'depots', 'products',
+        'stock_levels', 'stock_movements', 'movements',
+        'material_orders', 'material_order_items',
+        'print_stations', 'print_jobs',
+        'inventory_audits', 'inventory_audit_items', 'order_preparations_log'
+      );
+  `);
+  if (remainingOldTables.rows.length !== 0) {
+    throw new Error(
+      `Certaines anciennes tables n'ont pas été renommées : ${JSON.stringify(remainingOldTables.rows)}`
+    );
+  }
+
+  const fullDiag = await dbFullLegacy.query(`SELECT * FROM public.diagnostic_installation();`);
+  const fullKo = fullDiag.rows.filter(
+    (r) => r.check_key !== 'super_admin_linked' && (r.status === 'KO' || r.status === 'ERREUR')
+  );
+  if (fullKo.length > 0) {
+    throw new Error(
+      `diagnostic_installation() en erreur sur base héritée complète : ${JSON.stringify(fullKo)}`
+    );
+  }
+
+  await dbFullLegacy.close();
+  results.push('v44_lot1_d_full_legacy_26_tables_varied_types_two_passes_ok');
+
+  return results;
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  runPrintJobsSqlTests()
-    .then((res) => {
-      console.log('✅ SQL Tests (08_print_jobs.sql & RLS purge v37) passed:', res);
+  Promise.all([runPrintJobsSqlTests(), runLegacySchemaSqlTests()])
+    .then(([res1, res2]) => {
+      console.log('✅ SQL Tests (v42/v44 core_/stk_ prefixes, legacy schemas, print_jobs & RLS purge) passed:', [
+        ...res1,
+        ...res2,
+      ]);
     })
     .catch((err) => {
       console.error('❌ SQL Tests failed:', err);

@@ -24,6 +24,11 @@ import {
   prewarmSmartphoneCameraStream,
   attachStreamToVideoElement,
 } from '../utils/qrCodeHelper';
+import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../services/unsavedChangesGuard';
 
 export const ProductFormModal: React.FC = () => {
   const {
@@ -77,8 +82,14 @@ export const ProductFormModal: React.FC = () => {
   const scanVideoRef = useRef<HTMLVideoElement | null>(null);
   const scanStreamRef = useRef<MediaStream | null>(null);
   const scanAnimFrameRef = useRef<number | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const refInputRef = useRef<HTMLInputElement | null>(null);
+  const brandInputRef = useRef<HTMLInputElement | null>(null);
+
+  const formInitKey = productFormState.open ? String(productFormState.product?.id ?? 'new') : '';
 
   useEffect(() => {
+    if (!productFormState.open) return;
     if (productFormState.product) {
       const p = productFormState.product;
       setReference(p.reference || '');
@@ -122,7 +133,12 @@ export const ProductFormModal: React.FC = () => {
       setMinStockAlert('2');
     }
     setErrorMsg('');
-  }, [productFormState.product, depots]);
+    scrollToAndFocusForm(
+      formRef.current,
+      productFormState.product ? brandInputRef.current : refInputRef.current
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productFormState.open, formInitKey]);
 
   // Real-time uniqueness validation across Reference, Manufacturer Ref (OEM), Barcode, and QR Code
   const uniquenessCheck = useMemo(() => {
@@ -274,34 +290,14 @@ export const ProductFormModal: React.FC = () => {
     };
   }, [scanTargetField, reference, manufacturerRef, barcode, qrCode, products, isEdit, productFormState.product, language]);
 
-  // Keyboard shortcut: close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && productFormState.open) {
-        if (isScanningBarcode) {
-          setScanTargetField(null);
-        } else if (confirmDeleteOpen) {
-          setConfirmDeleteOpen(false);
-        } else {
-          setProductFormState({ open: false, product: null });
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [productFormState.open, isScanningBarcode, confirmDeleteOpen, setProductFormState]);
-
-  if (!productFormState.open) return null;
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performSaveProduct = async (): Promise<boolean> => {
     if (isQuotaReached) {
       setErrorMsg(`${t('prod_form_quota_reached')} (${products.length}/${maxReferences} ${t('common_references')}).`);
-      return;
+      return false;
     }
     if (!reference.trim() || !brand.trim() || !model.trim()) {
       setErrorMsg(t('prod_form_required_error'));
-      return;
+      return false;
     }
 
     if (!uniquenessCheck.valid) {
@@ -309,7 +305,7 @@ export const ProductFormModal: React.FC = () => {
         uniquenessCheck.error ||
           (tr(language, 'Doublon détecté : chaque référence, code-barres, QR Code et identification fabricant doit être unique.', 'Duplicate detected: every reference, barcode, QR Code, and manufacturer ID must be unique.'))
       );
-      return;
+      return false;
     }
 
     const payload: Partial<Product> = {
@@ -343,19 +339,75 @@ export const ProductFormModal: React.FC = () => {
     });
     if (ok) {
       setProductFormState({ open: false, product: null });
-    } else {
-      setErrorMsg(
-        uniquenessCheck.error ||
-          (tr(language, "Impossible d'enregistrer l'article : vérifiez l'unicité de la référence, du code-barres, du QR Code et de l'identification fabricant.", 'Unable to save product: please check uniqueness of reference, barcode, QR Code, and manufacturer ID.'))
-      );
+      return true;
     }
+    setErrorMsg(
+      uniquenessCheck.error ||
+        (tr(language, "Impossible d'enregistrer l'article : vérifiez l'unicité de la référence, du code-barres, du QR Code et de l'identification fabricant.", 'Unable to save product: please check uniqueness of reference, barcode, QR Code, and manufacturer ID.'))
+    );
+    return false;
+  };
+
+  const isProductFormDirty = Boolean(
+    productFormState.open &&
+      (isEdit ||
+        reference.trim() ||
+        manufacturerRef.trim() ||
+        barcode.trim() ||
+        qrCode.trim() ||
+        brand.trim() ||
+        model.trim() ||
+        description.trim() ||
+        tags.trim())
+  );
+
+  useRegisterUnsavedForm({
+    id: 'mobile-product-form-modal',
+    isDirty: isProductFormDirty,
+    label: isEdit
+      ? `${t('prod_form_edit_title')} (${reference || productFormState.product?.reference || ''})`
+      : t('prod_form_create_title'),
+    onSave: performSaveProduct,
+    onDiscard: () => {
+      setProductFormState({ open: false, product: null });
+    },
+  });
+
+  const handleRequestClose = () => {
+    requestGuardedNavigation(() => {
+      setProductFormState({ open: false, product: null });
+    }, ['mobile-product-form-modal']);
+  };
+
+  // Keyboard shortcut: close on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && productFormState.open) {
+        if (isScanningBarcode) {
+          setScanTargetField(null);
+        } else if (confirmDeleteOpen) {
+          setConfirmDeleteOpen(false);
+        } else {
+          handleRequestClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [productFormState.open, isScanningBarcode, confirmDeleteOpen, isProductFormDirty]);
+
+  if (!productFormState.open) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSaveProduct();
   };
 
   return (
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setProductFormState({ open: false, product: null });
+          handleRequestClose();
         }
       }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/75 backdrop-blur-sm animate-fadeIn"
@@ -376,7 +428,7 @@ export const ProductFormModal: React.FC = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setProductFormState({ open: false, product: null });
+              handleRequestClose();
             }}
             className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all cursor-pointer active:scale-95 shadow-xs shrink-0"
             title={t('common_close')}
@@ -421,7 +473,7 @@ export const ProductFormModal: React.FC = () => {
         )}
 
         {/* Scrollable Form */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto py-3 space-y-3 pr-1 text-xs">
+        <form ref={formRef} onSubmit={handleSubmit} className="flex-1 overflow-y-auto py-3 space-y-3 pr-1 text-xs">
           <div>
             <label className="font-bold block text-slate-700 dark:text-slate-300 mb-1">
               {t('prod_form_category_label')}
@@ -474,6 +526,7 @@ export const ProductFormModal: React.FC = () => {
                   )}
                 </label>
                 <input
+                  ref={refInputRef}
                   type="text"
                   value={reference}
                   onChange={(e) => {
@@ -657,6 +710,7 @@ export const ProductFormModal: React.FC = () => {
                 {t('prod_form_brand_label')}
               </label>
               <input
+                ref={brandInputRef}
                 type="text"
                 value={brand}
                 onChange={(e) => setBrand(e.target.value)}
@@ -904,7 +958,7 @@ export const ProductFormModal: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => setProductFormState({ open: false, product: null })}
+              onClick={handleRequestClose}
               className="py-3 px-4 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs transition"
             >
               {t('common_cancel')}

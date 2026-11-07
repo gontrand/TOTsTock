@@ -3,6 +3,11 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { Department, Project } from '../types';
 import {
+  requestGuardedNavigation,
+  scrollToAndFocusForm,
+  useRegisterUnsavedForm,
+} from '../services/unsavedChangesGuard';
+import {
   X,
   Building2,
   Edit2,
@@ -196,11 +201,9 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setSelectedProjDeputyToAdd('');
   };
 
-  // Handle Department Submit
-  const handleDepSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!depName.trim()) return;
-    await saveDepartment({
+  const performSaveDep = async (): Promise<boolean> => {
+    if (!depName.trim()) return false;
+    const ok = await saveDepartment({
       id: editingDepId || undefined,
       name: depName.trim(),
       manager_id: depManagerId ? Number(depManagerId) : null,
@@ -210,7 +213,69 @@ export const DepartmentsProjectsModal: React.FC = () => {
       require_order_approval: depRequireOrderApproval,
       order_approval_threshold: depRequireOrderApproval ? parseFloat(depOrderApprovalThreshold) || 0 : undefined,
     });
+    if (!ok) return false;
     handleResetDepForm();
+    return true;
+  };
+
+  const performSaveProj = async (): Promise<boolean> => {
+    if (!projNumber.trim() || !projName.trim()) return false;
+    const ok = await saveProject({
+      id: editingProjId || undefined,
+      department_id: projDepId ? Number(projDepId) : (departments[0]?.id || 1),
+      project_number: projNumber.trim(),
+      project_name: projName.trim(),
+      manager_id: projManagerId ? Number(projManagerId) : null,
+      deputy_manager_ids: projDeputyIds,
+    });
+    if (!ok) return false;
+    handleResetProjForm();
+    return true;
+  };
+
+  const isDepFormDirty =
+    departmentsProjectsModal.open &&
+    activeTab === 'deps' &&
+    (editingDepId !== null || Boolean(depName.trim()));
+
+  const isProjFormDirty =
+    departmentsProjectsModal.open &&
+    activeTab === 'projects' &&
+    (editingProjId !== null || Boolean(projNumber.trim() || projName.trim()));
+
+  useRegisterUnsavedForm({
+    id: 'mobile-depproj-modal',
+    isDirty: isDepFormDirty || isProjFormDirty,
+    label: isDepFormDirty
+      ? editingDepId !== null
+        ? tr(language, `Modification du département (${depName})`, `Editing department (${depName})`, `Afdeling bewerken (${depName})`)
+        : tr(language, 'Nouveau département', 'New department', 'Nieuwe afdeling')
+      : editingProjId !== null
+        ? tr(language, `Modification du chantier (${projNumber || projName})`, `Editing project (${projNumber || projName})`, `Project bewerken (${projNumber || projName})`)
+        : tr(language, 'Nouveau chantier', 'New project', 'Nieuw project'),
+    onSave: async () => {
+      if (isDepFormDirty) return await performSaveDep();
+      if (isProjFormDirty) return await performSaveProj();
+      return true;
+    },
+    onDiscard: () => {
+      if (isDepFormDirty) handleResetDepForm();
+      if (isProjFormDirty) handleResetProjForm();
+    },
+  });
+
+  const handleRequestClose = () => {
+    requestGuardedNavigation(() => {
+      handleResetDepForm();
+      handleResetProjForm();
+      setDepartmentsProjectsModal({ open: false, tab: activeTab });
+    }, ['mobile-depproj-modal']);
+  };
+
+  // Handle Department Submit
+  const handleDepSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await performSaveDep();
   };
 
   const handleEditDep = (dep: Department) => {
@@ -225,10 +290,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setSelectedDepDeputyToAdd('');
 
     // Afficher directement le formulaire et scroller dessus
-    setTimeout(() => {
-      depFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      depNameInputRef.current?.focus();
-    }, 50);
+    scrollToAndFocusForm(depFormRef.current, depNameInputRef.current);
   };
 
   const handleAddDepDeputy = () => {
@@ -245,16 +307,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
   // Handle Project Submit
   const handleProjSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!projNumber.trim() || !projName.trim()) return;
-    await saveProject({
-      id: editingProjId || undefined,
-      department_id: projDepId ? Number(projDepId) : (departments[0]?.id || 1),
-      project_number: projNumber.trim(),
-      project_name: projName.trim(),
-      manager_id: projManagerId ? Number(projManagerId) : null,
-      deputy_manager_ids: projDeputyIds,
-    });
-    handleResetProjForm();
+    await performSaveProj();
   };
 
   const handleEditProj = (p: Project) => {
@@ -267,10 +320,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setSelectedProjDeputyToAdd('');
 
     // Afficher directement le formulaire et scroller dessus
-    setTimeout(() => {
-      projFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      projNumberInputRef.current?.focus();
-    }, 50);
+    scrollToAndFocusForm(projFormRef.current, projNumberInputRef.current);
   };
 
   const handleAddProjDeputy = () => {
@@ -291,7 +341,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          setDepartmentsProjectsModal({ open: false, tab: activeTab });
+          handleRequestClose();
         }
       }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-3 bg-slate-950/75 backdrop-blur-sm animate-fadeIn"
@@ -317,9 +367,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              handleResetDepForm();
-              handleResetProjForm();
-              setDepartmentsProjectsModal({ open: false, tab: activeTab });
+              handleRequestClose();
             }}
             className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all cursor-pointer active:scale-95 shadow-xs shrink-0"
             title={t('common_close')}
@@ -332,7 +380,10 @@ export const DepartmentsProjectsModal: React.FC = () => {
         {/* Tab Selector */}
         <div className="flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 my-2.5 sm:my-3 border border-slate-200 dark:border-slate-700 gap-1 shrink-0">
           <button
-            onClick={() => setActiveTab('deps')}
+            onClick={() => {
+              if (activeTab === 'deps') return;
+              requestGuardedNavigation(() => setActiveTab('deps'), ['mobile-depproj-modal']);
+            }}
             className={`flex-1 min-w-0 py-1.5 px-2 text-xs font-bold rounded-lg transition truncate ${
               activeTab === 'deps'
                 ? 'bg-white dark:bg-slate-900 text-orange-600 shadow-sm'
@@ -342,7 +393,10 @@ export const DepartmentsProjectsModal: React.FC = () => {
             🏢 {t('dep_tab_deps')} ({departments.length})
           </button>
           <button
-            onClick={() => setActiveTab('projects')}
+            onClick={() => {
+              if (activeTab === 'projects') return;
+              requestGuardedNavigation(() => setActiveTab('projects'), ['mobile-depproj-modal']);
+            }}
             className={`flex-1 min-w-0 py-1.5 px-2 text-xs font-bold rounded-lg transition truncate ${
               activeTab === 'projects'
                 ? 'bg-white dark:bg-slate-900 text-orange-600 shadow-sm'

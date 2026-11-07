@@ -49,6 +49,9 @@ export const Header: React.FC = () => {
     setPreparerOrdersModalOpen,
     isPreparer,
     appLogoUrl,
+    rejectedSyncOps,
+    retryRejectedMovement,
+    discardRejectedMovement,
   } = useApp();
 
   const canManageConfig = !currentUser || userHasPermission('perm_config_license') || userHasPermission('perm_config_db');
@@ -214,7 +217,9 @@ export const Header: React.FC = () => {
                 : tr(language, 'Mode stockage local (Cliquez pour détails)', 'Local storage mode (Click for details)')
             }
             className={`px-2 sm:px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold flex items-center gap-1.5 transition-all border cursor-pointer active:scale-95 shadow-2xs min-w-0 overflow-hidden relative z-10 ${
-              currentStatus === 'connected'
+              rejectedSyncOps.length > 0
+                ? 'bg-rose-500/15 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border-rose-500/35 hover:bg-rose-500/25'
+                : currentStatus === 'connected'
                 ? 'bg-emerald-500/15 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/35 hover:bg-emerald-500/25'
                 : currentStatus === 'syncing'
                 ? 'bg-amber-500/15 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/35 hover:bg-amber-500/25'
@@ -225,6 +230,11 @@ export const Header: React.FC = () => {
                 : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
+            {rejectedSyncOps.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[9px] font-black">
+                {rejectedSyncOps.length}
+              </span>
+            )}
             {/* Beacon Dot & Icon */}
             {currentStatus === 'connected' && (
               <>
@@ -575,6 +585,73 @@ export const Header: React.FC = () => {
                 {lastSyncTime}
               </span>
             </div>
+
+            {/* LOT 1.1 : Mouvements rejetés par le serveur dans la file de synchronisation */}
+            {rejectedSyncOps.length > 0 && (
+              <div className="p-3 rounded-2xl bg-rose-50/90 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-800/70 space-y-2">
+                <div className="flex items-center justify-between text-xs font-black text-rose-800 dark:text-rose-200">
+                  <span className="flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>
+                      {tr(
+                        language,
+                        `Mouvements rejetés (${rejectedSyncOps.length})`,
+                        `Rejected movements (${rejectedSyncOps.length})`,
+                        `Geweigerde bewegingen (${rejectedSyncOps.length})`
+                      )}
+                    </span>
+                  </span>
+                </div>
+                <div className="max-h-44 overflow-y-auto space-y-2 pr-1">
+                  {rejectedSyncOps.map((op) => {
+                    const p = op.payload || {};
+                    const prodRef = p?.metadata?.product_ref || p?.product_id || op.id;
+                    const movType = p?.type || op.action;
+                    const qty = p?.quantity ?? '';
+                    return (
+                      <div
+                        key={op.id}
+                        className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-rose-200/80 dark:border-rose-800/60 text-[11px] space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between font-bold text-slate-800 dark:text-slate-200">
+                          <span className="font-mono truncate">
+                            {String(prodRef)} • {String(movType)} {qty !== '' ? `(${qty})` : ''}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300 text-[9px] uppercase font-black">
+                            {tr(language, 'Rejeté', 'Rejected', 'Geweigerd')}
+                          </span>
+                        </div>
+                        <div className="text-rose-700 dark:text-rose-300 text-[11px] leading-snug break-words">
+                          {op.last_error ||
+                            tr(
+                              language,
+                              'Mouvement refusé par le serveur.',
+                              'Movement rejected by server.',
+                              'Beweging geweigerd door de server.'
+                            )}
+                        </div>
+                        <div className="flex items-center justify-end gap-1.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => retryRejectedMovement(op.operation_id || op.id || '')}
+                            className="px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-[10px] transition cursor-pointer"
+                          >
+                            {tr(language, 'Réessayer', 'Retry', 'Opnieuw proberen')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => discardRejectedMovement(op.operation_id || op.id || '')}
+                            className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-[10px] transition cursor-pointer"
+                          >
+                            {tr(language, 'Abandonner', 'Discard', 'Annuleren')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="space-y-2 pt-1">

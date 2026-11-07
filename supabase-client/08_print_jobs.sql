@@ -1,10 +1,11 @@
 -- =========================================================================
 -- TOT STOCK - SCRIPT 08 : IMPRESSION D'ÉTIQUETTES À DISTANCE (08_print_jobs.sql)
--- Postes d'impression (print_stations), file de travaux (print_jobs),
--- fonctions RPC sécurisées (SECURITY DEFINER, SET search_path = public),
--- contrôle perm_menu_print_labels et allowed_depots, aucun accès anon.
--- Compatible schéma 1.1.0 (min_schema_version = 1.0.0 conservé).
--- Rejouable : oui
+-- Description : Postes d'impression (stk_print_stations), file de travaux (stk_print_jobs),
+--   fonctions RPC sécurisées (SECURITY DEFINER, SET search_path = public),
+--   contrôle perm_menu_print_labels et allowed_depots, aucun accès anon.
+-- Dépendances : Scripts 01 à 06 et 09_core_prefixes.sql
+-- Ordre d'exécution : Après 06_install_additional_roles.sql et avant 11_suite_tables.sql (07 en dernier)
+-- Rejouable : oui (idempotent)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------
@@ -14,23 +15,23 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'users'
+    WHERE table_schema = 'public' AND table_name = 'core_users'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (08_print_jobs.sql) : La table public.users est absente. Exécutez d''abord les scripts 01 à 06.';
+    RAISE EXCEPTION 'Prérequis manquant (08_print_jobs.sql) : La table public.core_users est absente. Exécutez d''abord les scripts 01 à 06.';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'roles'
+    WHERE table_schema = 'public' AND table_name = 'core_roles'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (08_print_jobs.sql) : La table public.roles est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (08_print_jobs.sql) : La table public.core_roles est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 END $$;
 
 -- -------------------------------------------------------------------------
--- 1. TABLES : public.print_stations & public.print_jobs
+-- 1. TABLES : public.stk_print_stations & public.stk_print_jobs
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.print_stations (
+CREATE TABLE IF NOT EXISTS public.stk_print_stations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT UNIQUE NOT NULL,
   depot_name TEXT NULL,
@@ -40,16 +41,16 @@ CREATE TABLE IF NOT EXISTS public.print_stations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE public.print_stations
+ALTER TABLE public.stk_print_stations
   ADD COLUMN IF NOT EXISTS depot_name TEXT NULL,
   ADD COLUMN IF NOT EXISTS owner_user_id TEXT,
   ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT now(),
   ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
-CREATE TABLE IF NOT EXISTS public.print_jobs (
+CREATE TABLE IF NOT EXISTS public.stk_print_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  station_id UUID NOT NULL REFERENCES public.print_stations(id) ON DELETE CASCADE,
+  station_id UUID NOT NULL REFERENCES public.stk_print_stations(id) ON DELETE CASCADE,
   created_by TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('order_label', 'product_label')),
   format TEXT NOT NULL CHECK (format IN ('avery_70x37', 'avery_105x42', 'thermal_50x30', 'bin_90x50')),
@@ -63,7 +64,7 @@ CREATE TABLE IF NOT EXISTS public.print_jobs (
   expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')
 );
 
-ALTER TABLE public.print_jobs
+ALTER TABLE public.stk_print_jobs
   ADD COLUMN IF NOT EXISTS error TEXT,
   ADD COLUMN IF NOT EXISTS dedupe_key TEXT,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -72,23 +73,23 @@ ALTER TABLE public.print_jobs
 
 -- Index sur (station_id, status)
 CREATE INDEX IF NOT EXISTS idx_print_jobs_station_status
-  ON public.print_jobs (station_id, status);
+  ON public.stk_print_jobs (station_id, status);
 
 -- Unicité partielle sur (station_id, dedupe_key) quand dedupe_key IS NOT NULL et status = 'PENDING'
 CREATE UNIQUE INDEX IF NOT EXISTS idx_print_jobs_station_dedupe_pending
-  ON public.print_jobs (station_id, dedupe_key)
+  ON public.stk_print_jobs (station_id, dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status = 'PENDING';
 
 -- Index pour la limitation de débit par utilisateur (10 créations / minute)
 CREATE INDEX IF NOT EXISTS idx_print_jobs_created_by_created_at
-  ON public.print_jobs (created_by, created_at);
+  ON public.stk_print_jobs (created_by, created_at);
 
 -- -------------------------------------------------------------------------
 -- 2. DROITS & RLS SUR LES TABLES (aucun accès direct, tout passe par RPC)
--- Purge de toutes les règles RLS existantes sur print_stations et print_jobs (v37)
+-- Purge de toutes les règles RLS existantes sur stk_print_stations et stk_print_jobs (v37)
 -- -------------------------------------------------------------------------
-ALTER TABLE public.print_stations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.print_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stk_print_stations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stk_print_jobs ENABLE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
@@ -97,22 +98,22 @@ BEGIN
   FOR r IN
     SELECT policyname
     FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'print_stations'
+    WHERE schemaname = 'public' AND tablename = 'stk_print_stations'
   LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON public.print_stations', r.policyname);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_print_stations', r.policyname);
   END LOOP;
 
   FOR r IN
     SELECT policyname
     FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'print_jobs'
+    WHERE schemaname = 'public' AND tablename = 'stk_print_jobs'
   LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON public.print_jobs', r.policyname);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_print_jobs', r.policyname);
   END LOOP;
 END $$;
 
-REVOKE ALL ON TABLE public.print_stations FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON TABLE public.print_jobs FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.stk_print_stations FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.stk_print_jobs FROM PUBLIC, anon, authenticated;
 
 -- -------------------------------------------------------------------------
 -- 3. PUBLICATION REALTIME PROTÉGÉE (sans erreur sur PostgreSQL pur)
@@ -122,16 +123,16 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
     IF NOT EXISTS (
       SELECT 1 FROM pg_publication_tables
-      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'print_stations'
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'stk_print_stations'
     ) THEN
-      ALTER PUBLICATION supabase_realtime ADD TABLE public.print_stations;
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.stk_print_stations;
     END IF;
 
     IF NOT EXISTS (
       SELECT 1 FROM pg_publication_tables
-      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'print_jobs'
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'stk_print_jobs'
     ) THEN
-      ALTER PUBLICATION supabase_realtime ADD TABLE public.print_jobs;
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.stk_print_jobs;
     END IF;
   END IF;
 END $$;
@@ -187,7 +188,12 @@ GRANT EXECUTE ON FUNCTION public.user_can_access_print_depot(INT, TEXT[], TEXT) 
 
 -- -------------------------------------------------------------------------
 -- 5. FONCTIONS RPC MÉTIER D'IMPRESSION À DISTANCE
+-- Notice: Drop first if return type table changed from print_jobs to stk_print_jobs
 -- -------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.claim_print_jobs(UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.complete_print_job(UUID, BOOLEAN, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.cancel_print_job(UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.list_station_print_jobs(UUID, INT) CASCADE;
 
 -- 5.1 register_print_station(p_name text, p_depot text)
 CREATE OR REPLACE FUNCTION public.register_print_station(
@@ -214,7 +220,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false), u.allowed_depots
   INTO v_user_id, v_role_id, v_is_blocked, v_allowed_depots
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -226,7 +232,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -249,7 +255,7 @@ BEGIN
 
   SELECT s.id, s.owner_user_id
   INTO v_existing_id, v_existing_owner
-  FROM public.print_stations s
+  FROM public.stk_print_stations s
   WHERE LOWER(TRIM(s.name)) = LOWER(v_clean_name)
   LIMIT 1;
 
@@ -259,7 +265,7 @@ BEGIN
         USING ERRCODE = '42501';
     END IF;
 
-    UPDATE public.print_stations
+    UPDATE public.stk_print_stations
     SET name = v_clean_name,
         depot_name = v_clean_depot,
         last_seen_at = now(),
@@ -270,7 +276,7 @@ BEGIN
     RETURN v_station_id;
   END IF;
 
-  INSERT INTO public.print_stations (name, depot_name, owner_user_id, last_seen_at, is_active)
+  INSERT INTO public.stk_print_stations (name, depot_name, owner_user_id, last_seen_at, is_active)
   VALUES (v_clean_name, v_clean_depot, v_user_id, now(), true)
   RETURNING id INTO v_station_id;
 
@@ -309,7 +315,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false), u.allowed_depots
   INTO v_user_id, v_role_id, v_is_blocked, v_allowed_depots
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -321,7 +327,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -344,13 +350,13 @@ BEGIN
     (s.owner_user_id = v_user_id) AS is_mine,
     (
       SELECT COUNT(*)
-      FROM public.print_jobs pj
+      FROM public.stk_print_jobs pj
       WHERE pj.station_id = s.id
         AND pj.status IN ('PENDING', 'PRINTING')
         AND pj.expires_at > now()
     ) AS pending_count,
     s.created_at
-  FROM public.print_stations s
+  FROM public.stk_print_stations s
   WHERE s.is_active = true
     AND (
       s.owner_user_id = v_user_id
@@ -397,7 +403,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false), u.allowed_depots
   INTO v_user_id, v_role_id, v_is_blocked, v_allowed_depots
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -409,7 +415,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -427,7 +433,7 @@ BEGIN
 
   SELECT s.*
   INTO v_station
-  FROM public.print_stations s
+  FROM public.stk_print_stations s
   WHERE s.id = p_station AND s.is_active = true
   LIMIT 1;
 
@@ -486,7 +492,7 @@ BEGIN
   END LOOP;
 
   -- Expire d'abord les travaux PENDING dépassés sur cette station
-  UPDATE public.print_jobs
+  UPDATE public.stk_print_jobs
   SET status = 'CANCELLED',
       error = 'Expiré (24h)'
   WHERE station_id = p_station
@@ -496,7 +502,7 @@ BEGIN
   -- Limite : 30 travaux en attente maximum par station
   SELECT COUNT(*)
   INTO v_pending_count
-  FROM public.print_jobs
+  FROM public.stk_print_jobs
   WHERE station_id = p_station
     AND status = 'PENDING'
     AND expires_at > now();
@@ -509,7 +515,7 @@ BEGIN
   -- Limite : 10 créations par minute par utilisateur
   SELECT COUNT(*)
   INTO v_user_rate_count
-  FROM public.print_jobs
+  FROM public.stk_print_jobs
   WHERE created_by = v_user_id
     AND created_at > (now() - interval '1 minute');
 
@@ -518,7 +524,7 @@ BEGIN
       USING ERRCODE = 'P0001';
   END IF;
 
-  INSERT INTO public.print_jobs (
+  INSERT INTO public.stk_print_jobs (
     station_id,
     created_by,
     kind,
@@ -553,7 +559,7 @@ GRANT EXECUTE ON FUNCTION public.create_print_job(UUID, TEXT, TEXT, JSONB, INT, 
 
 -- 5.4 claim_print_jobs(p_station uuid)
 CREATE OR REPLACE FUNCTION public.claim_print_jobs(p_station UUID)
-RETURNS SETOF public.print_jobs
+RETURNS SETOF public.stk_print_jobs
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -568,7 +574,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
   INTO v_user_id, v_role_id, v_is_blocked
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -580,7 +586,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -593,7 +599,7 @@ BEGIN
 
   SELECT s.owner_user_id
   INTO v_station_owner
-  FROM public.print_stations s
+  FROM public.stk_print_stations s
   WHERE s.id = p_station
   LIMIT 1;
 
@@ -608,12 +614,12 @@ BEGIN
   END IF;
 
   -- Mise à jour du battement de cœur (last_seen_at)
-  UPDATE public.print_stations
+  UPDATE public.stk_print_stations
   SET last_seen_at = now()
   WHERE id = p_station;
 
   -- Annulation automatique des travaux expirés (> 24h)
-  UPDATE public.print_jobs
+  UPDATE public.stk_print_jobs
   SET status = 'CANCELLED',
       error = 'Expiré (24h)'
   WHERE station_id = p_station
@@ -624,14 +630,14 @@ BEGIN
   RETURN QUERY
   WITH claimed AS (
     SELECT pj.id
-    FROM public.print_jobs pj
+    FROM public.stk_print_jobs pj
     WHERE pj.station_id = p_station
       AND pj.status = 'PENDING'
       AND pj.expires_at > now()
     ORDER BY pj.created_at ASC
     FOR UPDATE SKIP LOCKED
   )
-  UPDATE public.print_jobs j
+  UPDATE public.stk_print_jobs j
   SET status = 'PRINTING'
   FROM claimed c
   WHERE j.id = c.id
@@ -648,7 +654,7 @@ CREATE OR REPLACE FUNCTION public.complete_print_job(
   p_ok BOOLEAN,
   p_error TEXT DEFAULT NULL
 )
-RETURNS public.print_jobs
+RETURNS public.stk_print_jobs
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -659,12 +665,12 @@ DECLARE
   v_is_blocked BOOLEAN;
   v_perms TEXT[];
   v_has_perm BOOLEAN := FALSE;
-  v_job public.print_jobs;
+  v_job public.stk_print_jobs;
   v_station_owner TEXT;
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
   INTO v_user_id, v_role_id, v_is_blocked
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -676,7 +682,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -691,8 +697,8 @@ BEGIN
   INTO v_job.id, v_job.station_id, v_job.created_by, v_job.kind, v_job.format,
        v_job.payload, v_job.copies, v_job.status, v_job.error, v_job.dedupe_key,
        v_job.created_at, v_job.printed_at, v_job.expires_at, v_station_owner
-  FROM public.print_jobs j
-  JOIN public.print_stations s ON s.id = j.station_id
+  FROM public.stk_print_jobs j
+  JOIN public.stk_print_stations s ON s.id = j.station_id
   WHERE j.id = p_job
   LIMIT 1;
 
@@ -706,19 +712,19 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
-  UPDATE public.print_stations
+  UPDATE public.stk_print_stations
   SET last_seen_at = now()
   WHERE id = v_job.station_id;
 
   IF COALESCE(p_ok, false) THEN
-    UPDATE public.print_jobs
+    UPDATE public.stk_print_jobs
     SET status = 'DONE',
         printed_at = now(),
         error = NULL
     WHERE id = p_job
     RETURNING * INTO v_job;
   ELSE
-    UPDATE public.print_jobs
+    UPDATE public.stk_print_jobs
     SET status = 'FAILED',
         error = LEFT(COALESCE(NULLIF(TRIM(p_error), ''), 'Impression annulée ou en échec'), 500)
     WHERE id = p_job
@@ -734,7 +740,7 @@ GRANT EXECUTE ON FUNCTION public.complete_print_job(UUID, BOOLEAN, TEXT) TO auth
 
 -- 5.6 cancel_print_job(p_job uuid)
 CREATE OR REPLACE FUNCTION public.cancel_print_job(p_job UUID)
-RETURNS public.print_jobs
+RETURNS public.stk_print_jobs
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -745,12 +751,12 @@ DECLARE
   v_is_blocked BOOLEAN;
   v_perms TEXT[];
   v_has_perm BOOLEAN := FALSE;
-  v_job public.print_jobs;
+  v_job public.stk_print_jobs;
   v_station_owner TEXT;
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
   INTO v_user_id, v_role_id, v_is_blocked
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -762,7 +768,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -777,8 +783,8 @@ BEGIN
   INTO v_job.id, v_job.station_id, v_job.created_by, v_job.kind, v_job.format,
        v_job.payload, v_job.copies, v_job.status, v_job.error, v_job.dedupe_key,
        v_job.created_at, v_job.printed_at, v_job.expires_at, v_station_owner
-  FROM public.print_jobs j
-  JOIN public.print_stations s ON s.id = j.station_id
+  FROM public.stk_print_jobs j
+  JOIN public.stk_print_stations s ON s.id = j.station_id
   WHERE j.id = p_job
   LIMIT 1;
 
@@ -797,7 +803,7 @@ BEGIN
       USING ERRCODE = 'P0001';
   END IF;
 
-  UPDATE public.print_jobs
+  UPDATE public.stk_print_jobs
   SET status = 'CANCELLED'
   WHERE id = p_job
   RETURNING * INTO v_job;
@@ -829,7 +835,7 @@ BEGIN
   ELSE
     SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
     INTO v_user_id, v_role_id, v_is_blocked
-    FROM public.users u
+    FROM public.core_users u
     WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
     LIMIT 1;
 
@@ -841,7 +847,7 @@ BEGIN
     IF v_role_id IN (0, 1, 5) THEN
       v_has_perm := TRUE;
     ELSE
-      SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+      SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
       IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
         v_has_perm := TRUE;
       END IF;
@@ -854,7 +860,7 @@ BEGIN
   END IF;
 
   WITH deleted_rows AS (
-    DELETE FROM public.print_jobs
+    DELETE FROM public.stk_print_jobs
     WHERE (
       status IN ('DONE', 'FAILED', 'CANCELLED')
       AND created_at < (now() - interval '7 days')
@@ -898,7 +904,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
   INTO v_user_id, v_role_id, v_is_blocked
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -910,7 +916,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -933,8 +939,8 @@ BEGIN
     j.created_at,
     j.printed_at,
     j.expires_at
-  FROM public.print_jobs j
-  JOIN public.print_stations s ON s.id = j.station_id
+  FROM public.stk_print_jobs j
+  JOIN public.stk_print_stations s ON s.id = j.station_id
   WHERE j.id = p_job
     AND (j.created_by = v_user_id OR s.owner_user_id = v_user_id)
   LIMIT 1;
@@ -949,7 +955,7 @@ CREATE OR REPLACE FUNCTION public.list_station_print_jobs(
   p_station UUID,
   p_limit INT DEFAULT 20
 )
-RETURNS SETOF public.print_jobs
+RETURNS SETOF public.stk_print_jobs
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -965,7 +971,7 @@ DECLARE
 BEGIN
   SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
   INTO v_user_id, v_role_id, v_is_blocked
-  FROM public.users u
+  FROM public.core_users u
   WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
   LIMIT 1;
 
@@ -977,7 +983,7 @@ BEGIN
   IF v_role_id = 0 THEN
     v_has_perm := TRUE;
   ELSE
-    SELECT r.permissions INTO v_perms FROM public.roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+    SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
     IF v_perms IS NOT NULL AND ('*' = ANY(v_perms) OR 'perm_menu_print_labels' = ANY(v_perms)) THEN
       v_has_perm := TRUE;
     END IF;
@@ -990,7 +996,7 @@ BEGIN
 
   SELECT s.owner_user_id
   INTO v_station_owner
-  FROM public.print_stations s
+  FROM public.stk_print_stations s
   WHERE s.id = p_station
   LIMIT 1;
 
@@ -1004,13 +1010,13 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
-  UPDATE public.print_stations
+  UPDATE public.stk_print_stations
   SET last_seen_at = now()
   WHERE id = p_station;
 
   RETURN QUERY
   SELECT j.*
-  FROM public.print_jobs j
+  FROM public.stk_print_jobs j
   WHERE j.station_id = p_station
   ORDER BY j.created_at DESC
   LIMIT v_safe_limit;
@@ -1021,23 +1027,23 @@ REVOKE ALL ON FUNCTION public.list_station_print_jobs(UUID, INT) FROM PUBLIC, an
 GRANT EXECUTE ON FUNCTION public.list_station_print_jobs(UUID, INT) TO authenticated;
 
 -- -------------------------------------------------------------------------
--- 6. MISE À NIVEAU COMPATIBILITÉ (schema_version = 1.1.0, min_schema_version = 1.0.0)
+-- 6. MISE À NIVEAU COMPATIBILITÉ (schema_version = 2.0.0, min_schema_version = 1.0.0)
 -- -------------------------------------------------------------------------
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'app_compat'
+    WHERE table_schema = 'public' AND table_name = 'core_app_compat'
   ) THEN
-    UPDATE public.app_compat
-    SET schema_version = '1.1.0',
+    UPDATE public.core_app_compat
+    SET schema_version = '2.0.0',
         min_schema_version = COALESCE(NULLIF(TRIM(min_schema_version), ''), '1.0.0'),
         updated_at = now()
     WHERE id = 1;
   END IF;
 END $$;
 
--- Mise à jour de diagnostic_installation() lors d'une montée de version 1.0.0 -> 1.1.0
+-- Mise à jour de diagnostic_installation() lors d'une montée de version -> 2.0.0
 CREATE OR REPLACE FUNCTION public.diagnostic_installation()
 RETURNS TABLE (
   check_key TEXT,
@@ -1052,12 +1058,20 @@ AS $$
 DECLARE
   v_caller_role INT;
   v_expected_tables TEXT[] := ARRAY[
-    'roles', 'departments', 'users', 'projects', 'sub_categories',
-    'depots', 'products', 'movements', 'stock_movements', 'material_orders',
-    'app_settings', 'audit_logs', 'license_config', 'app_compat',
-    'print_stations', 'print_jobs'
+    'core_roles', 'core_departments', 'core_users', 'core_projects', 'stk_sub_categories',
+    'stk_depots', 'stk_products', 'stk_stock_levels', 'stk_movements', 'stk_material_orders',
+    'core_app_settings', 'core_audit_logs', 'core_license_config', 'core_app_compat',
+    'stk_print_stations', 'stk_print_jobs'
   ];
-  v_explicit_public_select_tables TEXT[] := ARRAY['app_compat'];
+  v_legacy_names TEXT[] := ARRAY[
+    'users', 'roles', 'departments', 'projects', 'company_settings',
+    'app_settings', 'license_config', 'app_compat', 'audit_logs', 'login_logs',
+    'processed_operations', 'files', 'products', 'categories', 'sub_categories',
+    'stock_levels', 'depots', 'stock_movements', 'movements', 'material_orders',
+    'material_order_items', 'print_jobs', 'print_stations', 'inventory_audits',
+    'inventory_audit_items', 'order_preparations_log'
+  ];
+  v_explicit_public_select_tables TEXT[] := ARRAY['core_app_compat'];
   v_tbl TEXT;
   v_missing_tables TEXT[] := ARRAY[]::TEXT[];
   v_no_rls_tables TEXT[] := ARRAY[]::TEXT[];
@@ -1084,6 +1098,7 @@ DECLARE
     'diagnostic_installation',
     'enforce_license_max_references_quota',
     'enforce_license_max_depots_quota',
+    'process_stock_movement',
     'get_email_secret',
     'register_print_station',
     'list_print_stations',
@@ -1110,12 +1125,20 @@ DECLARE
   v_exposed_funcs TEXT[] := ARRAY[]::TEXT[];
   v_edge_meta TEXT := NULL;
   v_has_email_secret_fn BOOLEAN := false;
+  v_has_stock_levels_tbl BOOLEAN := false;
+  v_has_process_mov_12 BOOLEAN := false;
+  v_unknown_triggers TEXT[] := ARRAY[]::TEXT[];
+  v_trig RECORD;
+  v_inconsistent_stock_count INT := 0;
+  v_unrenamed_legacy_tables TEXT[] := ARRAY[]::TEXT[];
+  v_compat_views TEXT[] := ARRAY[]::TEXT[];
+  v_tables_without_policies TEXT[] := ARRAY[]::TEXT[];
 BEGIN
   IF current_setting('request.jwt.claim.role', true) = 'service_role' OR session_user = 'postgres' THEN
     v_caller_role := 0;
   ELSE
     SELECT role_id INTO v_caller_role
-    FROM public.users
+    FROM public.core_users
     WHERE auth_user_id = auth.uid()
       AND COALESCE(is_blocked, false) = false
     LIMIT 1;
@@ -1159,7 +1182,7 @@ BEGIN
       format('%s/%s tables présentes avec RLS actif', array_length(v_expected_tables, 1), array_length(v_expected_tables, 1))::TEXT;
   END IF;
 
-  FOREACH v_tbl IN ARRAY ARRAY['users', 'license_config', 'movements', 'products', 'print_stations', 'print_jobs'] LOOP
+  FOREACH v_tbl IN ARRAY ARRAY['core_users', 'core_license_config', 'stk_movements', 'stk_products', 'stk_stock_levels', 'stk_print_stations', 'stk_print_jobs', 'stk_inventory_audits', 'stk_inventory_audit_items'] LOOP
     IF EXISTS (
       SELECT 1 FROM information_schema.tables
       WHERE table_schema = 'public' AND table_name = v_tbl
@@ -1173,13 +1196,13 @@ BEGIN
   IF array_length(v_anon_leaks, 1) IS NOT NULL THEN
     RETURN QUERY SELECT
       'anon_privileges'::TEXT,
-      'Révocation des droits anon (users, license_config, movements, products, print_stations, print_jobs)'::TEXT,
+      'Révocation des droits anon (core_users, core_license_config, stk_movements, stk_products, stk_print_stations, stk_print_jobs, stk_inventory_audits)'::TEXT,
       'ERREUR'::TEXT,
       format('Droits anon encore actifs sur : %s', array_to_string(v_anon_leaks, ', '))::TEXT;
   ELSE
     RETURN QUERY SELECT
       'anon_privileges'::TEXT,
-      'Révocation des droits anon (users, license_config, movements, products, print_stations, print_jobs)'::TEXT,
+      'Révocation des droits anon (core_users, core_license_config, stk_movements, stk_products, stk_print_stations, stk_print_jobs, stk_inventory_audits)'::TEXT,
       'OK'::TEXT,
       'Aucun privilège accordé à anon sur les tables sensibles'::TEXT;
   END IF;
@@ -1234,8 +1257,43 @@ BEGIN
       )::TEXT;
   END IF;
 
+  FOR v_tbl IN
+    SELECT c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'r'
+      AND c.relrowsecurity = true
+      AND c.relname NOT IN ('stk_print_stations', 'stk_print_jobs')
+      AND c.relname NOT LIKE '%\_backup\_ids' ESCAPE '\'
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_policies p
+        WHERE p.schemaname = 'public' AND p.tablename = c.relname
+      )
+    ORDER BY c.relname ASC
+  LOOP
+    v_tables_without_policies := array_append(v_tables_without_policies, v_tbl);
+  END LOOP;
+
+  IF array_length(v_tables_without_policies, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'tables_without_rls_policies'::TEXT,
+      'Tables sans règle d''accès'::TEXT,
+      'ERREUR'::TEXT,
+      format(
+        'Table(s) avec RLS activé mais 0 règle d''accès : %s — exécutez fix_inventory_audits.sql ou dist/install.sql',
+        array_to_string(v_tables_without_policies, ', ')
+      )::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'tables_without_rls_policies'::TEXT,
+      'Tables sans règle d''accès'::TEXT,
+      'OK'::TEXT,
+      'Toutes les tables avec RLS activé disposent d''au moins une règle d''accès'::TEXT;
+  END IF;
+
   SELECT COUNT(*) INTO v_super_admin_count
-  FROM public.users
+  FROM public.core_users
   WHERE role_id = 0
     AND auth_user_id IS NOT NULL
     AND COALESCE(is_blocked, false) = false;
@@ -1256,62 +1314,62 @@ BEGIN
 
   SELECT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'pin'
+    WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'pin'
   ) INTO v_has_pin_col;
 
   IF v_has_pin_col THEN
-    EXECUTE 'SELECT COUNT(*) FROM public.users WHERE pin IS NOT NULL AND TRIM(pin) <> '''''
+    EXECUTE 'SELECT COUNT(*) FROM public.core_users WHERE pin IS NOT NULL AND TRIM(pin) <> '''''
       INTO v_plain_pin_count;
   END IF;
 
   IF v_plain_pin_count > 0 THEN
     RETURN QUERY SELECT
       'no_plaintext_pin'::TEXT,
-      'Absence de code PIN en clair dans public.users'::TEXT,
+      'Absence de code PIN en clair dans public.core_users'::TEXT,
       'ATTENTION'::TEXT,
       format('%s profil(s) contiennent encore une valeur dans la colonne pin', v_plain_pin_count)::TEXT;
   ELSE
     RETURN QUERY SELECT
       'no_plaintext_pin'::TEXT,
-      'Absence de code PIN en clair dans public.users'::TEXT,
+      'Absence de code PIN en clair dans public.core_users'::TEXT,
       'OK'::TEXT,
-      'Aucun code PIN en clair stocké dans public.users'::TEXT;
+      'Aucun code PIN en clair stocké dans public.core_users'::TEXT;
   END IF;
 
   IF EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'app_compat'
+    WHERE table_schema = 'public' AND table_name = 'core_app_compat'
   ) THEN
     SELECT schema_version, min_schema_version, min_app_version, maintenance
     INTO v_schema_ver, v_min_schema_ver, v_min_app_ver, v_maint
-    FROM public.app_compat
+    FROM public.core_app_compat
     WHERE id = 1
     LIMIT 1;
 
     IF v_schema_ver IS NOT NULL AND TRIM(v_schema_ver) <> '' AND v_min_app_ver IS NOT NULL AND TRIM(v_min_app_ver) <> '' THEN
       RETURN QUERY SELECT
         'app_compat'::TEXT,
-        'Table app_compat (schema_version & min_app_version)'::TEXT,
+        'Table core_app_compat (schema_version & min_app_version)'::TEXT,
         CASE WHEN COALESCE(v_maint, false) THEN 'ATTENTION' ELSE 'OK' END::TEXT,
         format('schema_version=%s, min_schema_version=%s, min_app_version=%s, maintenance=%s',
           v_schema_ver, COALESCE(v_min_schema_ver, '1.0.0'), v_min_app_ver, COALESCE(v_maint, false))::TEXT;
     ELSE
       RETURN QUERY SELECT
         'app_compat'::TEXT,
-        'Table app_compat (schema_version & min_app_version)'::TEXT,
+        'Table core_app_compat (schema_version & min_app_version)'::TEXT,
         'ERREUR'::TEXT,
-        'Ligne singleton id=1 absente ou versions non renseignées dans public.app_compat'::TEXT;
+        'Ligne singleton id=1 absente ou versions non renseignées dans public.core_app_compat'::TEXT;
     END IF;
   ELSE
     RETURN QUERY SELECT
       'app_compat'::TEXT,
-      'Table app_compat (schema_version & min_app_version)'::TEXT,
+      'Table core_app_compat (schema_version & min_app_version)'::TEXT,
       'ERREUR'::TEXT,
-      'Table public.app_compat absente'::TEXT;
+      'Table public.core_app_compat absente'::TEXT;
   END IF;
 
   BEGIN
-    EXECUTE 'SELECT LOWER(COALESCE(plan_type, ''free'')), COALESCE(modules, ARRAY[''stock'']::TEXT[]), COALESCE(max_depots, 1) FROM public.license_config LIMIT 1'
+    EXECUTE 'SELECT LOWER(COALESCE(plan_type, ''free'')), COALESCE(modules, ARRAY[''stock'']::TEXT[]), COALESCE(max_depots, 1) FROM public.core_license_config LIMIT 1'
       INTO v_lic_plan, v_lic_modules, v_lic_max_depots;
   EXCEPTION WHEN OTHERS THEN
     v_lic_plan := 'free';
@@ -1326,7 +1384,7 @@ BEGIN
   END IF;
 
   SELECT COUNT(*) INTO v_active_depots
-  FROM public.depots
+  FROM public.stk_depots
   WHERE COALESCE(is_active, true) = true;
 
   IF v_active_depots > v_lic_max_depots AND v_lic_max_depots < 99999 THEN
@@ -1381,7 +1439,7 @@ BEGIN
 
   BEGIN
     SELECT value INTO v_edge_meta
-    FROM public.app_settings
+    FROM public.core_app_settings
     WHERE key = 'edge_functions_deployed'
     LIMIT 1;
   EXCEPTION WHEN OTHERS THEN
@@ -1393,13 +1451,13 @@ BEGIN
       'edge_functions_deployed'::TEXT,
       'Fonctions Edge déployées'::TEXT,
       'OK'::TEXT,
-      format('Fonctions déployées (admin-users, sync-license, send-report-email) — %s', v_edge_meta)::TEXT;
+      format('Fonctions déployées (APP_TOT-Stock_admin-users, APP_TOT-Stock_licenses_sync-license, APP_TOT-Stock_send-report-email) — %s', v_edge_meta)::TEXT;
   ELSIF v_has_email_secret_fn THEN
     RETURN QUERY SELECT
       'edge_functions_deployed'::TEXT,
       'Fonctions Edge déployées'::TEXT,
       'ATTENTION'::TEXT,
-      'Prérequis SQL (get_email_secret, app_settings) prêts ; déploiement Edge Functions à vérifier via tot-install ou sonde HTTP'::TEXT;
+      'Prérequis SQL (get_email_secret, core_app_settings) prêts ; déploiement Edge Functions à vérifier via tot-install ou sonde HTTP'::TEXT;
   ELSE
     RETURN QUERY SELECT
       'edge_functions_deployed'::TEXT,
@@ -1420,28 +1478,174 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'print_stations'
+    WHERE table_schema = 'public' AND table_name = 'stk_print_stations'
   ) OR NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'print_jobs'
+    WHERE table_schema = 'public' AND table_name = 'stk_print_jobs'
   ) THEN
     RETURN QUERY SELECT
       'print_jobs_module'::TEXT,
-      'Impression à distance (print_stations, print_jobs & RPC)'::TEXT,
+      'Impression à distance (stk_print_stations, stk_print_jobs & RPC)'::TEXT,
       'ERREUR'::TEXT,
-      'Tables print_stations ou print_jobs absentes (exécutez 08_print_jobs.sql)'::TEXT;
+      'Tables stk_print_stations ou stk_print_jobs absentes (exécutez 08_print_jobs.sql)'::TEXT;
   ELSIF array_length(v_missing_print_funcs, 1) IS NOT NULL THEN
     RETURN QUERY SELECT
       'print_jobs_module'::TEXT,
-      'Impression à distance (print_stations, print_jobs & RPC)'::TEXT,
+      'Impression à distance (stk_print_stations, stk_print_jobs & RPC)'::TEXT,
       'ERREUR'::TEXT,
       format('Fonctions RPC absentes : %s', array_to_string(v_missing_print_funcs, ', '))::TEXT;
   ELSE
     RETURN QUERY SELECT
       'print_jobs_module'::TEXT,
-      'Impression à distance (print_stations, print_jobs & RPC)'::TEXT,
+      'Impression à distance (stk_print_stations, stk_print_jobs & RPC)'::TEXT,
       'OK'::TEXT,
-      format('Tables print_stations & print_jobs et %s/%s fonctions RPC présentes', array_length(v_print_rpc_funcs, 1), array_length(v_print_rpc_funcs, 1))::TEXT;
+      format('Tables stk_print_stations & stk_print_jobs et %s/%s fonctions RPC présentes', array_length(v_print_rpc_funcs, 1), array_length(v_print_rpc_funcs, 1))::TEXT;
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'stk_stock_levels'
+  ) INTO v_has_stock_levels_tbl;
+
+  SELECT EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = 'process_stock_movement'
+      AND p.pronargs = 12
+  ) INTO v_has_process_mov_12;
+
+  IF v_has_stock_levels_tbl AND v_has_process_mov_12 THEN
+    RETURN QUERY SELECT
+      'stock_movements_rpc'::TEXT,
+      'Mouvements de stock'::TEXT,
+      'OK'::TEXT,
+      'Fonction process_stock_movement (12 paramètres) et table stk_stock_levels actives'::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'stock_movements_rpc'::TEXT,
+      'Mouvements de stock'::TEXT,
+      'ERREUR'::TEXT,
+      'Le serveur n''a pas la dernière version des scripts SQL (03, 04) : exécutez dist/install.sql'::TEXT;
+  END IF;
+
+  FOR v_trig IN
+    SELECT t.tgname, c.relname
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname IN ('stk_movements', 'stk_stock_levels', 'stk_products', 'stock_movements', 'stock_levels', 'movements', 'products')
+      AND NOT t.tgisinternal
+      AND t.tgname NOT IN (
+        'trg_check_product_quantity_update',
+        'trg_enforce_license_max_references'
+      )
+    ORDER BY c.relname ASC, t.tgname ASC
+  LOOP
+    v_unknown_triggers := array_append(
+      v_unknown_triggers,
+      format('%s sur %s', v_trig.tgname, v_trig.relname)
+    );
+  END LOOP;
+
+  IF array_length(v_unknown_triggers, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'unknown_stock_triggers'::TEXT,
+      'Déclencheurs inconnus sur les tables de stock'::TEXT,
+      'ERREUR'::TEXT,
+      format('Déclencheur(s) hérité(s) détecté(s) : %s — exécutez 03_rpc_stock_and_orders.sql ou dist/install.sql', array_to_string(v_unknown_triggers, ', '))::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'unknown_stock_triggers'::TEXT,
+      'Déclencheurs inconnus sur les tables de stock'::TEXT,
+      'OK'::TEXT,
+      'Aucun déclencheur inconnu sur stk_movements, stk_stock_levels et stk_products'::TEXT;
+  END IF;
+
+  IF v_has_stock_levels_tbl THEN
+    SELECT COUNT(*) INTO v_inconsistent_stock_count
+    FROM (
+      SELECT p.id
+      FROM public.stk_products p
+      LEFT JOIN public.stk_stock_levels sl ON sl.product_id::text = p.id::text
+      GROUP BY p.id, p.quantity
+      HAVING p.quantity IS DISTINCT FROM COALESCE(SUM(sl.quantity), 0)
+    ) sub;
+
+    IF v_inconsistent_stock_count > 0 THEN
+      RETURN QUERY SELECT
+        'stock_consistency'::TEXT,
+        'Cohérence du stock'::TEXT,
+        'ATTENTION'::TEXT,
+        format('%s produit(s) ont un écart entre stk_products.quantity et la somme de stk_stock_levels', v_inconsistent_stock_count)::TEXT;
+    ELSE
+      RETURN QUERY SELECT
+        'stock_consistency'::TEXT,
+        'Cohérence du stock'::TEXT,
+        'OK'::TEXT,
+        'Tous les produits ont stk_products.quantity égal à la somme de stk_stock_levels'::TEXT;
+    END IF;
+  ELSE
+    RETURN QUERY SELECT
+      'stock_consistency'::TEXT,
+      'Cohérence du stock'::TEXT,
+      'ERREUR'::TEXT,
+      'Table stk_stock_levels absente : impossible de vérifier la cohérence du stock par dépôt'::TEXT;
+  END IF;
+
+  FOREACH v_tbl IN ARRAY v_legacy_names LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = v_tbl AND c.relkind = 'r'
+    ) THEN
+      v_unrenamed_legacy_tables := array_append(v_unrenamed_legacy_tables, v_tbl);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_unrenamed_legacy_tables, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'prefixed_tables'::TEXT,
+      'Tables préfixées (core_ / stk_)'::TEXT,
+      'ERREUR'::TEXT,
+      format('Ancien(s) nom(s) encore sous forme de table physique : %s — exécutez 09_core_prefixes.sql ou dist/install.sql', array_to_string(v_unrenamed_legacy_tables, ', '))::TEXT;
+  ELSIF array_length(v_missing_tables, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'prefixed_tables'::TEXT,
+      'Tables préfixées (core_ / stk_)'::TEXT,
+      'ERREUR'::TEXT,
+      format('Tables préfixées manquantes : %s', array_to_string(v_missing_tables, ', '))::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'prefixed_tables'::TEXT,
+      'Tables préfixées (core_ / stk_)'::TEXT,
+      'OK'::TEXT,
+      'Toutes les tables physiques utilisent la nomenclature préfixée core_* et stk_* (schéma 2.0.0)'::TEXT;
+  END IF;
+
+  FOREACH v_tbl IN ARRAY v_legacy_names LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = v_tbl AND c.relkind = 'v'
+    ) THEN
+      v_compat_views := array_append(v_compat_views, v_tbl);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_compat_views, 1) IS NOT NULL THEN
+    RETURN QUERY SELECT
+      'compat_views_present'::TEXT,
+      'Vues de compatibilité d''anciens noms'::TEXT,
+      'ATTENTION'::TEXT,
+      format('%s vue(s) de compatibilité active(s) (%s) — exécutez 10_drop_compat_views.sql une fois toutes les applications de la suite TOT mises à jour', array_length(v_compat_views, 1), array_to_string(v_compat_views, ', '))::TEXT;
+  ELSE
+    RETURN QUERY SELECT
+      'compat_views_present'::TEXT,
+      'Vues de compatibilité d''anciens noms'::TEXT,
+      'OK'::TEXT,
+      'Aucune vue de compatibilité héritée active'::TEXT;
   END IF;
 END;
 $$;
@@ -1456,6 +1660,14 @@ DO $$
 DECLARE
   r RECORD;
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = '_tot_refresh_compat_views'
+  ) THEN
+    PERFORM public._tot_refresh_compat_views();
+  END IF;
+
   FOR r IN
     SELECT p.oid::regprocedure AS sig, p.proname
     FROM pg_proc p

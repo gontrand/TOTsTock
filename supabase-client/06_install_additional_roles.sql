@@ -1,7 +1,8 @@
 -- =========================================================================
--- 06_install_additional_roles.sql
--- TOT STOCK - SCRIPT D'INSTALLATION DES 6 NOUVEAUX RÔLES MÉTIER (5 À 10)
--- Rejouable : oui
+-- TOT STOCK - SCRIPT 06 : RÔLES MÉTIER COMPLÉMENTAIRES 5 À 10 (06_install_additional_roles.sql)
+-- Description : Installation idempotente des 6 nouveaux rôles métier (5 à 10) dans public.core_roles.
+-- Dépendances : 00_complete_tot_stock_schema.sql, 09_core_prefixes.sql, 02_rls_hardening.sql
+-- Rejouable : oui (idempotent)
 -- =========================================================================
 -- Ce script est 100% IDEMPOTENT et sans impact sur l'existant :
 -- 1. Ne modifie pas les identifiants historiques 0 à 4 (Super Admin, Admin, Magasinier, Chef, Opérateur).
@@ -31,24 +32,24 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'roles'
+    WHERE table_schema = 'public' AND table_name = 'core_roles'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (06_install_additional_roles.sql) : La table public.roles est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (06_install_additional_roles.sql) : La table public.core_roles est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'roles' AND column_name = 'permissions'
+    WHERE table_schema = 'public' AND table_name = 'core_roles' AND column_name = 'permissions'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (06_install_additional_roles.sql) : La colonne public.roles.permissions est absente.';
+    RAISE EXCEPTION 'Prérequis manquant (06_install_additional_roles.sql) : La colonne public.core_roles.permissions est absente.';
   END IF;
 END $$;
 
 DO $$
 BEGIN
   -- 5 : Administrateur Informatique (IT) 💻
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '5') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '5') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       5,
       'Administrateur Informatique (IT) 💻',
@@ -66,8 +67,8 @@ BEGIN
   END IF;
 
   -- 6 : Responsable Logistique 🚚
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '6') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '6') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       6,
       'Responsable Logistique 🚚',
@@ -87,8 +88,8 @@ BEGIN
   END IF;
 
   -- 7 : Responsable Magasin 📋
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '7') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '7') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       7,
       'Responsable Magasin 📋',
@@ -107,8 +108,8 @@ BEGIN
   END IF;
 
   -- 8 : Responsable de Département 📁
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '8') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '8') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       8,
       'Responsable de Département 📁',
@@ -127,8 +128,8 @@ BEGIN
   END IF;
 
   -- 9 : Intérimaire ⏱️
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '9') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '9') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       9,
       'Intérimaire ⏱️',
@@ -144,8 +145,8 @@ BEGIN
   END IF;
 
   -- 10 : Consultation 🔍
-  IF NOT EXISTS (SELECT 1 FROM public.roles WHERE id::text = '10') THEN
-    INSERT INTO public.roles (id, name, permissions)
+  IF NOT EXISTS (SELECT 1 FROM public.core_roles WHERE id::text = '10') THEN
+    INSERT INTO public.core_roles (id, name, permissions)
     VALUES (
       10,
       'Consultation 🔍',
@@ -167,7 +168,7 @@ END $$;
 -- avec la permission réellement testée par process_stock_movement (perm_mov_out).
 -- Rejouable : n'ajoute la permission que si elle manque.
 -- =========================================================================
-UPDATE public.roles
+UPDATE public.core_roles
 SET permissions = array_append(permissions, 'perm_mov_out')
 WHERE 'perm_stock_out' = ANY(permissions)
   AND NOT ('perm_mov_out' = ANY(permissions));
@@ -251,7 +252,7 @@ BEGIN
   LOOP
     SELECT COALESCE(permissions, '{}'::TEXT[])
     INTO v_updated_perms
-    FROM public.roles
+    FROM public.core_roles
     WHERE id::text = v_role.role_id::text;
 
     IF FOUND THEN
@@ -261,11 +262,10 @@ BEGIN
         END IF;
       END LOOP;
 
-      UPDATE public.roles
+      UPDATE public.core_roles
       SET permissions = v_updated_perms
       WHERE id::text = v_role.role_id::text
         AND permissions IS DISTINCT FROM v_updated_perms;
     END IF;
   END LOOP;
 END $$;
-

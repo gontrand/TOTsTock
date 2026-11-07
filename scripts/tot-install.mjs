@@ -33,6 +33,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 
+export const TABLES = {
+  users: 'core_users',
+  appSettings: 'core_app_settings',
+  appCompat: 'core_app_compat',
+};
+
 /**
  * Lit les constantes de version depuis src/appVersion.ts
  */
@@ -358,7 +364,7 @@ export async function runTotInstall(options = {}) {
     if (!adminClient || flags.dryRun) return;
     try {
       await adminClient
-        .from('app_compat')
+        .from(TABLES.appCompat)
         .update({
           maintenance: Boolean(enabled),
           updated_at: new Date().toISOString(),
@@ -458,7 +464,7 @@ export async function runTotInstall(options = {}) {
     // =========================================================================
     if (adminClient && !flags.dryRun) {
       const { data: compatRow } = await adminClient
-        .from('app_compat')
+        .from(TABLES.appCompat)
         .select('schema_version, min_app_version, min_schema_version, maintenance')
         .eq('id', 1)
         .maybeSingle();
@@ -517,7 +523,11 @@ export async function runTotInstall(options = {}) {
     // =========================================================================
     // ÉTAPE 3 — Déploiement des 3 Edge Functions (sans secret manuel)
     // =========================================================================
-    const edgeFunctions = ['admin-users', 'sync-license', 'send-report-email'];
+    const edgeFunctions = [
+      'APP_TOT-Stock_admin-users',
+      'APP_TOT-Stock_licenses_sync-license',
+      'APP_TOT-Stock_send-report-email',
+    ];
     if (flags.noFunctions) {
       logStep(3, 'Edge Functions', 'ATTENTION', 'Déploiement des fonctions ignoré (--no-functions).');
     } else if (flags.dryRun) {
@@ -547,7 +557,7 @@ export async function runTotInstall(options = {}) {
       // Enregistre le statut des fonctions déployées dans app_settings pour diagnostic_installation()
       if (adminClient) {
         try {
-          await adminClient.from('app_settings').upsert(
+          await adminClient.from(TABLES.appSettings).upsert(
             [
               {
                 key: 'edge_functions_status',
@@ -635,7 +645,7 @@ export async function runTotInstall(options = {}) {
         );
       } else {
         const { data: existingAdmins } = await adminClient
-          .from('users')
+          .from(TABLES.users)
           .select('id, email, role_id')
           .eq('role_id', 0)
           .limit(1);
@@ -693,7 +703,7 @@ export async function runTotInstall(options = {}) {
           }
 
           const profileId = authUid || 'super-admin-0';
-          const { error: upsertErr } = await adminClient.from('users').upsert(
+          const { error: upsertErr } = await adminClient.from(TABLES.users).upsert(
             [
               {
                 id: String(profileId),
@@ -712,7 +722,7 @@ export async function runTotInstall(options = {}) {
           );
 
           if (upsertErr) {
-            logStep(5, 'Super Administrateur', 'ERREUR', `Échec profil public.users : ${upsertErr.message}`);
+            logStep(5, 'Super Administrateur', 'ERREUR', `Échec profil public.${TABLES.users} : ${upsertErr.message}`);
             throw new Error('Échec création profil Super Admin');
           }
 
@@ -731,7 +741,7 @@ export async function runTotInstall(options = {}) {
     // =========================================================================
     if (!flags.update) {
       if (flags.dryRun) {
-        logStep(6, 'Licence (facultatif)', 'OK', 'Simulation : appel optionnel à sync-license si une clé est fournie.');
+        logStep(6, 'Licence (facultatif)', 'OK', 'Simulation : appel optionnel à APP_TOT-Stock_licenses_sync-license si une clé est fournie.');
       } else {
         if (!licenseKey && !flags.yes) {
           licenseKey = await promptFn(
@@ -744,7 +754,7 @@ export async function runTotInstall(options = {}) {
         if (!licenseKey) {
           logStep(6, 'Licence (facultatif)', 'OK', 'Aucune clé saisie ; formule Free active par défaut.');
         } else {
-          const fnUrl = `https://${projectRef}.supabase.co/functions/v1/sync-license`;
+          const fnUrl = `https://${projectRef}.supabase.co/functions/v1/APP_TOT-Stock_licenses_sync-license`;
           const bearer = serviceRoleKey || anonKey || '';
           const licRes = await fetchImpl(fnUrl, {
             method: 'POST',
@@ -760,7 +770,7 @@ export async function runTotInstall(options = {}) {
           });
 
           if (licRes.ok) {
-            logStep(6, 'Licence (facultatif)', 'OK', 'Licence liée et synchronisée via sync-license.');
+            logStep(6, 'Licence (facultatif)', 'OK', 'Licence liée et synchronisée via APP_TOT-Stock_licenses_sync-license.');
           } else {
             logStep(
               6,
@@ -786,7 +796,7 @@ export async function runTotInstall(options = {}) {
         updatePayload.min_app_version = String(flags.setMinAppVersion).trim();
       }
       const { error: compatUpdateErr } = await adminClient
-        .from('app_compat')
+        .from(TABLES.appCompat)
         .update(updatePayload)
         .eq('id', 1);
 
@@ -810,7 +820,7 @@ export async function runTotInstall(options = {}) {
           check_key: 'edge_functions_deployed',
           check_label: 'Fonctions Edge déployées',
           status: 'OK',
-          details: 'Simulation dry-run : admin-users, sync-license, send-report-email',
+          details: 'Simulation dry-run : APP_TOT-Stock_admin-users, APP_TOT-Stock_licenses_sync-license, APP_TOT-Stock_send-report-email',
         }
       );
       logStep(7, 'Vérification finale', 'OK', 'Simulation : appel de diagnostic_installation() réussi.');

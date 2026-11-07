@@ -52,6 +52,7 @@ export const DashboardView: React.FC = () => {
   const {
     currentUser,
     products,
+    depots,
     departments,
     setActiveTab,
     setActiveProductId,
@@ -350,6 +351,26 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
         )}
+        {selectedDepot !== 'ALL' &&
+          depots.some(
+            (d) =>
+              d.name.trim().toLowerCase() === selectedDepot.trim().toLowerCase() &&
+              d.is_active === false
+          ) && (
+            <div
+              role="alert"
+              className="mt-2 p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center gap-2"
+            >
+              <span>
+                {tr(
+                  language,
+                  `⚠️ Attention : le dépôt sélectionné « ${selectedDepot} » est actuellement en veille (fermé temporairement).`,
+                  `⚠️ Warning: the selected depot "${selectedDepot}" is currently on standby (temporarily closed).`,
+                  `⚠️ Let op: het geselecteerde depot "${selectedDepot}" staat momenteel op stand-by (tijdelijk gesloten).`
+                )}
+              </span>
+            </div>
+          )}
       </div>
 
       {/* Financial Total Value & Sparkline */}

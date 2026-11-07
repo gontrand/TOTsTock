@@ -4,6 +4,37 @@ export const DEFAULT_LEGACY_RETIRED_AT = '2026-01-01T00:00:00.000Z';
 export const DEFAULT_PUBLIC_KEY_B64 = 'MCowBQYDK2VwAyEA9n369nlU8Fi6exT4nTAtcA/r7ym7OtRVhZbxxKwCbfw=';
 export const LEGACY_PUBLIC_KEY_B64 = 'MCowBQYDK2VwAyEAEqb3vlPKty9AMvJEODxOX3YzZZS/xCcSWTYTkA20dZQ=';
 
+export const TABLES = {
+  users: 'core_users',
+  roles: 'core_roles',
+  departments: 'core_departments',
+  projects: 'core_projects',
+  companySettings: 'core_company_settings',
+  appSettings: 'core_app_settings',
+  licenseConfig: 'core_license_config',
+  appCompat: 'core_app_compat',
+  auditLogs: 'core_audit_logs',
+  loginLogs: 'core_login_logs',
+  processedOperations: 'core_processed_operations',
+  files: 'core_files',
+  mailAccounts: 'core_mail_accounts',
+  mailSenders: 'core_mail_senders',
+  mailLog: 'core_mail_log',
+  products: 'stk_products',
+  categories: 'stk_categories',
+  subCategories: 'stk_sub_categories',
+  stockLevels: 'stk_stock_levels',
+  depots: 'stk_depots',
+  movements: 'stk_movements',
+  materialOrders: 'stk_material_orders',
+  materialOrderItems: 'stk_material_order_items',
+  printJobs: 'stk_print_jobs',
+  printStations: 'stk_print_stations',
+  inventoryAudits: 'stk_inventory_audits',
+  inventoryAuditItems: 'stk_inventory_audit_items',
+  orderPreparationsLog: 'stk_order_preparations_log',
+} as const;
+
 export interface SupabaseEnvConfig {
   supabaseUrl: string;
   supabaseAnonKey: string;
@@ -35,7 +66,17 @@ export function getSupabaseEnv(): SupabaseEnvConfig {
   return { supabaseUrl, supabaseAnonKey, serviceRoleKey };
 }
 
-export const DEFAULT_MASTER_LICENSE_FUNCTION = 'APP_TOT-Stock_licenses';
+export const CLIENT_EDGE_FUNCTIONS = {
+  adminUsers: 'APP_TOT-Stock_admin-users',
+  syncLicense: 'APP_TOT-Stock_licenses_sync-license',
+  sendReportEmail: 'APP_TOT-Stock_send-report-email',
+} as const;
+
+export const MASTER_EDGE_FUNCTIONS = {
+  licenses: 'APP_TOT-Stock_licenses',
+} as const;
+
+export const DEFAULT_MASTER_LICENSE_FUNCTION = MASTER_EDGE_FUNCTIONS.licenses;
 
 export interface RuntimeAppConfig {
   currentKeyId: string;
@@ -58,7 +99,7 @@ export async function readRuntimeConfig(supabaseAdmin: any): Promise<RuntimeAppC
   const settingsMap: Record<string, string> = {};
   try {
     const { data } = await supabaseAdmin
-      .from('app_settings')
+      .from(TABLES.appSettings)
       .select('key, value')
       .in('key', [
         'license_public_key',

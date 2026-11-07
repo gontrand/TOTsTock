@@ -18,6 +18,10 @@ import {
   isDesktopApp,
   printDesktopLabel,
 } from './desktopBridge';
+import {
+  readLocalPreferenceValue,
+  setUserPreference,
+} from './userPreferencesService';
 
 export type PrintJobKind = 'order_label' | 'product_label';
 export type PrintJobStatus = 'PENDING' | 'PRINTING' | 'DONE' | 'FAILED' | 'CANCELLED';
@@ -134,6 +138,8 @@ export function setPrintStationAutoModeEnabled(enabled: boolean): void {
 
 export function isPrintStationSoundEnabled(): boolean {
   try {
+    const prefVal = readLocalPreferenceValue('print_sound');
+    if (prefVal !== undefined) return prefVal;
     const val = localStorage.getItem(PRINT_STATION_SOUND_KEY);
     return val === null ? true : val === 'true';
   } catch {
@@ -143,14 +149,18 @@ export function isPrintStationSoundEnabled(): boolean {
 
 export function setPrintStationSoundEnabled(enabled: boolean): void {
   try {
-    localStorage.setItem(PRINT_STATION_SOUND_KEY, enabled ? 'true' : 'false');
+    setUserPreference('print_sound', Boolean(enabled));
   } catch {
-    // Ignore
+    try {
+      localStorage.setItem(PRINT_STATION_SOUND_KEY, enabled ? 'true' : 'false');
+    } catch {}
   }
 }
 
 export function isPrintStationBlinkEnabled(): boolean {
   try {
+    const prefVal = readLocalPreferenceValue('print_blink');
+    if (prefVal !== undefined) return prefVal;
     const val = localStorage.getItem(PRINT_STATION_BLINK_KEY);
     return val === null ? true : val === 'true';
   } catch {
@@ -160,9 +170,11 @@ export function isPrintStationBlinkEnabled(): boolean {
 
 export function setPrintStationBlinkEnabled(enabled: boolean): void {
   try {
-    localStorage.setItem(PRINT_STATION_BLINK_KEY, enabled ? 'true' : 'false');
+    setUserPreference('print_blink', Boolean(enabled));
   } catch {
-    // Ignore
+    try {
+      localStorage.setItem(PRINT_STATION_BLINK_KEY, enabled ? 'true' : 'false');
+    } catch {}
   }
 }
 

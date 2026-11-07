@@ -28,6 +28,16 @@ import { DesktopDashboardPage } from './pages/DesktopDashboardPage';
 import { DesktopInventoryPage } from './pages/DesktopInventoryPage';
 import { DesktopCommandPalette } from './components/DesktopCommandPalette';
 import { DesktopShortcutsModal } from './components/DesktopShortcutsModal';
+import { requestGuardedNavigation } from '../services/unsavedChangesGuard';
+import {
+  dismissUserPreferencesSyncBanner,
+  getSyncBannerState,
+  readLocalPreferenceValue,
+  setUserPreference,
+  subscribeUserPreferences,
+  subscribeUserPreferencesSyncBanner,
+  UserPreferencesSyncBannerState,
+} from '../services/userPreferencesService';
 import {
   LayoutDashboard,
   Package,
@@ -58,9 +68,13 @@ import {
   Mail,
   BookOpen,
   Info,
+  AlertCircle,
+  ClipboardCheck,
+  X,
 } from 'lucide-react';
 
 interface DesktopShellProps {
+  renderAuditPage?: (props: { globalDepotFilter: string }) => React.ReactNode;
   renderMovementsPage?: (props: { globalDepotFilter: string }) => React.ReactNode;
   renderOrdersPage?: (props: {
     selectedOrderId: string | null;
@@ -87,6 +101,7 @@ export const DESKTOP_SHELL_RECOGNIZED_COMMANDS: readonly DesktopMenuCommandId[] 
   DESKTOP_MENU_COMMANDS;
 
 export const DesktopShell: React.FC<DesktopShellProps> = ({
+  renderAuditPage,
   renderMovementsPage,
   renderOrdersPage,
   renderPreparationPage,
@@ -118,16 +133,42 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     setActiveProductId,
     activeTab,
     setActiveTab,
+    licenseNotification,
+    dismissLicenseNotification,
+    rejectedSyncOps,
+    retryRejectedMovement,
+    discardRejectedMovement,
   } = useApp();
 
   // Persisted sidebar collapse state
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
+      const val = readLocalPreferenceValue('desktop_sidebar_collapsed');
+      if (val !== undefined) return val;
       return localStorage.getItem(DESKTOP_SIDEBAR_COLLAPSED_KEY) === 'true';
     } catch {
       return false;
     }
   });
+
+  const [prefsSyncBanner, setPrefsSyncBanner] = useState<UserPreferencesSyncBannerState>(() =>
+    getSyncBannerState()
+  );
+
+  useEffect(() => {
+    const unsubPrefs = subscribeUserPreferences((prefs) => {
+      if (prefs.desktop_sidebar_collapsed !== undefined) {
+        setSidebarCollapsed(Boolean(prefs.desktop_sidebar_collapsed));
+      }
+    });
+    const unsubBanner = subscribeUserPreferencesSyncBanner((state) => {
+      setPrefsSyncBanner(state);
+    });
+    return () => {
+      unsubPrefs();
+      unsubBanner();
+    };
+  }, []);
 
   // Persisted active desktop page
   const [activePage, setActivePage] = useState<DesktopPageId>(() => {
@@ -138,6 +179,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
         [
           'dashboard',
           'inventory',
+          'audit',
           'movements',
           'orders',
           'preparation',
@@ -173,6 +215,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [syncQueuePopoverOpen, setSyncQueuePopoverOpen] = useState(false);
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
 
   const [searchFocusTrigger, setSearchFocusTrigger] = useState(0);
@@ -198,28 +241,33 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   }, []);
 
   const handleNavigatePage = (page: DesktopPageId, section?: DesktopSettingsSection) => {
-    setActivePage(page);
-    if (section) {
-      setSettingsSection(section);
-    }
-    try {
-      localStorage.setItem(DESKTOP_LAST_PAGE_KEY, page);
-    } catch {
-      // Ignore
-    }
-    if (page === 'dashboard') setActiveTab('home');
-    else if (page === 'inventory') setActiveTab('search');
-    else if (page === 'movements') setActiveTab('movements');
-    else if (page === 'settings') setActiveTab('plus');
+    if (page === activePage && (!section || section === settingsSection)) return;
+    requestGuardedNavigation(() => {
+      setActivePage(page);
+      if (section) {
+        setSettingsSection(section);
+      }
+      try {
+        localStorage.setItem(DESKTOP_LAST_PAGE_KEY, page);
+      } catch {
+        // Ignore
+      }
+      if (page === 'dashboard') setActiveTab('home');
+      else if (page === 'inventory') setActiveTab('search');
+      else if (page === 'movements') setActiveTab('movements');
+      else if (page === 'settings') setActiveTab('plus');
+    });
   };
 
   const toggleSidebar = () => {
     setSidebarCollapsed((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem(DESKTOP_SIDEBAR_COLLAPSED_KEY, String(next));
+        setUserPreference('desktop_sidebar_collapsed', next);
       } catch {
-        // Ignore
+        try {
+          localStorage.setItem(DESKTOP_SIDEBAR_COLLAPSED_KEY, String(next));
+        } catch {}
       }
       return next;
     });
@@ -388,6 +436,8 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     userHasPermission('perm_tab_dashboard') || userHasPermission('perm_dash_kpi');
   const canInventory =
     userHasPermission('perm_tab_inventory') || userHasPermission('perm_prod_view');
+  const canInventoryAudit =
+    userHasPermission('perm_menu_inventory_audit') || Number(currentUser?.role_id) === 0;
   const canOrderPrep =
     canUserAccessScannerMode(
       currentUser,
@@ -531,6 +581,26 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                   {!sidebarCollapsed && (
                     <span className="text-[11px] font-mono tabular-nums text-slate-400">
                       {products.length}
+                    </span>
+                  )}
+                </button>
+              )}
+
+              {canInventoryAudit && (
+                <button
+                  type="button"
+                  onClick={() => handleNavigatePage('audit')}
+                  title={tr(language, 'Audit', 'Audit', 'Audit')}
+                  className={`w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer ${
+                    activePage === 'audit'
+                      ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <ClipboardCheck className="w-4 h-4 shrink-0" />
+                  {!sidebarCollapsed && (
+                    <span className="truncate flex-1 text-left">
+                      {tr(language, 'Audit', 'Audit', 'Audit')}
                     </span>
                   )}
                 </button>
@@ -856,7 +926,16 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                 }
               }}
               aria-label={tr(language, 'Sélecteur de dépôt global', 'Global depot selector', 'Globaal depotselectie')}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
+                globalDepot !== 'ALL' &&
+                depots.some(
+                  (d) =>
+                    d.name.trim().toLowerCase() === globalDepot.trim().toLowerCase() &&
+                    d.is_active === false
+                )
+                  ? 'border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200'
+              }`}
             >
               <option value="ALL">
                 {tr(language, 'Tous les dépôts', 'All depots', 'Alle depots')}
@@ -864,47 +943,185 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               {depots.map((d) => (
                 <option key={d.id} value={d.name}>
                   {d.name}
+                  {d.is_active === false
+                    ? ` (${tr(language, 'en veille', 'on standby', 'stand-by')})`
+                    : ''}
                 </option>
               ))}
             </select>
+            {globalDepot !== 'ALL' &&
+              depots.some(
+                (d) =>
+                  d.name.trim().toLowerCase() === globalDepot.trim().toLowerCase() &&
+                  d.is_active === false
+              ) && (
+                <span
+                  role="status"
+                  className="px-2.5 py-1 rounded-xl bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 text-[11px] font-bold flex items-center gap-1.5 shrink-0"
+                  title={tr(
+                    language,
+                    `Le dépôt sélectionné « ${globalDepot} » est actuellement en veille.`,
+                    `The selected depot "${globalDepot}" is currently on standby.`,
+                    `Het geselecteerde depot "${globalDepot}" staat momenteel op stand-by.`
+                  )}
+                >
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>
+                    {tr(
+                      language,
+                      'Dépôt en veille',
+                      'Depot on standby',
+                      'Depot op stand-by'
+                    )}
+                  </span>
+                </span>
+              )}
           </div>
 
           {/* Right: Sync Status, License, Notifications, Language, Theme, User Menu */}
           <div className="flex items-center gap-2.5 shrink-0">
-            {/* Sync / Offline Indicator */}
-            <button
-              type="button"
-              onClick={() => syncFromSupabase()}
-              title={tr(
-                language,
-                'Synchroniser avec Supabase',
-                'Sync with Supabase',
-                'Synchroniseren met Supabase'
+            {/* Sync / Offline Indicator + Rejected Queue Popover */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  if (rejectedSyncOps.length > 0) {
+                    setSyncQueuePopoverOpen((v) => !v);
+                  } else {
+                    syncFromSupabase();
+                  }
+                }}
+                title={tr(
+                  language,
+                  'Synchroniser avec Supabase',
+                  'Sync with Supabase',
+                  'Synchroniseren met Supabase'
+                )}
+                className={`px-2.5 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
+                  rejectedSyncOps.length > 0
+                    ? 'border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                    : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
+                }`}
+              >
+                {rejectedSyncOps.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-black">
+                    {rejectedSyncOps.length}
+                  </span>
+                )}
+                {!isOnline ? (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-amber-600" />
+                    <span className="text-amber-600 dark:text-amber-400">{t('header_offline')}</span>
+                  </>
+                ) : supabaseSyncStatus === 'syncing' ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-orange-500 animate-spin" />
+                    <span>{t('header_syncing')}</span>
+                  </>
+                ) : supabaseSyncStatus === 'connected' ? (
+                  <>
+                    <Wifi className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="text-emerald-700 dark:text-emerald-400">{t('header_connected')}</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                    <span>{t('header_local')}</span>
+                  </>
+                )}
+              </button>
+
+              {syncQueuePopoverOpen && (
+                <div className="absolute right-0 mt-2 w-96 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl p-3.5 z-50 text-xs space-y-2.5">
+                  <div className="flex items-center justify-between font-black text-slate-900 dark:text-white">
+                    <span className="flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 text-rose-600" />
+                      <span>
+                        {tr(
+                          language,
+                          `Mouvements rejetés (${rejectedSyncOps.length})`,
+                          `Rejected movements (${rejectedSyncOps.length})`,
+                          `Geweigerde bewegingen (${rejectedSyncOps.length})`
+                        )}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSyncQueuePopoverOpen(false)}
+                      className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {rejectedSyncOps.length === 0 ? (
+                    <div className="py-4 text-center text-slate-500">
+                      {tr(language, 'Aucun mouvement rejeté.', 'No rejected movements.', 'Geen geweigerde bewegingen.')}
+                    </div>
+                  ) : (
+                    <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                      {rejectedSyncOps.map((op) => {
+                        const p = op.payload || {};
+                        const prodRef = p?.metadata?.product_ref || p?.product_id || op.id;
+                        const movType = p?.type || op.action;
+                        const qty = p?.quantity ?? '';
+                        return (
+                          <div
+                            key={op.id}
+                            className="p-2.5 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between font-bold text-slate-900 dark:text-white">
+                              <span className="font-mono truncate">
+                                {String(prodRef)} • {String(movType)} {qty !== '' ? `(${qty})` : ''}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9px] uppercase font-black">
+                                {tr(language, 'Rejeté', 'Rejected', 'Geweigerd')}
+                              </span>
+                            </div>
+                            <div className="text-rose-700 dark:text-rose-300 text-[11px] leading-snug break-words">
+                              {op.last_error ||
+                                tr(
+                                  language,
+                                  'Mouvement refusé par le serveur.',
+                                  'Movement rejected by server.',
+                                  'Beweging geweigerd door de server.'
+                                )}
+                            </div>
+                            <div className="flex items-center justify-end gap-1.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => retryRejectedMovement(op.operation_id || op.id || '')}
+                                className="px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-[10px] transition cursor-pointer"
+                              >
+                                {tr(language, 'Réessayer', 'Retry', 'Opnieuw proberen')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => discardRejectedMovement(op.operation_id || op.id || '')}
+                                className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-[10px] transition cursor-pointer"
+                              >
+                                {tr(language, 'Abandonner', 'Discard', 'Annuleren')}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="pt-1 border-t border-slate-200 dark:border-slate-800 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => syncFromSupabase()}
+                      className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[11px] flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{tr(language, 'Synchroniser maintenant', 'Sync now', 'Nu synchroniseren')}</span>
+                    </button>
+                  </div>
+                </div>
               )}
-              className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer whitespace-nowrap shrink-0"
-            >
-              {!isOnline ? (
-                <>
-                  <WifiOff className="w-3.5 h-3.5 text-amber-600" />
-                  <span className="text-amber-600 dark:text-amber-400">{t('header_offline')}</span>
-                </>
-              ) : supabaseSyncStatus === 'syncing' ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 text-orange-500 animate-spin" />
-                  <span>{t('header_syncing')}</span>
-                </>
-              ) : supabaseSyncStatus === 'connected' ? (
-                <>
-                  <Wifi className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-emerald-700 dark:text-emerald-400">{t('header_connected')}</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
-                  <span>{t('header_local')}</span>
-                </>
-              )}
-            </button>
+            </div>
 
             {/* License Plan */}
             <button
@@ -1095,6 +1312,107 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           </div>
         </header>
 
+        {/* Global Error / Server Rejection / SQL Readiness Notification Banner on Desktop */}
+        {licenseNotification && (
+          <div
+            role="alert"
+            className="px-5 py-2.5 bg-rose-600 text-white text-xs font-bold flex items-center justify-between gap-3 shrink-0 shadow-xs no-print"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span className="truncate">{licenseNotification}</span>
+            </div>
+            <button
+              type="button"
+              onClick={dismissLicenseNotification}
+              className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 text-white text-[11px] font-black shrink-0 cursor-pointer"
+            >
+              {tr(language, 'Fermer', 'Dismiss', 'Sluiten')}
+            </button>
+          </div>
+        )}
+
+        {/* LOT 1.3 v48 : Bandeau discret unique si core_user_preferences / script SQL 12 est manquant */}
+        {prefsSyncBanner.visible && (
+          <div
+            role="status"
+            className="px-5 py-2 bg-violet-50 dark:bg-violet-950/60 border-b border-violet-200 dark:border-violet-800 text-violet-900 dark:text-violet-200 text-xs font-bold flex items-center justify-between gap-3 shrink-0 no-print"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
+              <span className="truncate">
+                {tr(
+                  language,
+                  'Préférences non synchronisées (script SQL 12 manquant)',
+                  'Preferences not synchronized (SQL script 12 missing)',
+                  'Voorkeuren niet gesynchroniseerd (SQL-script 12 ontbreekt)'
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  dismissUserPreferencesSyncBanner();
+                  handleNavigatePage('settings', 'license');
+                }}
+                className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-extrabold cursor-pointer"
+              >
+                {tr(language, '3. Scripts SQL', '3. SQL Scripts', '3. SQL-scripts')}
+              </button>
+              <button
+                type="button"
+                onClick={dismissUserPreferencesSyncBanner}
+                className="px-2 py-1 rounded-lg border border-violet-300 dark:border-violet-700 text-[11px] font-bold cursor-pointer"
+              >
+                {tr(language, 'Fermer', 'Dismiss', 'Sluiten')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* LOT 3 v43 : Avertissement quand le dépôt sélectionné dans la barre du haut est en veille */}
+        {globalDepot !== 'ALL' &&
+          depots.some(
+            (d) =>
+              d.name.trim().toLowerCase() === globalDepot.trim().toLowerCase() &&
+              d.is_active === false
+          ) && (
+            <div
+              role="alert"
+              className="px-5 py-2 bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center justify-between gap-3 shrink-0 no-print"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span className="truncate">
+                  {tr(
+                    language,
+                    `Attention : le dépôt sélectionné « ${globalDepot} » est en veille (fermé temporairement). Les mouvements de stock vers ou depuis ce dépôt sont bloqués tant qu'il n'est pas réactivé.`,
+                    `Warning: the selected depot "${globalDepot}" is on standby (temporarily closed). Stock movements to or from this depot are blocked until it is reactivated.`,
+                    `Let op: het geselecteerde depot "${globalDepot}" staat op stand-by (tijdelijk gesloten). Voorraadbewegingen naar of vanuit dit depot zijn geblokkeerd totdat het opnieuw wordt geactiveerd.`
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setGlobalDepot('ALL');
+                  try {
+                    localStorage.setItem(DESKTOP_GLOBAL_DEPOT_KEY, 'ALL');
+                  } catch {}
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black shrink-0 cursor-pointer"
+              >
+                {tr(
+                  language,
+                  'Afficher tous les dépôts',
+                  'Show all depots',
+                  'Alle depots tonen'
+                )}
+              </button>
+            </div>
+          )}
+
         {/* Page Viewport */}
         <main className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden">
           {activePage === 'dashboard' && (
@@ -1115,6 +1433,9 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               onOpenCsvImportModal={onOpenCsvImportModal}
             />
           )}
+
+          {activePage === 'audit' &&
+            (renderAuditPage ? renderAuditPage({ globalDepotFilter: globalDepot }) : null)}
 
           {activePage === 'movements' &&
             (renderMovementsPage ? (

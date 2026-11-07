@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { TABLES } from '../constants/tables';
 
 export const MASTER_SUPABASE_URL = 'https://dsmempdbcfbixbopfctj.supabase.co';
 export const MASTER_SUPABASE_KEY = 'sb_publishable_fd5y08b4z8W25W7q4c7W1g_C8qljzbe';
@@ -21,7 +22,7 @@ const SETTING_TABLE_CANDIDATES = [
   'APP_TOT_Stock_Setting',
   'tot_settings',
   'settings',
-  'app_settings',
+  TABLES.appSettings,
 ];
 
 const RELEASE_TABLE_CANDIDATES = [
@@ -63,7 +64,7 @@ export async function fetchMasterLogo(
   const targetKeys = ['app_logo_url', 'logo', 'logo_url', 'company_logo'];
   const sourcesToTry: Array<{ client: SupabaseClient; table: string }> = [
     { client: masterSupabase, table: 'APP_TOT-Stock_Setting' },
-    ...(customClient ? [{ client: customClient, table: 'app_settings' }] : []),
+    ...(customClient ? [{ client: customClient, table: TABLES.appSettings }] : []),
   ];
 
   for (const { client, table } of sourcesToTry) {

@@ -526,6 +526,34 @@ export const INITIAL_MOVEMENTS: StockMovement[] = [
 
 export const INITIAL_RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: '5.9.1',
+    date: '2026-11-07',
+    title: 'Fournisseur Microsoft 365 (Graph), Mailing Multi-Fournisseurs & À Propos Complet (Schéma 2.4.1)',
+    description:
+      'Envoi d’e-mails via Microsoft 365 (Graph OAuth2 client_credentials, Mail.Send), Brevo, Resend, SendGrid, Mailgun, Postmark, Mailjet et SMTP, expéditeur dédié par application (stk, hab, rpt, tools), journal core_mail_log et page « À propos » enrichie.',
+  },
+  {
+    version: '5.8.0',
+    date: '2026-11-06',
+    title: 'Transfert de Matériel entre Dépôts par Lot (Schéma 2.3.0)',
+    description:
+      'Transfert multi-articles atomique et idempotent entre dépôts (RPC transfer_stock_batch), écran dédié Mobile & Bureau avec scan et file d’attente hors-ligne, et filtrage/regroupement des transferts dans l’historique.',
+  },
+  {
+    version: '5.7.0',
+    date: '2026-11-06',
+    title: 'Préférences Utilisateur Synchronisées & Sécurité des Données Locales (Schéma 2.2.0)',
+    description:
+      'Synchronisation des préférences entre appareils (core_user_preferences), rejet des clés secrètes service_role, Content-Security-Policy (CSP) et chiffrement AES-GCM 256 des données locales sensibles.',
+  },
+  {
+    version: '5.6.0',
+    date: '2026-10-05',
+    title: 'Tables de la suite TOT & Fichiers partagés (Schéma 2.1.0)',
+    description:
+      'Journal de préparation de commande enregistré, catégories de produits, fichiers partagés de la suite TOT (base des documents de TOT Habilitation).',
+  },
+  {
     version: '5.5.0',
     date: '2026-09-25',
     title: 'Codes-barres 1D (EAN/Code-128) & Planches d\'Étiquettes PDF',

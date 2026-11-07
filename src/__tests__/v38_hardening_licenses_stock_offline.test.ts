@@ -297,14 +297,14 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
         INSERT INTO auth.users (id, email) VALUES ('${adminUuid}', 'admin@tot.local')
         ON CONFLICT (id) DO NOTHING;
 
-        INSERT INTO public.users (id, name, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
+        INSERT INTO public.core_users (id, name, email, pin, role_id, is_blocked, allowed_depots, is_preparer, auth_user_id)
         VALUES ('1', 'Super Admin', 'admin@tot.local', '', 0, false, ARRAY['*']::text[], true, '${adminUuid}')
         ON CONFLICT (id) DO UPDATE SET
           role_id = 0,
           allowed_depots = ARRAY['*']::text[],
           auth_user_id = '${adminUuid}';
 
-        INSERT INTO public.depots (id, name, type)
+        INSERT INTO public.stk_depots (id, name, type)
         VALUES ('depot-central', 'Dépôt Central', 'MAGASIN')
         ON CONFLICT (id) DO NOTHING;
 
@@ -329,40 +329,40 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
       expect(licenseServiceSrc).not.toContain("from('license_config').upsert");
     });
 
-    it('SQL : enforce_license_max_depots_quota et enforce_license_max_references_quota appliquent les quotas du signed_token et ignorent license_config non signé', async () => {
-      // 1. Insérer une ligne license_config falsifiée (plan_type = 'ent', max_depots = 99999) SANS signed_token
+    it('SQL : enforce_license_max_depots_quota et enforce_license_max_references_quota appliquent les quotas du signed_token et ignorent core_license_config non signé', async () => {
+      // 1. Insérer une ligne core_license_config falsifiée (plan_type = 'ent', max_depots = 99999) SANS signed_token
       await db.exec(`
-        DELETE FROM public.license_config;
-        INSERT INTO public.license_config (id, license_key, plan_type, max_depots, signed_token)
+        DELETE FROM public.core_license_config;
+        INSERT INTO public.core_license_config (id, license_key, plan_type, max_depots, signed_token)
         VALUES ('active_license', 'FAKE-ENT', 'ent', 99999, NULL);
       `);
 
       // Le dépôt initial "Dépôt Central" existe déjà (1 dépôt = limite du plan free).
       // L'ajout d'un 2e dépôt doit être bloqué car signed_token est NULL -> plan effectif = 'free' (max 1 dépôt)
       await expect(
-        db.exec(`INSERT INTO public.depots (id, name, type) VALUES ('depot-pirate-2', 'Dépôt Pirate 2', 'MAGASIN');`)
+        db.exec(`INSERT INTO public.stk_depots (id, name, type) VALUES ('depot-pirate-2', 'Dépôt Pirate 2', 'MAGASIN');`)
       ).rejects.toThrow(/QUOTA_EXCEEDED.*limitée à 1/i);
 
       // 2. Insérer un signed_token JSON valide pour le plan 'sta' avec max_depots = 2, même si la colonne max_depots vaut 99
       const staToken = await signTestLicenseToken({ plan: 'sta', maxDepots: 2 });
       await db.query(
-        `UPDATE public.license_config SET plan_type = 'ent', max_depots = 99, signed_token = $1 WHERE id = 'active_license';`,
+        `UPDATE public.core_license_config SET plan_type = 'ent', max_depots = 99, signed_token = $1 WHERE id = 'active_license';`,
         [JSON.stringify(staToken)]
       );
 
       // Le 2e dépôt est maintenant autorisé (quota signé = 2)
-      await db.exec(`INSERT INTO public.depots (id, name, type) VALUES ('depot-cam-1', 'Camionnette 1', 'VEHICULE');`);
+      await db.exec(`INSERT INTO public.stk_depots (id, name, type) VALUES ('depot-cam-1', 'Camionnette 1', 'VEHICULE');`);
 
       // Le 3e dépôt doit être refusé car le signed_token 'sta' plafonne à 2 dépôts
       await expect(
-        db.exec(`INSERT INTO public.depots (id, name, type) VALUES ('depot-cam-2', 'Camionnette 2', 'VEHICULE');`)
+        db.exec(`INSERT INTO public.stk_depots (id, name, type) VALUES ('depot-cam-2', 'Camionnette 2', 'VEHICULE');`)
       ).rejects.toThrow(/QUOTA_EXCEEDED.*limitée à 2/i);
     });
 
     it('SQL : process_stock_movement exécute un transfert inter-dépôts (TRANSFER) atomique et conserve la quantité totale', async () => {
       // Créer un article avec 20 unités au Dépôt Central
       const prodRes = await db.query<{ id: string }>(`
-        INSERT INTO public.products (id, reference, brand, model, quantity, min_stock_alert, store_name, room_name, shelf_name)
+        INSERT INTO public.stk_products (id, reference, brand, model, quantity, min_stock_alert, store_name, room_name, shelf_name)
         VALUES ('prod-trans-01', 'REF-TRANS-01', 'Bosch', 'Perfo GBH', 20, 5, 'Dépôt Central', 'A', 'R1')
         RETURNING id;
       `);
@@ -393,10 +393,10 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
         new_quantity: 20,
       });
 
-      // Vérifier stock_levels pour les deux dépôts
+      // Vérifier stk_stock_levels pour les deux dépôts
       const levels = await db.query<{ depot_name: string; quantity: number; rack_location: string }>(
         `SELECT depot_name, quantity::int AS quantity, rack_location
-         FROM public.stock_levels
+         FROM public.stk_stock_levels
          WHERE product_id = $1
          ORDER BY depot_name;`,
         [productId]
@@ -409,7 +409,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
 
       // Vérifier que la quantité globale du produit est inchangée (13 + 7 = 20)
       const globalProd = await db.query<{ quantity: number }>(
-        `SELECT quantity::int AS quantity FROM public.products WHERE id::text = $1;`,
+        `SELECT quantity::int AS quantity FROM public.stk_products WHERE id::text = $1;`,
         [productId]
       );
       expect(globalProd.rows[0].quantity).toBe(20);
@@ -459,7 +459,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
       // Sur l'article REF-TRANS-01 : Dépôt Central = 13, Camionnette 1 = 7 (total = 20).
       // On réalise un inventaire physique au Dépôt Central : stock compté = 10 (écart = -3).
       const prodRow = await db.query<{ id: string }>(
-        `SELECT id FROM public.products WHERE reference = 'REF-TRANS-01';`
+        `SELECT id FROM public.stk_products WHERE reference = 'REF-TRANS-01';`
       );
       const productId = String(prodRow.rows[0].id);
 
@@ -487,17 +487,17 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
         new_quantity: 17, // 10 (Dépôt Central) + 7 (Camionnette 1)
       });
 
-      // Vérifier que products.quantity vaut bien 17
+      // Vérifier que stk_products.quantity vaut bien 17
       const updatedProd = await db.query<{ quantity: number }>(
-        `SELECT quantity::int AS quantity FROM public.products WHERE id::text = $1;`,
+        `SELECT quantity::int AS quantity FROM public.stk_products WHERE id::text = $1;`,
         [productId]
       );
       expect(updatedProd.rows[0].quantity).toBe(17);
 
-      // Vérifier que le mouvement journalisé dans stock_movements enregistre l'écart (3) en sortie ('OUT')
+      // Vérifier que le mouvement journalisé dans stk_movements enregistre l'écart (3) en sortie ('OUT')
       const movRows = await db.query<{ movement_type: string; quantity_changed: number; depot_name: string }>(
         `SELECT movement_type, quantity_changed::int AS quantity_changed, depot_name
-         FROM public.stock_movements
+         FROM public.stk_movements
          WHERE product_id::text = $1
          ORDER BY created_at DESC, id DESC
          LIMIT 1;`,
@@ -707,7 +707,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
           return { data: null, error: null };
         }),
         from: vi.fn((table: string) => {
-          if (table === 'material_orders') {
+          if (table === 'stk_material_orders') {
             return {
               select: () => ({
                 limit: async () => ({ data: [{ id: 'existing-1' }], error: null }),
@@ -784,7 +784,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
       expect(updatedProduct?.quantity).toBe(23);
     });
 
-    it('performIncrementalSync filtre stock_movements sur created_at et normalise les enregistrements dans IndexedDB', async () => {
+    it('performIncrementalSync filtre stk_movements sur created_at et normalise les enregistrements dans IndexedDB', async () => {
       await setSyncMetadata('last_incremental_sync_at', '2026-11-01T00:00:00.000Z');
 
       const queriedFilters: Array<{ table: string; col: string; val: string }> = [];
@@ -793,7 +793,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
           select: () => ({
             gt: async (col: string, val: string) => {
               queriedFilters.push({ table, col, val });
-              if (table === 'products') {
+              if (table === 'stk_products') {
                 return {
                   data: [
                     {
@@ -810,7 +810,7 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
                   error: null,
                 };
               }
-              if (table === 'stock_movements') {
+              if (table === 'stk_movements') {
                 return {
                   data: [
                     {
@@ -833,9 +833,9 @@ describe('Hardening v38 — 4. Licences TOT, 2. Transactions de stock, 3. Synchr
       const ok = await performIncrementalSync(mockClient as any);
       expect(ok).toBe(true);
 
-      // Vérifie que stock_movements est bien filtré sur created_at (et non sur timestamp)
+      // Vérifie que stk_movements est bien filtré sur created_at (et non sur timestamp)
       expect(queriedFilters).toContainEqual({
-        table: 'stock_movements',
+        table: 'stk_movements',
         col: 'created_at',
         val: '2026-11-01T00:00:00.000Z',
       });

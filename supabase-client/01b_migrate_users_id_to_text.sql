@@ -1,20 +1,8 @@
 -- =========================================================================
--- TOT STOCK - SCRIPT 01b : MIGRATION OPTIONNELLE users.id VERS TEXT
--- Rejouable : oui (Optionnel : uniquement si public.users.id est entier)
--- =========================================================================
--- Contexte :
--- Dans les versions initiales de TOT STOCK, la colonne public.users.id pouvait
--- être typée en BIGINT/INTEGER avec une séquence auto-incrémentée.
--- La version V13+ supporte les identifiants textuels/UUID (ex: v_uid::text)
--- pour une corrélation directe et sans friction avec auth.users.id.
---
--- Cette migration convertit en toute sécurité la clé primaire de public.users
--- et les références associées (clés étrangères) vers le type TEXT.
---
--- IMPORTANT :
--- 1. Exécuter ce script uniquement si public.users.id est actuellement de type
---    BIGINT, INTEGER ou SMALLINT.
--- 2. Faites une sauvegarde avant l'exécution.
+-- TOT STOCK - SCRIPT 01b : MIGRATION OPTIONNELLE core_users.id VERS TEXT (01b_migrate_users_id_to_text.sql)
+-- Description : Convertit public.core_users.id en TEXT si la colonne est encore de type entier.
+-- Dépendances : 01_auth_link.sql, 09_core_prefixes.sql
+-- Rejouable : oui (idempotent — sans effet si core_users.id est déjà TEXT)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------
@@ -24,16 +12,16 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'users'
+    WHERE table_schema = 'public' AND table_name = 'core_users'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (01b_migrate_users_id_to_text.sql) : La table public.users est absente.';
+    RAISE EXCEPTION 'Prérequis manquant (01b_migrate_users_id_to_text.sql) : La table public.core_users est absente.';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'id'
+    WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'id'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (01b_migrate_users_id_to_text.sql) : La colonne public.users.id est absente.';
+    RAISE EXCEPTION 'Prérequis manquant (01b_migrate_users_id_to_text.sql) : La colonne public.core_users.id est absente.';
   END IF;
 END $$;
 
@@ -43,42 +31,46 @@ DECLARE
 BEGIN
   SELECT data_type INTO v_col_type
   FROM information_schema.columns 
-  WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'id';
+  WHERE table_schema = 'public' AND table_name = 'core_users' AND column_name = 'id';
 
   IF v_col_type IN ('bigint', 'integer', 'smallint') THEN
-    RAISE NOTICE 'Conversion de public.users.id (% -> text) en cours...', v_col_type;
+    RAISE NOTICE 'Conversion de public.core_users.id (% -> text) en cours...', v_col_type;
 
-    -- 1. Supprimer la valeur par défaut liée à l'ancienne séquence
-    ALTER TABLE public.users ALTER COLUMN id DROP DEFAULT;
+    DROP VIEW IF EXISTS public.users;
+    ALTER TABLE public.core_users ALTER COLUMN id DROP DEFAULT;
+    ALTER TABLE public.core_users ALTER COLUMN id TYPE TEXT USING id::text;
+    ALTER TABLE public.core_users ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
 
-    -- 2. Conversion du type de la colonne id vers TEXT
-    ALTER TABLE public.users ALTER COLUMN id TYPE TEXT USING id::text;
-
-    -- 3. Définir un DEFAULT moderne basé sur UUID textuel
-    ALTER TABLE public.users ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-
-    -- 4. Harmonisation des tables référençant users(id) si nécessaire
-    -- (departments.manager_id, projects.manager_id)
     IF EXISTS (
       SELECT 1 FROM information_schema.columns 
-      WHERE table_schema = 'public' AND table_name = 'departments' AND column_name = 'manager_id'
+      WHERE table_schema = 'public' AND table_name = 'core_departments' AND column_name = 'manager_id'
         AND data_type IN ('bigint', 'integer', 'smallint')
     ) THEN
-      ALTER TABLE public.departments ALTER COLUMN manager_id DROP DEFAULT;
-      ALTER TABLE public.departments ALTER COLUMN manager_id TYPE TEXT USING manager_id::text;
+      DROP VIEW IF EXISTS public.departments;
+      ALTER TABLE public.core_departments ALTER COLUMN manager_id DROP DEFAULT;
+      ALTER TABLE public.core_departments ALTER COLUMN manager_id TYPE TEXT USING manager_id::text;
     END IF;
 
     IF EXISTS (
       SELECT 1 FROM information_schema.columns 
-      WHERE table_schema = 'public' AND table_name = 'projects' AND column_name = 'manager_id'
+      WHERE table_schema = 'public' AND table_name = 'core_projects' AND column_name = 'manager_id'
         AND data_type IN ('bigint', 'integer', 'smallint')
     ) THEN
-      ALTER TABLE public.projects ALTER COLUMN manager_id DROP DEFAULT;
-      ALTER TABLE public.projects ALTER COLUMN manager_id TYPE TEXT USING manager_id::text;
+      DROP VIEW IF EXISTS public.projects;
+      ALTER TABLE public.core_projects ALTER COLUMN manager_id DROP DEFAULT;
+      ALTER TABLE public.core_projects ALTER COLUMN manager_id TYPE TEXT USING manager_id::text;
     END IF;
 
-    RAISE NOTICE 'Migration de public.users.id vers TEXT effectuée avec succès.';
+    IF EXISTS (
+      SELECT 1 FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = '_tot_refresh_compat_views'
+    ) THEN
+      PERFORM public._tot_refresh_compat_views();
+    END IF;
+
+    RAISE NOTICE 'Migration de public.core_users.id vers TEXT effectuée avec succès.';
   ELSE
-    RAISE NOTICE 'public.users.id est déjà de type % : aucune migration nécessaire.', v_col_type;
+    RAISE NOTICE 'public.core_users.id est déjà de type % : aucune migration nécessaire.', v_col_type;
   END IF;
 END $$;

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import DOMPurify from 'dompurify';
 import { useApp } from '../context/AppContext';
+import { EXPECTED_SCHEMA_VERSION } from '../appVersion';
 import {
   X,
   BookOpen,
@@ -17,6 +18,7 @@ import {
   QrCode,
   Layers,
   ArrowRight,
+  ArrowLeftRight,
   ExternalLink,
   ChevronRight,
   Users,
@@ -1656,9 +1658,137 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                 </UiScreenshotCard>
               </div>
 
+                {/* Chapitre Sécurité des données (Chiffrement local AES-GCM 256 & Préférences) */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>Sécurité des données (Chiffrement local AES-GCM 256 &amp; Synchronisation des préférences)</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Ce qui est chiffré localement (AES-GCM 256, IV aléatoire de 12 octets par valeur) :</strong> la session et le profil courant (<code>tot_inv_current_user</code>), l'URL et la clé publique Supabase (<code>tqt_company_key</code>, <code>tot_inv_supabase_key</code>), les jetons d'authentification Supabase Auth (<code>sb-*</code> via l'adaptateur <code>auth.storage</code>), la file d'opérations hors-ligne (<code>sync_queue</code> IndexedDB et <code>tot_scanner_offline_queue_v1</code>), l'historique local des mouvements (<code>stock_movements</code>) et les brouillons d'audit d'inventaire (<code>tot_inventory_audit_*</code>).
+                    </li>
+                    <li>
+                      <strong>Où est stockée la clé de chiffrement :</strong>
+                      <ul className="list-circle pl-5 mt-1 space-y-1">
+                        <li><strong>APK Android &amp; Application Bureau Electron (mode natif automatique) :</strong> la clé maître 256 bits est protégée par le trousseau sécurisé du système (<em>Android Keystore AES/GCM/NoPadding</em> ou <em>Electron safeStorage</em> DPAPI / Keychain / libsecret) sans saisie supplémentaire.</li>
+                        <li><strong>Navigateur Web / PWA (mode PIN sur activation dans Profil &gt; Sécurité) :</strong> la clé AES-GCM 256 non extractible est dérivée du code PIN via <code>PBKDF2-SHA256</code> (≥ 600 000 itérations, sel aléatoire distinct du sel de vérification du PIN) et conservée uniquement en mémoire vive (effacée dès le verrouillage d'inactivité ou la déconnexion).</li>
+                      </ul>
+                    </li>
+                    <li>
+                      <strong>Pourquoi le catalogue reste en clair :</strong> les articles, catégories, dépôts, départements, chantiers, rôles et préférences d'interface restent en clair pour garantir un démarrage hors-ligne et une recherche instantanés sur de gros catalogues.
+                    </li>
+                    <li>
+                      <strong>Que faire en cas de PIN oublié ou de cache illisible :</strong> utilisez le bouton <em>« Réinitialiser les données locales »</em> (dans <em>Profil &gt; Sécurité</em> ou sur l'écran de déverrouillage). L'application tente d'abord de synchroniser les opérations en attente, affiche un avertissement indiquant le nombre exact d'opérations hors-ligne non synchronisées qui seraient perdues, et exige une confirmation explicite avant d'effacer le stockage local.
+                    </li>
+                    <li>
+                      <strong>Ce contre quoi le chiffrement local ne protège pas :</strong> le chiffrement au repos protège contre l'inspection du disque ou d'une sauvegarde locale lorsque la session est verrouillée ou fermée ; il <strong>ne protège pas contre un appareil laissé déverrouillé avec une session ouverte</strong> (d'où l'importance du verrouillage automatique d'inactivité). De plus, toute clé secrète <code>service_role</code> ou <code>sb_secret_</code> est systématiquement refusée et purgée au démarrage.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Chapitre Transférer du matériel entre dépôts (Multi-articles & Hors-ligne) */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-sky-700 dark:text-sky-400 flex items-center gap-2">
+                    <ArrowLeftRight className="w-4 h-4 shrink-0" />
+                    <span>Transférer du matériel entre dépôts (Lot multi-articles &amp; Mode hors-ligne)</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Conditions d'affichage et permissions requises :</strong> le bouton et l'écran <em>« Transférer vers un autre dépôt »</em> ne sont visibles que si l'utilisateur possède la permission <code>perm_stock_transfer</code> (ou un rôle Super-Admin / Administrateur, rôles 0 et 1) <strong>et</strong> qu'au moins <strong>2 dépôts actifs</strong> (non fermés temporairement, <code>is_active ≠ false</code>) lui sont accessibles dans son périmètre (<code>allowed_depots</code>).
+                    </li>
+                    <li>
+                      <strong>Points d'entrée dans l'application :</strong>
+                      <ul className="list-circle pl-5 mt-1 space-y-1">
+                        <li><strong>Fiche article (Mobile &amp; Bureau) :</strong> bouton <em>« Transférer »</em> / <em>« Transférer vers un autre dépôt »</em> pré-remplissant l'article et son dépôt actuel.</li>
+                        <li><strong>Inventaire Bureau (Sélection multiple &amp; Clic droit) :</strong> cochez plusieurs articles puis cliquez sur <em>« Transférer la sélection »</em> dans la barre d'actions groupées, ou faites un clic droit sur une ligne &gt; <em>« Transférer »</em>.</li>
+                        <li><strong>Menu « + » / Actions rapides / Page Mouvements :</strong> bouton <em>« Transfert entre dépôts »</em> pour composer un lot librement.</li>
+                      </ul>
+                    </li>
+                    <li>
+                      <strong>Procédure pas à pas (Multi-articles atomique) :</strong>
+                      <ol className="list-decimal pl-5 mt-1 space-y-1">
+                        <li>Choisissez le <strong>Dépôt source</strong> et le <strong>Dépôt destination</strong> (obligatoirement distincts et actifs ; le bouton <code>⇄</code> permet d'inverser source et destination en un clic).</li>
+                        <li>Ajoutez de <strong>1 à 200 articles</strong> par recherche (référence / désignation), par scan code-barres ou via le bouton <em>« Importer du panier »</em>.</li>
+                        <li>Pour chaque ligne, vérifiez le <strong>stock disponible dans le dépôt source</strong>, saisissez la quantité à transférer (strictement supérieure à 0 et plafonnée au stock disponible du dépôt source) et, si souhaité, l'<strong>emplacement / rayon cible</strong> dans le dépôt de destination.</li>
+                        <li>Indiquez un motif / commentaire facultatif (ex. <em>Réassort camionnette</em>, <em>Équilibrage stock</em>), vérifiez le bandeau récapitulatif (<em>« X articles, Y pièces : Dépôt A → Dépôt B »</em>) et validez.</li>
+                      </ol>
+                    </li>
+                    <li>
+                      <strong>Atomicité (« Tout ou rien ») et préservation du dépôt principal :</strong> l'ensemble du lot est exécuté en une seule transaction SQL (<code>public.transfer_stock_batch</code>) identifiée par un <code>batch_id</code> unique et idempotent. Si une seule ligne manque de stock côté serveur, <strong>aucune ligne n'est appliquée</strong> et les stocks locaux sont intégralement restaurés. Le transfert met à jour les quantités par dépôt (<code>stk_stock_levels</code>) sans jamais écraser le dépôt principal de rattachement (<code>store_name</code>) de la fiche article.
+                    </li>
+                    <li>
+                      <strong>Fonctionnement hors-ligne et résolution des conflits :</strong> sans réseau, le lot est enregistré dans la file d'attente locale chiffrée (<code>RPC_STOCK_TRANSFER_BATCH</code>) avec le message <em>« Transfert en attente de synchronisation »</em> et rejoué automatiquement au retour de la connexion avec le même <code>batch_id</code> (aucun doublon possible). Si le stock du dépôt source a changé entre-temps sur le serveur et rend le lot invalide, l'opération passe à l'état <em>Rejeté</em> dans la bannière des opérations en échec afin que l'utilisateur puisse l'annuler proprement.
+                    </li>
+                    <li>
+                      <strong>Traçabilité et export CSV :</strong> chaque ligne transférée apparaît dans l'historique avec le badge <code>TRANSFERT</code> et le flux <em>« Dépôt A → Dépôt B »</em>, regroupée visuellement par lot, filtrable via le filtre <em>« Transferts »</em>, et exportable en CSV avec les colonnes <em>Dépôt source</em> et <em>Dépôt destination</em>. Une seule entrée synthétique est ajoutée au journal d'audit par lot.
+                    </li>
+                    <li>
+                      <strong>Périmètre des vérifications automatisées vs matériel physique :</strong> les règles SQL (atomicité tout-ou-rien, idempotence <code>batch_id</code>, permissions <code>perm_stock_transfer</code>), la mise à jour optimiste, le rollback et la file hors-ligne sont vérifiés automatiquement par la suite de tests ; en revanche, le déclenchement caméra optique / douchette Bluetooth physique sur terminal Android réel nécessite un test sur appareil physique.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Chapitre Configurer l'envoi d'e-mails (Multi-fournisseurs, Microsoft 365 Graph & Expéditeur par application) */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-cyan-700 dark:text-cyan-400 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>Configurer l&apos;envoi d&apos;e-mails (Multi-fournisseurs, Microsoft 365 Graph &amp; Expéditeur par application)</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Services transactionnels API HTTP (recommandés) :</strong> dans <em>Paramètres &gt; E-mails &gt; 1. Comptes d&apos;envoi</em>, choisissez parmi <strong>Brevo</strong> (clé API v3 <code>xkeysib-...</code>), <strong>Resend</strong> (<code>re_...</code>), <strong>SendGrid</strong> (<code>SG....</code>), <strong>Mailgun</strong> (clé API + domaine d&apos;envoi + région EU/US), <strong>Postmark</strong> (Server Token) ou <strong>Mailjet</strong> (clé publique + clé secrète). Validez toujours votre adresse ou domaine d&apos;expéditeur (SPF / DKIM / DMARC) chez le fournisseur.
+                    </li>
+                    <li>
+                      <strong>Microsoft 365 (Graph) — recommandé pour Outlook / Exchange Online :</strong> Microsoft désactivant le SMTP par mot de passe (Basic Auth) fin décembre 2026, sélectionnez le modèle <strong>« Microsoft 365 (Graph) — recommandé pour Outlook »</strong> (protocole OAuth2 <code>client_credentials</code>, permission d&apos;application <code>Mail.Send</code>, pièces jointes jusqu&apos;à 3 Mo en v1) :
+                      <ol className="list-decimal pl-5 mt-1 space-y-1">
+                        <li><em>Centre d&apos;administration Microsoft Entra</em> &gt; <em>Inscriptions d&apos;applications</em> &gt; <em>Nouvelle inscription</em> (nom : <code>TOT Suite Mail</code>).</li>
+                        <li>Copier l&apos;<strong>ID de l&apos;application (client)</strong> et l&apos;<strong>ID de l&apos;annuaire (locataire)</strong>.</li>
+                        <li><em>Certificats et secrets</em> &gt; <em>Nouveau secret client</em> : copier la <strong>Valeur</strong> (pas l&apos;ID du secret) et la date d&apos;expiration (avertissement affiché 30 jours avant expiration).</li>
+                        <li><em>Autorisations d&apos;API</em> &gt; <em>Ajouter</em> &gt; <em>Microsoft Graph</em> &gt; <strong>Autorisations d&apos;application</strong> &gt; <strong><code>Mail.Send</code></strong> &gt; <strong>Accorder le consentement d&apos;administrateur</strong>.</li>
+                        <li>Recommandé : restreindre l&apos;application aux seules boîtes d&apos;envoi via <code>New-ApplicationAccessPolicy</code> dans Exchange Online.</li>
+                      </ol>
+                    </li>
+                    <li>
+                      <strong>Serveurs SMTP (Gmail, OVH, Infomaniak, SMTP personnalisé) :</strong>
+                      <ul className="list-circle pl-5 mt-1 space-y-1">
+                        <li><strong>Gmail / Google Workspace (<code>smtp.gmail.com</code>, port 587 STARTTLS) :</strong> activez la validation en 2 étapes puis générez un <strong>mot de passe d&apos;application de 16 caractères</strong> sur <code>myaccount.google.com/apppasswords</code> (limite ~500 e-mails/jour ; Gmail réécrit l&apos;adresse d&apos;expéditeur avec celle du compte sauf si l&apos;adresse est configurée comme alias validé).</li>
+                        <li><strong>OVH (<code>ssl0.ovh.net</code>, port 465 SSL ou 587 STARTTLS) &amp; Infomaniak (<code>mail.infomaniak.com</code>, port 465 SSL ou 587 STARTTLS) :</strong> renseignez l&apos;adresse complète de la boîte et son mot de passe.</li>
+                        <li><strong>Outlook / Microsoft 365 (SMTP) :</strong> affiche un avertissement et un bouton <em>« Utiliser Microsoft 365 (Graph) à la place »</em> pour basculer vers l&apos;envoi moderne Microsoft Graph.</li>
+                        <li><strong>Port 25 non pris en charge :</strong> utilisez toujours le port <strong>587 (STARTTLS)</strong> ou <strong>465 (SSL/TLS)</strong>.</li>
+                      </ul>
+                    </li>
+                    <li>
+                      <strong>Expéditeur par application de la suite (<code>core_mail_senders</code>) :</strong> la base Supabase étant partagée par plusieurs applications (<code>stk</code> TOT Stock, <code>hab</code> TOT Habilitations, <code>rpt</code> TOT Rapports, <code>tools</code> TOT Outils), l&apos;onglet <em>2. Expéditeurs par application</em> permet d&apos;attribuer à chaque application son propre nom affiché (<code>from_name</code>), son adresse d&apos;expéditeur (<code>from_email</code>), son adresse de réponse (<code>reply_to</code>) et un compte d&apos;envoi dédié ou le compte actif par défaut.
+                    </li>
+                    <li>
+                      <strong>Sécurité des secrets &amp; Journalisation :</strong> la clé API, le secret client Entra ou le mot de passe SMTP est envoyé en <strong>écriture seule</strong> via la RPC <code>public.set_mail_account_secret</code> dans Supabase Vault (extension Vault obligatoire ; aucun secret n&apos;est jamais stocké en clair ni relu par le navigateur). Seule la fonction Edge serveur <code>APP_TOT-Stock_send-report-email</code> lit la configuration via <code>get_mail_config(app_code)</code> (<code>service_role</code> uniquement) et ignore tout expéditeur fourni par le client. L&apos;onglet <em>3. Journal</em> affiche les 100 derniers envois (<code>sender_email</code>, <code>user_id</code>, destinataires masqués <code>j***@domaine.fr</code>, limite de 30 envois/heure) avec purge à 90 jours (<code>purge_mail_log(90)</code>).
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.4.1 / App 5.9.1) */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400 flex items-center gap-2">
+                    <Database className="w-4 h-4 shrink-0" />
+                    <span>Mise à jour de la base et des scripts (Schéma {EXPECTED_SCHEMA_VERSION} / App {APP_VERSION})</span>
+                  </h4>
+                  <ol className="list-decimal pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Étape 1 — Scripts SQL (<code>00</code> à <code>14</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL</em>). Le script 14 migre automatiquement votre ancienne configuration Brevo éventuelle.
+                    </li>
+                    <li>
+                      <strong>Étape 2 — Fonctions Edge (onglet <em>4. Fonctions Edge</em>) :</strong> mettez à jour dans Supabase Dashboard les 3 fonctions autonomes (<code>APP_TOT-Stock_admin-users</code>, <code>APP_TOT-Stock_licenses_sync-license</code>, <code>APP_TOT-Stock_send-report-email</code>) générées dans <code>supabase-client/generated/edge-functions/</code>.
+                    </li>
+                    <li>
+                      <strong>Étape 3 — Synchronisation de licence &amp; Vérification :</strong> synchronisez la licence dans l&apos;onglet <em>1. Licence</em>, puis vérifiez dans la page <em>À propos</em> ou <em>Diagnostic d&apos;installation</em> que le schéma est à <strong>{EXPECTED_SCHEMA_VERSION} (À jour)</strong> et que les 3 fonctions Edge répondent <strong>OK</strong>.
+                    </li>
+                  </ol>
+                </div>
+
               {/* Pied de Page du Manuel */}
               <div className="pt-4 border-t border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-400 gap-2">
-                <div>TOT Stock Pro v5.4 • Manuel d'Utilisation Officiel</div>
+                <div>TOT Stock Pro v{APP_VERSION} • Manuel d&apos;Utilisation Officiel</div>
                 <div>Document conforme pour archivage qualité &amp; audit interne</div>
               </div>
             </div>

@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { getSupabaseEnv } from "./config.ts";
+import { getSupabaseEnv, TABLES } from "./config.ts";
 import { jsonResponse } from "./cors.ts";
 
 export interface AuthenticatedCallerContext {
@@ -68,7 +68,7 @@ export async function authenticateCaller(
 
   const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
   const { data: callerProfile, error: profErr } = await supabaseAdmin
-    .from('users')
+    .from(TABLES.users)
     .select('id, auth_user_id, name, email, role_id, department, allowed_depots, is_blocked')
     .eq('auth_user_id', authCaller.id)
     .maybeSingle();
@@ -88,7 +88,7 @@ export async function authenticateCaller(
   }
 
   const { data: callerRole } = await supabaseAdmin
-    .from('roles')
+    .from(TABLES.roles)
     .select('id, name, permissions')
     .eq('id', callerProfile.role_id)
     .maybeSingle();

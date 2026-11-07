@@ -1505,6 +1505,228 @@ export const EXACT_NL_DICTIONARY: Record<string, string> = {
     'SQL-scripts voor het aanmaken van tabellen en Supabase CLI-opdrachten',
   'Scripts SQL de création des tables et commandes CLI Supabase':
     'SQL-scripts voor het aanmaken van tabellen en Supabase CLI-opdrachten',
+
+  // Desktop & Settings menus (FR -> NL)
+  'Administration & Préférences': 'Beheer & Voorkeuren',
+  'Profil et sécurité': 'Profiel & Beveiliging',
+  'Utilisateurs et rôles': 'Gebruikers & Rollen',
+  'Dépôts & Véhicules': 'Depots & Voertuigen',
+  'Catégories articles': 'Artikelcategorieën',
+  'Départements & Projets': 'Afdelingen & Projecten',
+  'Entreprise & E-mails SMTP': 'Bedrijf & SMTP E-mails',
+  'Licence & Base SQL': 'Licentie & SQL-database',
+  "Poste d'impression": 'Afdrukstation',
+  'Documentation': 'Documentatie',
+  'À propos & Installeurs': 'Over & Installatie',
+  'Profil opérateur & Sécurité': 'Operatorprofiel & Beveiliging',
+  'Nom complet': 'Volledige naam',
+  'Adresse e-mail / Département': 'E-mailadres / Afdeling',
+  'Modifier l’utilisateur': 'Gebruiker bewerken',
+  "Modifier l'utilisateur": 'Gebruiker bewerken',
+  'Ajouter un utilisateur': 'Gebruiker toevoegen',
+  'Annuler l’édition': 'Bewerken annuleren',
+  "Annuler l'édition": 'Bewerken annuleren',
+  'Trigramme': 'Trigram',
+  'E-mail': 'E-mail',
+  'Nouveau PIN / Mot de passe (optionnel)': 'Nieuwe pincode / wachtwoord (optioneel)',
+  'PIN / Mot de passe initial': 'Initiële pincode / wachtwoord',
+  'Laisser vide pour conserver': 'Leeg laten om te behouden',
+  'Rôle': 'Rol',
+  'Département': 'Afdeling',
+  '— Aucun / Général —': '— Geen / Algemeen —',
+  'Préparateur de commandes magasin': 'Magazijn-orderpicker',
+  'Accès à tous les dépôts (*)': 'Toegang tot alle depots (*)',
+  '+ Créer utilisateur': '+ Gebruiker aanmaken',
+  'Recherche globale (nom, trigramme, e-mail, département, rôle)...':
+    'Globaal zoeken (naam, trigram, e-mail, afdeling, rol)...',
+  'Tri :': 'Sorteren:',
+  'Nom (A → Z)': 'Naam (A → Z)',
+  'Nom (Z → A)': 'Naam (Z → A)',
+  'Trigramme (A → Z)': 'Trigram (A → Z)',
+  'Trigramme (Z → A)': 'Trigram (Z → A)',
+  'E-mail (A → Z)': 'E-mail (A → Z)',
+  'E-mail (Z → A)': 'E-mail (Z → A)',
+  'Département (A → Z)': 'Afdeling (A → Z)',
+  'Département (Z → A)': 'Afdeling (Z → A)',
+  'Rôle (A → Z)': 'Rol (A → Z)',
+  'Rôle (Z → A)': 'Rol (Z → A)',
+  "Statut (Actifs d'abord)": 'Status (Actief eerst)',
+  "Statut (Bloqués d'abord)": 'Status (Geblokkeerd eerst)',
+  'Effacer filtres': 'Filters wissen',
+  'Nom': 'Naam',
+  'Statut': 'Status',
+  'Actions': 'Acties',
+  'Filtrer trig...': 'Filter trig...',
+  'Filtrer nom...': 'Filter naam...',
+  'Filtrer e-mail...': 'Filter e-mail...',
+  'Tous départements': 'Alle afdelingen',
+  '— Sans département —': '— Zonder afdeling —',
+  'Tous rôles': 'Alle rollen',
+  'Tous statuts': 'Alle statussen',
+  'Actif': 'Actief',
+  'Préparateur': 'Orderpicker',
+  'Col. filtrées': 'Gefilterde kol.',
+  'Aucun utilisateur ne correspond aux filtres de colonnes sélectionnés.':
+    'Geen enkele gebruiker komt overeen met de geselecteerde kolomfilters.',
+  'Débloquer': 'Deblokkeren',
+  'Bloquer': 'Blokkeren',
+  "Supprimer l'utilisateur": 'Gebruiker verwijderen',
+  'Rôles & Matrice des Permissions': 'Rollen & Rechtenmatrix',
+  '+ Nouveau rôle': '+ Nieuwe rol',
+  'Rôles recommandés': 'Aanbevolen rollen',
+  'Rétablir les 11 rôles standards': 'De 11 standaardrollen herstellen',
+  'Rechercher un rôle par nom ou #ID...': 'Rol zoeken op naam of #ID...',
+  'Tri des rôles :': 'Rollen sorteren:',
+  'Ordre alphabétique (A → Z)': 'Alfabetisch (A → Z)',
+  'Ordre alphabétique (Z → A)': 'Alfabetisch (Z → A)',
+  'Par identifiant (#0 → #10)': 'Op ID (#0 → #10)',
+  'Par nombre de permissions': 'Op aantal rechten',
+  "Par nombre d'articles": 'Op aantal artikelen',
+  "Par ordre d'ajout": 'Op volgorde van toevoeging',
+  'Rechercher une permission...': 'Machtiging zoeken...',
+  'Enregistrer le rôle': 'Rol opslaan',
+  '+ Créer le rôle': '+ Rol aanmaken',
+  'Nom du dépôt / véhicule (unique)': 'Naam van depot / voertuig (uniek)',
+  'Nom du dépôt...': 'Depotnaam...',
+  'Type': 'Type',
+  'Magasin Fixe (FIXED)': 'Vast Magazijn (FIXED)',
+  'Véhicule / Camionnette (VEHICLE)': 'Voertuig / Bestelwagen (VEHICLE)',
+  'Conteneur Chantier (CONTAINER)': 'Werfcontainer (CONTAINER)',
+  'Adresse / Immatriculation': 'Adres / Kenteken',
+  'Adresse ou plaque...': 'Adres of kenteken...',
+  'Responsable': 'Verantwoordelijke',
+  '— Aucun —': '— Geen —',
+  'Zones de retrait (séparées par virgule)': 'Afhaalzones (gescheiden door komma)',
+  '+ Ajouter': '+ Toevoegen',
+  'Rechercher un dépôt, adresse, plaque...': 'Depot, adres of kenteken zoeken...',
+  'Tous les types': 'Alle types',
+  'Magasins fixes': 'Vaste magazijnen',
+  'Véhicules': 'Voertuigen',
+  'Conteneurs': 'Containers',
+  'Tous responsables': 'Alle verantwoordelijken',
+  '— Sans responsable —': '— Zonder verantwoordelijke —',
+  'Ouverts / Actifs': 'Open / Actief',
+  'Fermés': 'Gesloten',
+  'Tri : A → Z': 'Sorteren: A → Z',
+  'Tri : Z → A': 'Sorteren: Z → A',
+  'Tri : Par type': 'Sorteren: Op type',
+  'Tri : Par statut': 'Sorteren: Op status',
+  'Tri : Nb de chantiers': 'Sorteren: Aantal werven',
+  'Tri : Nom (A → Z)': 'Sorteren: Naam (A → Z)',
+  'Tri : Nom (Z → A)': 'Sorteren: Naam (Z → A)',
+  'Tri : N° Chantier (A → Z)': 'Sorteren: Werfnr. (A → Z)',
+  'Tri : N° Chantier (Z → A)': 'Sorteren: Werfnr. (Z → A)',
+  'Tri : Par département (A → Z)': 'Sorteren: Op afdeling (A → Z)',
+  'Aucun dépôt ou véhicule ne correspond aux filtres sélectionnés.':
+    'Geen enkel depot of voertuig komt overeen met de geselecteerde filters.',
+  'Ouvert': 'Open',
+  'Fermé': 'Gesloten',
+  'Basculer Ouvert / Fermé': 'Wisselen tussen Open / Gesloten',
+  'Modifier ce dépôt': 'Dit depot bewerken',
+  'Supprimer ce dépôt': 'Dit depot verwijderen',
+  'Unicité stricte du nom de catégorie • Recherche instantanée et tri alphabétique':
+    'Strikte uniciteit van categorienaam • Direct zoeken en alfabetisch sorteren',
+  'Nouvelle catégorie (nom unique)...': 'Nieuwe categorie (unieke naam)...',
+  'Rechercher une catégorie...': 'Categorie zoeken...',
+  'Renommer la catégorie': 'Categorie hernoemen',
+  'Supprimer la catégorie': 'Categorie verwijderen',
+  'Cliquez sur un département pour afficher ses chantiers, ou sur « Tous » pour afficher tous les chantiers':
+    'Klik op een afdeling om de werven te tonen, of op « Alle » om alle werven te tonen',
+  'Nom du département (unique)': 'Afdelingsnaam (uniek)',
+  'Responsable de département': 'Afdelingsverantwoordelijke',
+  'Service Préparateurs Magasin': 'Dienst Magazijn-orderpickers',
+  'Validation hiérarchique dès (€) :': 'Hiërarchische goedkeuring vanaf (€):',
+  'Enregistrer le département': 'Afdeling opslaan',
+  '+ Créer département': '+ Afdeling aanmaken',
+  'Rechercher un département ou responsable...': 'Afdeling of verantwoordelijke zoeken...',
+  'Tous les responsables de département': 'Alle afdelingsverantwoordelijken',
+  'Modifier ce département': 'Deze afdeling bewerken',
+  'Supprimer ce département': 'Deze afdeling verwijderen',
+  'N° Chantier (unique)': 'Werfnr. (uniek)',
+  'Nom du chantier': 'Werfnaam',
+  '— Choisir —': '— Kiezen —',
+  'Chef de chantier': 'Werfleider',
+  'Enregistrer le chantier': 'Werf opslaan',
+  '+ Créer chantier': '+ Werf aanmaken',
+  'N° ou nom du chantier...': 'Werfnr. of werfnaam...',
+  '— Choisir département —': '— Afdeling kiezen —',
+  'Tous les départements': 'Alle afdelingen',
+  'Resp. département : Tous': 'Afd. verantw.: Alle',
+  'Chef de chantier : Tous': 'Werfleider: Alle',
+  '— Sans chef de chantier —': '— Zonder werfleider —',
+  'Sélectionnez un département ci-dessus pour afficher ses chantiers':
+    'Selecteer hierboven een afdeling om de werven te tonen',
+  'Ou cliquez sur le bouton « Tous » pour afficher tous les chantiers / projets tous départements confondus.':
+    'Of klik op de knop « Alle » om alle werven / projecten van alle afdelingen te tonen.',
+  'Aucun chantier / projet ne correspond aux critères sélectionnés.':
+    'Geen enkele werf / project komt overeen met de geselecteerde criteria.',
+  'Modifier ce chantier': 'Deze werf bewerken',
+  'Supprimer ce chantier': 'Deze werf verwijderen',
+  'Identité Entreprise & Expéditeur E-mails': 'Bedrijfsidentiteit & E-mailafzender',
+  "Nom de l'entreprise": 'Bedrijfsnaam',
+  "Nom d'expéditeur e-mail": 'Naam e-mailafzender',
+  "Adresse e-mail d'expédition": 'Verzendend e-mailadres',
+  '1. Licence & Abonnement': '1. Licentie & Abonnement',
+  '2. Connexion Base SQL Supabase (BYOD)': '2. Supabase SQL-databaseverbinding (BYOD)',
+  '3. Scripts SQL (01 à 12) & Diagnostic': '3. SQL-scripts (01 t/m 12) & Diagnose',
+  '4. Fonctions Edge': '4. Edge Functions',
+  "Licence & Formule d'abonnement TOT Stock": 'TOT Stock Licentie & Abonnementsformule',
+  "Vérification cryptographique Ed25519 • Quotas appliqués depuis le jeton signé de l'éditeur":
+    'Cryptografische Ed25519-verificatie • Quota toegepast vanuit het ondertekende token van de uitgever',
+  'Synchroniser avec le serveur': 'Synchroniseren met de server',
+  'Découvrir la licence du projet': 'Projectlicentie ontdekken',
+  'Formule certifiée': 'Gecertificeerd abonnement',
+  'Quota Magasins & Dépôts': 'Quotum Magazijnen & Depots',
+  'Dépôts ouverts autorisés': 'Toegestane geopende depots',
+  'Quota Références Catalogue': 'Quotum Catalogusreferenties',
+  'Articles enregistrés': 'Geregistreerde artikelen',
+  'Validité & Bail Hors-ligne': 'Geldigheid & Offline Lease',
+  'Illimitée (Community)': 'Onbeperkt (Community)',
+  'Clé de licence active': 'Actieve licentiesleutel',
+  'Dissocier la clé': 'Sleutel ontkoppelen',
+  'Copié': 'Gekopieerd',
+  'Copié !': 'Gekopieerd!',
+  'Copier': 'Kopiëren',
+  'Copier ce script': 'Dit script kopiëren',
+  'Saisir une clé officielle (ex: TOT-PRO-XXXX-XXXX)...':
+    'Voer een officiële sleutel in (bijv. TOT-PRO-XXXX-XXXX)...',
+  'Activer la clé': 'Sleutel activeren',
+  'Entreprise titulaire & Contact de licence': 'Licentiehouder & Contactpersoon',
+  'Raison sociale / Organisation': 'Bedrijfsnaam / Organisatie',
+  "Nom de l'entreprise...": 'Bedrijfsnaam...',
+  'E-mail administrateur licence': 'E-mail licentiebeheerder',
+  'Enregistrer le titulaire': 'Licentiehouder opslaan',
+  "Formules d'abonnement & Quotas TOT Stock": 'TOT Stock Abonnementsformules & Quota',
+  'Connexion Base de Données SQL Supabase (BYOD)': 'Supabase SQL-databaseverbinding (BYOD)',
+  "Reliez l'application à votre instance PostgreSQL / Supabase d'entreprise pour la synchronisation temps réel multi-postes":
+    'Koppel de applicatie aan uw zakelijke PostgreSQL / Supabase-instantie voor realtime synchronisatie op meerdere werkstations',
+  'Mode local hors-ligne': 'Lokale offline modus',
+  'URL du projet Supabase (HTTPS)': 'Supabase project-URL (HTTPS)',
+  'Clé API publique Supabase (anon / publishable key)':
+    'Openbare Supabase API-sleutel (anon / publishable key)',
+  'Tester la connexion': 'Verbinding testen',
+  'Enregistrer & Connecter la base': 'Opslaan & Database verbinden',
+  'Synchroniser depuis Supabase': 'Synchroniseren vanuit Supabase',
+  'Exporter vers Supabase': 'Exporteren naar Supabase',
+  'Mode démo local': 'Lokale demomodus',
+  "Diagnostic de l'installation SQL (`public.diagnostic_installation`)":
+    'Diagnose van de SQL-installatie (`public.diagnostic_installation`)',
+  'Lancer le diagnostic SQL': 'SQL-diagnose starten',
+  'Contrôle': 'Controle',
+  'Clé': 'Sleutel',
+  'Détails': 'Details',
+  'Scripts SQL Officiels Supabase (01 à 12)': 'Officiële Supabase SQL-scripts (01 t/m 12)',
+  'Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base':
+    'Kopieer en voer deze scripts uit in de Supabase SQL Editor om uw database te installeren of bij te werken',
+  'Copier tout le pack SQL (01 à 12)': 'Volledig SQL-pakket kopiëren (01 t/m 12)',
+  'Script complet 01–12 copié !': 'Volledig script 01–12 gekopieerd!',
+  "Documentation & Guides d'exploitation": 'Documentatie & Gebruikshandleidingen',
+  "Solution de gestion de stock multi-dépôts, préparation de commandes par scan et impression d'étiquettes.":
+    'Oplossing voor voorraadbeheer met meerdere depots, orderpicken via scan en etiketten afdrukken.',
+  'Système détecté': 'Gedetecteerd systeem',
+  "Télécharger l'installateur": 'Installatieprogramma downloaden',
+  "Les installateurs sont publiés par l'administrateur sur la page des versions du projet.":
+    'De installatieprogramma’s worden door de beheerder gepubliceerd op de releasepagina van het project.',
 };
 
 /**
@@ -1547,6 +1769,21 @@ const PATTERN_NL_RULES: Array<[RegExp, string]> = [
   [/^(\d+)\s+rôle\(s\)$/i, '$1 rol(len)'],
   [/^(\d+)\s+user\(s\)$/i, '$1 gebruiker(s)'],
   [/^(\d+)\s+utilisateur\(s\)$/i, '$1 gebruiker(s)'],
+  [/^Utilisateurs \((\d+)\)$/i, 'Gebruikers ($1)'],
+  [/^Rôles & Permissions \((\d+)\)$/i, 'Rollen & Rechten ($1)'],
+  [/^Dépôts, Magasins & Véhicules \((\d+)\)$/i, 'Depots, Magazijnen & Voertuigen ($1)'],
+  [/^Quota licence : (\d+) \/ (\d+) dépôt\(s\) actif\(s\)$/i, 'Licentiequotum: $1 / $2 actieve depot(s)'],
+  [/^Catégories d'articles \((\d+)\)$/i, 'Artikelcategorieën ($1)'],
+  [/^Départements \((\d+)\)$/i, 'Afdelingen ($1)'],
+  [/^Tous \((\d+) chantiers\)$/i, 'Alle ($1 werven)'],
+  [/^Tous les chantiers \((\d+)\)$/i, 'Alle werven ($1)'],
+  [/^Tous \((\d+)\)$/i, 'Alle ($1)'],
+  [/^(\d+) chantier(?:s)?$/i, '$1 werf/werven'],
+  [/^(\d+) article(?:s)?$/i, '$1 artikel(en)'],
+  [/^Modifier le rôle « (.+) » \(#(\d+)\)$/i, 'Rol « $1 » bewerken (#$2)'],
+  [/^Choisir (FREE|STA|PRO|ENT)$/i, 'Kies $1'],
+  [/^Prochain contrôle : (\d+) j$/i, 'Volgende controle: $1 d'],
+  [/^TOT Stock — Version ([^\s]+) \(Schéma SQL ([^)]+)\)$/i, 'TOT Stock — Versie $1 (SQL-schema $2)'],
 ];
 
 /**
@@ -1710,7 +1947,306 @@ const PHRASE_NL_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bindisponible\b/gi, 'niet beschikbaar'],
 ];
 
+/**
+ * Exact French -> English dictionary for Desktop & Mobile menus/submenus.
+ */
+const EXACT_EN_DICTIONARY: Record<string, string> = {
+  'Administration & Préférences': 'Administration & Preferences',
+  'Profil et sécurité': 'Profile & Security',
+  'Utilisateurs et rôles': 'Users & Roles',
+  'Dépôts & Véhicules': 'Depots & Vehicles',
+  'Catégories articles': 'Item Categories',
+  'Départements & Projets': 'Departments & Projects',
+  'Entreprise & E-mails SMTP': 'Company & SMTP Emails',
+  'Licence & Base SQL': 'License & SQL Database',
+  "Poste d'impression": 'Print Station',
+  'Documentation': 'Documentation',
+  'À propos & Installeurs': 'About & Installers',
+  'Profil opérateur & Sécurité': 'Operator Profile & Security',
+  'Nom complet': 'Full name',
+  'Adresse e-mail / Département': 'Email address / Department',
+  'Modifier l’utilisateur': 'Edit user',
+  "Modifier l'utilisateur": 'Edit user',
+  'Ajouter un utilisateur': 'Add user',
+  'Annuler l’édition': 'Cancel edit',
+  "Annuler l'édition": 'Cancel edit',
+  'Trigramme': 'Trigram',
+  'E-mail': 'Email',
+  'Nouveau PIN / Mot de passe (optionnel)': 'New PIN / Password (optional)',
+  'PIN / Mot de passe initial': 'Initial PIN / Password',
+  'Laisser vide pour conserver': 'Leave blank to keep current',
+  'Rôle': 'Role',
+  'Département': 'Department',
+  '— Aucun / Général —': '— None / General —',
+  'Préparateur de commandes magasin': 'Warehouse order picker',
+  'Accès à tous les dépôts (*)': 'Access to all depots (*)',
+  'Enregistrer': 'Save',
+  '+ Créer utilisateur': '+ Create user',
+  'Recherche globale (nom, trigramme, e-mail, département, rôle)...':
+    'Global search (name, trigram, email, department, role)...',
+  'Tri :': 'Sort:',
+  'Nom (A → Z)': 'Name (A → Z)',
+  'Nom (Z → A)': 'Name (Z → A)',
+  'Trigramme (A → Z)': 'Trigram (A → Z)',
+  'Trigramme (Z → A)': 'Trigram (Z → A)',
+  'E-mail (A → Z)': 'Email (A → Z)',
+  'E-mail (Z → A)': 'Email (Z → A)',
+  'Département (A → Z)': 'Department (A → Z)',
+  'Département (Z → A)': 'Department (Z → A)',
+  'Rôle (A → Z)': 'Role (A → Z)',
+  'Rôle (Z → A)': 'Role (Z → A)',
+  "Statut (Actifs d'abord)": 'Status (Active first)',
+  "Statut (Bloqués d'abord)": 'Status (Blocked first)',
+  'Effacer filtres': 'Clear filters',
+  'Nom': 'Name',
+  'Statut': 'Status',
+  'Actions': 'Actions',
+  'Filtrer trig...': 'Filter trig...',
+  'Filtrer nom...': 'Filter name...',
+  'Filtrer e-mail...': 'Filter email...',
+  'Tous départements': 'All departments',
+  '— Sans département —': '— No department —',
+  'Tous rôles': 'All roles',
+  'Tous statuts': 'All statuses',
+  'Actif': 'Active',
+  'Bloqué': 'Blocked',
+  'Préparateur': 'Picker',
+  'Col. filtrées': 'Filtered cols',
+  'Aucun utilisateur ne correspond aux filtres de colonnes sélectionnés.':
+    'No user matches the selected column filters.',
+  'Débloquer': 'Unblock',
+  'Bloquer': 'Block',
+  "Supprimer l'utilisateur": 'Delete user',
+  'Rôles & Matrice des Permissions': 'Roles & Permission Matrix',
+  '+ Nouveau rôle': '+ New role',
+  'Rôles recommandés': 'Recommended roles',
+  'Rétablir les 11 rôles standards': 'Restore the 11 standard roles',
+  'Rechercher un rôle par nom ou #ID...': 'Search role by name or #ID...',
+  'Tri des rôles :': 'Sort roles:',
+  'Ordre alphabétique (A → Z)': 'Alphabetical (A → Z)',
+  'Ordre alphabétique (Z → A)': 'Alphabetical (Z → A)',
+  'Par identifiant (#0 → #10)': 'By ID (#0 → #10)',
+  'Par nombre de permissions': 'By permission count',
+  "Par nombre d'articles": 'By item count',
+  "Par ordre d'ajout": 'By creation order',
+  'Rechercher une permission...': 'Search permission...',
+  'Enregistrer le rôle': 'Save role',
+  '+ Créer le rôle': '+ Create role',
+  'Nom du dépôt / véhicule (unique)': 'Depot / vehicle name (unique)',
+  'Nom du dépôt...': 'Depot name...',
+  'Type': 'Type',
+  'Magasin Fixe (FIXED)': 'Fixed Warehouse (FIXED)',
+  'Véhicule / Camionnette (VEHICLE)': 'Vehicle / Van (VEHICLE)',
+  'Conteneur Chantier (CONTAINER)': 'Job Site Container (CONTAINER)',
+  'Adresse / Immatriculation': 'Address / License Plate',
+  'Adresse ou plaque...': 'Address or license plate...',
+  'Responsable': 'Manager',
+  '— Aucun —': '— None —',
+  'Zones de retrait (séparées par virgule)': 'Pickup zones (comma-separated)',
+  '+ Ajouter': '+ Add',
+  'Ajouter': 'Add',
+  'Rechercher un dépôt, adresse, plaque...': 'Search depot, address, license plate...',
+  'Tous les types': 'All types',
+  'Magasins fixes': 'Fixed warehouses',
+  'Véhicules': 'Vehicles',
+  'Conteneurs': 'Containers',
+  'Tous responsables': 'All managers',
+  '— Sans responsable —': '— No manager —',
+  'Ouverts / Actifs': 'Open / Active',
+  'Fermés': 'Closed',
+  'Tri : A → Z': 'Sort: A → Z',
+  'Tri : Z → A': 'Sort: Z → A',
+  'Tri : Par type': 'Sort: By type',
+  'Tri : Par statut': 'Sort: By status',
+  'Tri : Nb de chantiers': 'Sort: Job site count',
+  'Tri : Nom (A → Z)': 'Sort: Name (A → Z)',
+  'Tri : Nom (Z → A)': 'Sort: Name (Z → A)',
+  'Tri : N° Chantier (A → Z)': 'Sort: Job Site # (A → Z)',
+  'Tri : N° Chantier (Z → A)': 'Sort: Job Site # (Z → A)',
+  'Tri : Par département (A → Z)': 'Sort: By department (A → Z)',
+  'Aucun dépôt ou véhicule ne correspond aux filtres sélectionnés.':
+    'No depot or vehicle matches the selected filters.',
+  'Ouvert': 'Open',
+  'Fermé': 'Closed',
+  'Basculer Ouvert / Fermé': 'Toggle Open / Closed',
+  'Modifier ce dépôt': 'Edit this depot',
+  'Supprimer ce dépôt': 'Delete this depot',
+  'Unicité stricte du nom de catégorie • Recherche instantanée et tri alphabétique':
+    'Strict category name uniqueness • Instant search and alphabetical sorting',
+  'Nouvelle catégorie (nom unique)...': 'New category (unique name)...',
+  'Rechercher une catégorie...': 'Search category...',
+  'Renommer la catégorie': 'Rename category',
+  'Supprimer la catégorie': 'Delete category',
+  'Cliquez sur un département pour afficher ses chantiers, ou sur « Tous » pour afficher tous les chantiers':
+    'Click a department to display its job sites, or click "All" to display all job sites',
+  'Nom du département (unique)': 'Department name (unique)',
+  'Responsable de département': 'Department manager',
+  'Service Préparateurs Magasin': 'Warehouse Pickers Department',
+  'Validation hiérarchique dès (€) :': 'Manager approval threshold (€):',
+  'Enregistrer le département': 'Save department',
+  '+ Créer département': '+ Create department',
+  'Rechercher un département ou responsable...': 'Search department or manager...',
+  'Tous les responsables de département': 'All department managers',
+  'Préparateurs': 'Pickers',
+  'Modifier ce département': 'Edit this department',
+  'Supprimer ce département': 'Delete this department',
+  'N° Chantier (unique)': 'Job Site # (unique)',
+  'Nom du chantier': 'Job site name',
+  '— Choisir —': '— Select —',
+  'Chef de chantier': 'Site manager',
+  'Enregistrer le chantier': 'Save job site',
+  '+ Créer chantier': '+ Create job site',
+  'N° ou nom du chantier...': 'Job site # or name...',
+  '— Choisir département —': '— Select department —',
+  'Tous les départements': 'All departments',
+  'Resp. département : Tous': 'Dept. manager: All',
+  'Chef de chantier : Tous': 'Site manager: All',
+  '— Sans chef de chantier —': '— No site manager —',
+  'Sélectionnez un département ci-dessus pour afficher ses chantiers':
+    'Select a department above to view its job sites',
+  'Ou cliquez sur le bouton « Tous » pour afficher tous les chantiers / projets tous départements confondus.':
+    'Or click the "All" button to display all job sites / projects across all departments.',
+  'Aucun chantier / projet ne correspond aux critères sélectionnés.':
+    'No job site / project matches the selected criteria.',
+  'Modifier ce chantier': 'Edit this job site',
+  'Supprimer ce chantier': 'Delete this job site',
+  'Identité Entreprise & Expéditeur E-mails': 'Company Identity & Email Sender',
+  "Nom de l'entreprise": 'Company name',
+  "Nom d'expéditeur e-mail": 'Email sender name',
+  "Adresse e-mail d'expédition": 'Sender email address',
+  '1. Licence & Abonnement': '1. License & Subscription',
+  '2. Connexion Base SQL Supabase (BYOD)': '2. Supabase SQL Database Connection (BYOD)',
+  '3. Scripts SQL (01 à 12) & Diagnostic': '3. SQL Scripts (01 to 12) & Diagnostic',
+  '4. Fonctions Edge': '4. Edge Functions',
+  "Licence & Formule d'abonnement TOT Stock": 'TOT Stock License & Subscription Plan',
+  "Vérification cryptographique Ed25519 • Quotas appliqués depuis le jeton signé de l'éditeur":
+    'Ed25519 cryptographic verification • Quotas enforced from the publisher signed token',
+  'Synchroniser avec le serveur': 'Sync with server',
+  'Découvrir la licence du projet': 'Discover project license',
+  'Formule certifiée': 'Certified plan',
+  'Quota Magasins & Dépôts': 'Warehouses & Depots Quota',
+  'Dépôts ouverts autorisés': 'Allowed open depots',
+  'Quota Références Catalogue': 'Catalog References Quota',
+  'Articles enregistrés': 'Registered items',
+  'Validité & Bail Hors-ligne': 'Validity & Offline Lease',
+  'Illimitée (Community)': 'Unlimited (Community)',
+  'Clé de licence active': 'Active license key',
+  'Dissocier la clé': 'Unlink key',
+  'Copié': 'Copied',
+  'Copié !': 'Copied!',
+  'Copier': 'Copy',
+  'Copier ce script': 'Copy this script',
+  'Saisir une clé officielle (ex: TOT-PRO-XXXX-XXXX)...':
+    'Enter an official license key (e.g. TOT-PRO-XXXX-XXXX)...',
+  'Activer la clé': 'Activate key',
+  'Entreprise titulaire & Contact de licence': 'License Holder Company & Contact',
+  'Raison sociale / Organisation': 'Company / Organization name',
+  "Nom de l'entreprise...": 'Company name...',
+  'E-mail administrateur licence': 'License admin email',
+  'Enregistrer le titulaire': 'Save holder',
+  "Formules d'abonnement & Quotas TOT Stock": 'TOT Stock Subscription Plans & Quotas',
+  'Connexion Base de Données SQL Supabase (BYOD)': 'Supabase SQL Database Connection (BYOD)',
+  "Reliez l'application à votre instance PostgreSQL / Supabase d'entreprise pour la synchronisation temps réel multi-postes":
+    'Connect the application to your enterprise PostgreSQL / Supabase instance for real-time multi-workstation sync',
+  'Mode local hors-ligne': 'Offline local mode',
+  'URL du projet Supabase (HTTPS)': 'Supabase Project URL (HTTPS)',
+  'Clé API publique Supabase (anon / publishable key)':
+    'Supabase Public API Key (anon / publishable key)',
+  'Tester la connexion': 'Test connection',
+  'Enregistrer & Connecter la base': 'Save & Connect database',
+  'Synchroniser depuis Supabase': 'Sync from Supabase',
+  'Exporter vers Supabase': 'Export to Supabase',
+  'Mode démo local': 'Local demo mode',
+  "Diagnostic de l'installation SQL (`public.diagnostic_installation`)":
+    'SQL Installation Diagnostic (`public.diagnostic_installation`)',
+  'Lancer le diagnostic SQL': 'Run SQL diagnostic',
+  'Contrôle': 'Check',
+  'Clé': 'Key',
+  'Détails': 'Details',
+  'Scripts SQL Officiels Supabase (01 à 12)': 'Official Supabase SQL Scripts (01 to 12)',
+  'Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base':
+    'Copy and run these scripts in the Supabase SQL Editor to install or update your database',
+  'Copier tout le pack SQL (01 à 12)': 'Copy full SQL pack (01 to 12)',
+  'Script complet 01–12 copié !': 'Full script 01–12 copied!',
+  "Documentation & Guides d'exploitation": 'Documentation & Operations Guides',
+  "Solution de gestion de stock multi-dépôts, préparation de commandes par scan et impression d'étiquettes.":
+    'Multi-depot inventory management, scan-based order picking, and label printing solution.',
+  'Système détecté': 'Detected system',
+  "Télécharger l'installateur": 'Download installer',
+  "Les installateurs sont publiés par l'administrateur sur la page des versions du projet.":
+    'Installers are published by the administrator on the project releases page.',
+  'Valider': 'Confirm',
+  'Annuler': 'Cancel',
+  'Fermer': 'Close',
+};
+
+const PATTERN_EN_RULES: Array<[RegExp, string]> = [
+  [/^Utilisateurs \((\d+)\)$/i, 'Users ($1)'],
+  [/^Rôles & Permissions \((\d+)\)$/i, 'Roles & Permissions ($1)'],
+  [/^Dépôts, Magasins & Véhicules \((\d+)\)$/i, 'Depots, Warehouses & Vehicles ($1)'],
+  [/^Quota licence : (\d+) \/ (\d+) dépôt\(s\) actif\(s\)$/i, 'License quota: $1 / $2 active depot(s)'],
+  [/^Catégories d'articles \((\d+)\)$/i, 'Item Categories ($1)'],
+  [/^Départements \((\d+)\)$/i, 'Departments ($1)'],
+  [/^Tous \((\d+) chantiers\)$/i, 'All ($1 job sites)'],
+  [/^Tous les chantiers \((\d+)\)$/i, 'All job sites ($1)'],
+  [/^Tous \((\d+)\)$/i, 'All ($1)'],
+  [/^(\d+) chantier(?:s)?$/i, '$1 job site(s)'],
+  [/^(\d+) article(?:s)?$/i, '$1 item(s)'],
+  [/^Modifier le rôle « (.+) » \(#(\d+)\)$/i, 'Edit role "$1" (#$2)'],
+  [/^Choisir (FREE|STA|PRO|ENT)$/i, 'Select $1'],
+  [/^Prochain contrôle : (\d+) j$/i, 'Next check: $1 d'],
+  [/^TOT Stock — Version ([^\s]+) \(Schéma SQL ([^)]+)\)$/i, 'TOT Stock — Version $1 (SQL Schema $2)'],
+];
+
+const PHRASE_EN_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bResponsable\s*:/gi, 'Manager:'],
+  [/\bSeuil\s+(\d+)\s*€/gi, 'Threshold $1 €'],
+  [/\bSupprimer les doublons détectés\b/gi, 'Remove detected duplicates'],
+];
+
 const translationCache = new Map<string, string>();
+const translationEnCache = new Map<string, string>();
+
+/**
+ * Translates a French UI string into English (en) when not already translated.
+ */
+export function translateTextToEn(rawText: string): string {
+  if (!rawText) return rawText;
+  const trimmed = rawText.trim();
+  if (!trimmed) return rawText;
+
+  const leadingMatch = rawText.match(/^\s*/);
+  const trailingMatch = rawText.match(/\s*$/);
+  const leading = leadingMatch ? leadingMatch[0] : '';
+  const trailing = trailingMatch ? trailingMatch[0] : '';
+
+  const cached = translationEnCache.get(trimmed);
+  if (cached !== undefined) {
+    return leading + cached + trailing;
+  }
+
+  if (EXACT_EN_DICTIONARY[trimmed]) {
+    const res = EXACT_EN_DICTIONARY[trimmed];
+    translationEnCache.set(trimmed, res);
+    return leading + res + trailing;
+  }
+
+  for (const [regex, replacement] of PATTERN_EN_RULES) {
+    if (regex.test(trimmed)) {
+      const res = trimmed.replace(regex, replacement);
+      translationEnCache.set(trimmed, res);
+      return leading + res + trailing;
+    }
+  }
+
+  let result = trimmed;
+  for (const [regex, replacement] of PHRASE_EN_REPLACEMENTS) {
+    result = result.replace(regex, replacement);
+  }
+
+  translationEnCache.set(trimmed, result);
+  return leading + result + trailing;
+}
 
 /**
  * Translates an English or French UI string into Dutch (nl).
@@ -1792,24 +2328,25 @@ const TRANSLATABLE_ATTRS = ['placeholder', 'title', 'aria-label'] as const;
 
 /**
  * React hook that automatically translates any remaining untranslated DOM text nodes
- * and attributes (placeholder, title, aria-label) when language === 'nl', and restores
- * them when switching back to 'fr' or 'en' without overwriting nodes already updated by React.
+ * and attributes (placeholder, title, aria-label) when language === 'nl' or 'en', and restores
+ * them when switching back to 'fr' without overwriting nodes already updated by React.
  */
-let hasEverTranslatedToNl = false;
+let hasEverTranslatedDom = false;
 
 export function useDutchDomTranslator(language: Language): void {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     document.documentElement.lang = language;
 
-    if (language !== 'nl' && !hasEverTranslatedToNl) {
+    if (language === 'fr' && !hasEverTranslatedDom) {
       return;
     }
-    if (language === 'nl') {
-      hasEverTranslatedToNl = true;
+    if (language !== 'fr') {
+      hasEverTranslatedDom = true;
     }
 
     let isApplying = false;
+    const translateFn = language === 'nl' ? translateTextToNl : translateTextToEn;
 
     const processTextNode = (node: Text) => {
       const parent = node.parentElement;
@@ -1820,29 +2357,30 @@ export function useDutchDomTranslator(language: Language): void {
       const currentVal = node.nodeValue || '';
       if (!currentVal.trim()) return;
 
-      if (language === 'nl') {
+      if (language === 'nl' || language === 'en') {
         const existing = originalTextNodes.get(node);
+        let sourceText = currentVal;
         if (existing) {
-          if (currentVal === existing.translated) {
-            return;
+          if (currentVal === existing.translated || currentVal === existing.original) {
+            sourceText = existing.original;
+          } else {
+            // React updated this node with new content
+            originalTextNodes.delete(node);
           }
-          if (currentVal === existing.original) {
-            node.nodeValue = existing.translated;
-            return;
-          }
-          // React updated this node with new content
-          originalTextNodes.delete(node);
         }
-        const translated = translateTextToNl(currentVal);
-        if (translated !== currentVal) {
-          originalTextNodes.set(node, { original: currentVal, translated });
-          node.nodeValue = translated;
+        const translated = translateFn(sourceText);
+        if (translated !== sourceText) {
+          originalTextNodes.set(node, { original: sourceText, translated });
+          if (currentVal !== translated) {
+            node.nodeValue = translated;
+          }
+        } else if (existing && currentVal === existing.translated && currentVal !== sourceText) {
+          node.nodeValue = sourceText;
+          originalTextNodes.delete(node);
         }
       } else {
         const existing = originalTextNodes.get(node);
         if (existing) {
-          // Only restore if the DOM node still holds the Dutch translation we injected
-          // (if React already re-rendered it in French/English, keep React's new value)
           if (currentVal === existing.translated) {
             node.nodeValue = existing.original;
           }
@@ -1857,26 +2395,29 @@ export function useDutchDomTranslator(language: Language): void {
         if (!currentAttr || !currentAttr.trim()) continue;
 
         let attrMap = originalElementAttrs.get(el);
-        if (language === 'nl') {
+        if (language === 'nl' || language === 'en') {
           const existing = attrMap?.get(attr);
+          let sourceAttr = currentAttr;
           if (existing) {
-            if (currentAttr === existing.translated) {
-              continue;
+            if (currentAttr === existing.translated || currentAttr === existing.original) {
+              sourceAttr = existing.original;
+            } else {
+              attrMap?.delete(attr);
             }
-            if (currentAttr === existing.original) {
-              el.setAttribute(attr, existing.translated);
-              continue;
-            }
-            attrMap?.delete(attr);
           }
-          const translated = translateTextToNl(currentAttr);
-          if (translated !== currentAttr) {
+          const translated = translateFn(sourceAttr);
+          if (translated !== sourceAttr) {
             if (!attrMap) {
               attrMap = new Map<string, TranslatedEntry>();
               originalElementAttrs.set(el, attrMap);
             }
-            attrMap.set(attr, { original: currentAttr, translated });
-            el.setAttribute(attr, translated);
+            attrMap.set(attr, { original: sourceAttr, translated });
+            if (currentAttr !== translated) {
+              el.setAttribute(attr, translated);
+            }
+          } else if (existing && currentAttr === existing.translated && currentAttr !== sourceAttr) {
+            el.setAttribute(attr, sourceAttr);
+            attrMap?.delete(attr);
           }
         } else if (attrMap && attrMap.has(attr)) {
           const existing = attrMap.get(attr)!;
@@ -1912,7 +2453,7 @@ export function useDutchDomTranslator(language: Language): void {
 
     walkAndTranslate(document.body);
 
-    if (language !== 'nl') {
+    if (language === 'fr') {
       return;
     }
 

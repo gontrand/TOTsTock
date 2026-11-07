@@ -8,17 +8,17 @@ export const ROOT_DIR = path.resolve(__dirname, '..');
 
 export const EDGE_FUNCTIONS = [
   {
-    name: 'admin-users',
+    name: 'APP_TOT-Stock_admin-users',
     handlerFile: 'adminUsersHandler.ts',
     entryCall: 'serve(handleAdminUsersRequest);',
   },
   {
-    name: 'sync-license',
+    name: 'APP_TOT-Stock_licenses_sync-license',
     handlerFile: 'syncLicenseHandler.ts',
     entryCall: 'serve(handleSyncLicenseRequest);',
   },
   {
-    name: 'send-report-email',
+    name: 'APP_TOT-Stock_send-report-email',
     handlerFile: 'sendReportEmailHandler.ts',
     entryCall: 'serve(handleSendReportEmailRequest);',
   },
@@ -42,6 +42,10 @@ export function generateSingleFunctionBundle(fnDef, rootDir = ROOT_DIR) {
   const corsRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, 'cors.ts'), 'utf8'));
   const configRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, 'config.ts'), 'utf8'));
   const authRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, 'auth.ts'), 'utf8'));
+  const mailProvidersRaw =
+    fnDef.handlerFile === 'sendReportEmailHandler.ts'
+      ? stripLocalImports(fs.readFileSync(path.join(sharedDir, 'mailProviders.ts'), 'utf8'))
+      : '';
   const handlerRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, fnDef.handlerFile), 'utf8'));
 
   return [
@@ -61,6 +65,9 @@ export function generateSingleFunctionBundle(fnDef, rootDir = ROOT_DIR) {
     '',
     '// --- _shared/auth.ts ---',
     authRaw,
+    ...(mailProvidersRaw
+      ? ['', '// --- _shared/mailProviders.ts ---', mailProvidersRaw]
+      : []),
     '',
     `// --- _shared/${fnDef.handlerFile} ---`,
     handlerRaw,

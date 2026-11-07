@@ -1,7 +1,26 @@
 import { User } from '../types';
-import { verifyLocalDevicePin } from '../utils/crypto';
-import { DB_NAME, ALL_STORE_NAMES, wipeOfflineIndexedDb } from './offline/indexedDb';
-import { clearScannerOfflineQueue } from './scannerOfflineQueue';
+import {
+  hasLocalDevicePin,
+  verifyLocalDevicePin,
+  saveLocalDevicePin,
+} from '../utils/crypto';
+import {
+  DB_NAME,
+  ALL_STORE_NAMES,
+  wipeOfflineIndexedDb,
+  getDb,
+} from './offline/indexedDb';
+import {
+  clearScannerOfflineQueue,
+  getPendingScannerActionsCount,
+} from './scannerOfflineQueue';
+import {
+  clearCryptoKeyFromMemory,
+  hasActiveCryptoKeyInMemory,
+  isLocalEncryptionActive,
+} from './localCrypto';
+
+export { hasLocalDevicePin, verifyLocalDevicePin, saveLocalDevicePin };
 
 export const PIN_FAILURE_COUNT_KEY = 'tot_pin_failed_attempts';
 export const LAST_ACTIVITY_TS_KEY = 'tot_last_activity_ts';
@@ -16,6 +35,57 @@ export interface WipeDeviceResult {
   removedLocalStorageKeys: string[];
   clearedIndexedDbName: string;
   clearedIndexedDbStores: string[];
+}
+
+export interface UnsynchronizedOperationsSummary {
+  syncQueuePendingCount: number;
+  scannerQueuePendingCount: number;
+  totalUnsynchronizedCount: number;
+}
+
+/**
+ * Retourne le détail des opérations hors-ligne non synchronisées (`sync_queue` + `scanner_offline_queue`).
+ * Fonctionne même lorsque la clé de chiffrement PIN est absente de la mémoire grâce à l'index `by_status`.
+ */
+export async function getUnsynchronizedOperationsSummary(): Promise<UnsynchronizedOperationsSummary> {
+  let syncQueuePendingCount = 0;
+  let scannerQueuePendingCount = 0;
+
+  try {
+    const db = await getDb();
+    const tx = db.transaction('sync_queue', 'readonly');
+    const index = tx.store.index('by_status');
+    const pending = await index.getAll('pending');
+    const failed = await index.getAll('failed');
+    const syncing = await index.getAll('syncing');
+    await tx.done;
+    syncQueuePendingCount =
+      (Array.isArray(pending) ? pending.length : 0) +
+      (Array.isArray(failed) ? failed.length : 0) +
+      (Array.isArray(syncing) ? syncing.length : 0);
+  } catch {
+    syncQueuePendingCount = 0;
+  }
+
+  try {
+    scannerQueuePendingCount = await getPendingScannerActionsCount();
+  } catch {
+    scannerQueuePendingCount = 0;
+  }
+
+  return {
+    syncQueuePendingCount,
+    scannerQueuePendingCount,
+    totalUnsynchronizedCount: syncQueuePendingCount + scannerQueuePendingCount,
+  };
+}
+
+/**
+ * Compte le nombre total d'opérations hors-ligne non synchronisées (`sync_queue` + `scanner_offline_queue`).
+ */
+export async function getUnsynchronizedOperationsCount(): Promise<number> {
+  const summary = await getUnsynchronizedOperationsSummary();
+  return summary.totalUnsynchronizedCount;
 }
 
 /**
@@ -61,9 +131,9 @@ export function incrementPinFailedAttempts(
 }
 
 /**
- * Déconnecte la session Supabase (si présente), efface toutes les clés localStorage
- * commençant par `tot_`, `tqt_` (ainsi que les jetons `sb-` de Supabase Auth) et
- * vide/supprime la base IndexedDB `tot_stock_offline_db`.
+ * Déconnecte la session Supabase (si présente), efface la clé de chiffrement en mémoire,
+ * efface toutes les clés localStorage commençant par `tot_`, `tqt_` (ainsi que les jetons `sb-` de Supabase Auth)
+ * et vide/supprime la base IndexedDB `tot_stock_offline_db`.
  */
 export async function wipeDeviceLocalData(options?: {
   signOutFn?: () => Promise<unknown>;
@@ -78,6 +148,9 @@ export async function wipeDeviceLocalData(options?: {
       : typeof localStorage !== 'undefined'
       ? localStorage
       : null;
+
+  // 0. Effacer immédiatement la clé de chiffrement en mémoire
+  clearCryptoKeyFromMemory();
 
   // 1. Déconnexion Supabase Auth
   if (options?.signOutFn) {
@@ -138,6 +211,93 @@ export async function wipeDeviceLocalData(options?: {
     removedLocalStorageKeys,
     clearedIndexedDbName: DB_NAME,
     clearedIndexedDbStores: clearedStores.length > 0 ? clearedStores : [...ALL_STORE_NAMES],
+  };
+}
+
+export interface SafeResetLocalDataResult {
+  confirmed: boolean;
+  priorSyncAttempted: boolean;
+  unsynchronizedBeforeSync: number;
+  unsynchronizedRemaining: number;
+  warningMessage: string;
+  wipeResult?: WipeDeviceResult;
+}
+
+/**
+ * Réinitialise les données locales (PIN oublié ou cache illisible) en respectant la règle :
+ * - Tente une synchronisation préalable si la clé de déchiffrement est disponible (ou si le cache est en clair).
+ * - Calcule le nombre d'opérations hors-ligne non synchronisées qui seront perdues.
+ * - Exige une confirmation explicite de l'utilisateur (`confirmResetFn`) avant toute suppression.
+ * - Ne supprime jamais une opération en file d'attente sans l'accord de l'utilisateur.
+ */
+export async function resetLocalDataWithWarningAndConfirmation(options: {
+  confirmResetFn: (summary: {
+    unsynchronizedCount: number;
+    warningMessage: string;
+    priorSyncAttempted: boolean;
+  }) => Promise<boolean> | boolean;
+  attemptPriorSyncFn?: () => Promise<unknown>;
+  signOutFn?: () => Promise<unknown>;
+  storage?: Storage | null;
+  wipeIndexedDbFn?: () => Promise<string[]>;
+  reloadFn?: () => void;
+  shouldReload?: boolean;
+}): Promise<SafeResetLocalDataResult> {
+  const beforeSummary = await getUnsynchronizedOperationsSummary();
+  let priorSyncAttempted = false;
+
+  const canAttemptSync =
+    Boolean(options.attemptPriorSyncFn) &&
+    (!isLocalEncryptionActive() || hasActiveCryptoKeyInMemory());
+
+  if (canAttemptSync && beforeSummary.totalUnsynchronizedCount > 0 && options.attemptPriorSyncFn) {
+    priorSyncAttempted = true;
+    try {
+      await options.attemptPriorSyncFn();
+    } catch {
+      // Ignore network/sync errors; we re-count remaining operations below
+    }
+  }
+
+  const afterSummary = await getUnsynchronizedOperationsSummary();
+  const remaining = afterSummary.totalUnsynchronizedCount;
+
+  const warningMessage =
+    remaining > 0
+      ? `Attention : ${remaining} opération(s) hors-ligne non synchronisée(s) seront définitivement perdues si vous réinitialisez les données locales de cet appareil.`
+      : 'Toutes les données locales de cet appareil (session, PIN local, cache hors-ligne) seront effacées. Aucune opération en attente de synchronisation ne sera perdue.';
+
+  const confirmed = await options.confirmResetFn({
+    unsynchronizedCount: remaining,
+    warningMessage,
+    priorSyncAttempted,
+  });
+
+  if (!confirmed) {
+    return {
+      confirmed: false,
+      priorSyncAttempted,
+      unsynchronizedBeforeSync: beforeSummary.totalUnsynchronizedCount,
+      unsynchronizedRemaining: remaining,
+      warningMessage,
+    };
+  }
+
+  const wipeResult = await wipeDeviceLocalData({
+    signOutFn: options.signOutFn,
+    storage: options.storage,
+    wipeIndexedDbFn: options.wipeIndexedDbFn,
+    reloadFn: options.reloadFn,
+    shouldReload: options.shouldReload,
+  });
+
+  return {
+    confirmed: true,
+    priorSyncAttempted,
+    unsynchronizedBeforeSync: beforeSummary.totalUnsynchronizedCount,
+    unsynchronizedRemaining: remaining,
+    warningMessage,
+    wipeResult,
   };
 }
 

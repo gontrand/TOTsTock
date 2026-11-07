@@ -8,6 +8,7 @@ import {
   MIN_SUPPORTED_SCHEMA_VERSION,
 } from '../appVersion';
 import { compareSemver } from '../services/clientSupabase';
+import { EDGE_FUNCTIONS } from '../constants/edgeFunctions';
 
 const rootDir = process.cwd();
 
@@ -128,12 +129,12 @@ describe('TOT Stock – Vérifications automatisées', () => {
   });
 
   describe('Point 3 – Ordre d’installation SQL et types d’identifiants', () => {
-    it('01b_migrate_users_id_to_text.sql échoue proprement si public.users n’existe pas', () => {
+    it('01b_migrate_users_id_to_text.sql échoue proprement si public.core_users n’existe pas', () => {
       const sql01b = fs.readFileSync(
         path.join(rootDir, 'supabase-client/01b_migrate_users_id_to_text.sql'),
         'utf-8'
       );
-      expect(sql01b).toContain("table_name = 'users'");
+      expect(sql01b).toContain("table_name = 'core_users'");
       expect(sql01b).toContain('RAISE EXCEPTION');
     });
 
@@ -157,7 +158,7 @@ describe('TOT Stock – Vérifications automatisées', () => {
       );
       expect(corsShared).toContain("'Access-Control-Allow-Origin'");
 
-      for (const fnName of ['admin-users', 'sync-license', 'send-report-email']) {
+      for (const fnName of Object.values(EDGE_FUNCTIONS)) {
         const fnEntry = fs.readFileSync(
           path.join(rootDir, `supabase/functions/${fnName}/index.ts`),
           'utf-8'
@@ -167,7 +168,7 @@ describe('TOT Stock – Vérifications automatisées', () => {
     });
   });
 
-  describe('Point 5 – Version unique et table app_compat', () => {
+  describe('Point 5 – Version unique et table core_app_compat', () => {
     it('synchronise APP_VERSION avec package.json', () => {
       const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf-8'));
       expect(APP_VERSION).toBe(pkg.version);
@@ -181,12 +182,12 @@ describe('TOT Stock – Vérifications automatisées', () => {
       expect(compareSemver('5.6.0', '5.5.0')).toBe(1);
     });
 
-    it('07_app_compat.sql crée la table singleton public.app_compat avec RLS en lecture', () => {
+    it('07_app_compat.sql crée la table singleton public.core_app_compat avec RLS en lecture', () => {
       const sql07 = fs.readFileSync(
         path.join(rootDir, 'supabase-client/07_app_compat.sql'),
         'utf-8'
       );
-      expect(sql07).toContain('CREATE TABLE IF NOT EXISTS public.app_compat');
+      expect(sql07).toContain('CREATE TABLE IF NOT EXISTS public.core_app_compat');
       expect(sql07).toContain('ENABLE ROW LEVEL SECURITY');
       expect(sql07).toContain('FOR SELECT');
     });

@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
+import { canUserManageMailSettings } from '../services/mailingService';
 import {
   User,
   LogOut,
@@ -38,6 +39,7 @@ import {
   VolumeX,
   Stethoscope,
   Scan,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { APP_VERSION } from '../appVersion';
 import { canUserAccessScannerMode } from '../services/orderPickingLogic';
@@ -96,6 +98,8 @@ export const PlusMenuView: React.FC = () => {
     setPreparerOrdersModalOpen,
     openScannerPickingMode,
     isPreparer,
+    canTransferBetweenDepots,
+    openStockTransferModal,
     t,
   } = useApp();
 
@@ -130,7 +134,7 @@ export const PlusMenuView: React.FC = () => {
   const canEmail = userHasPermission('perm_config_email');
 
   // Administration buttons
-  const canSmtp = userHasPermission('perm_menu_smtp') || userHasPermission('perm_config_email') || userHasPermission('perm_config_db');
+  const canSmtp = canUserManageMailSettings(currentUser, userHasPermission);
   const canCategories = userHasPermission('perm_manage_categories');
   const canManageDepots = userHasPermission('perm_manage_depots');
   const canUsers = userHasPermission('perm_manage_users');
@@ -324,6 +328,36 @@ export const PlusMenuView: React.FC = () => {
         visible: canManageDepots,
       },
       {
+        id: 'transfer_depots',
+        title: tr(
+          language,
+          'Transfert de matériel entre dépôts',
+          'Inter-depot material transfer',
+          'Materiaaloverdracht tussen depots'
+        ),
+        category: tr(language, 'Logistique', 'Logistics', 'Logistiek'),
+        description: tr(
+          language,
+          'Transférer un ou plusieurs articles (lot atomique) entre magasins et camionnettes',
+          'Transfer one or more items (atomic batch) between warehouses and vehicles',
+          'Draag een of meer artikelen (atomaire batch) over tussen magazijnen en voertuigen'
+        ),
+        keywords: [
+          'transfert',
+          'transferer',
+          'depot',
+          'depots',
+          'camionnette',
+          'inter-depot',
+          'deplacer',
+          'lot',
+        ],
+        icon: <ArrowLeftRight className="w-4 h-4 text-sky-600" />,
+        action: () => openStockTransferModal({}),
+        badge: tr(language, 'Multi-articles', 'Multi-item', 'Multi-artikel'),
+        visible: canTransferBetweenDepots,
+      },
+      {
         id: 'projects',
         title: tr(language, 'Chantiers, Conducteurs & Suppléants (+)', 'Sites, Managers & Deputies (+)'),
         category: tr(language, 'Chantiers & Équipes', 'Sites & Teams'),
@@ -422,7 +456,7 @@ export const PlusMenuView: React.FC = () => {
         keywords: ['smtp', 'brevo', 'mail', 'email', 'configuration', 'serveur', 'gmail', 'outlook', 'sendinblue', 'api key', 'mot de passe'],
         icon: <Sliders className="w-4 h-4 text-cyan-600" />,
         action: () => setSmtpSettingsModalOpen(true),
-        visible: canEmail || canDbConfig,
+        visible: canSmtp,
       },
       {
         id: 'qr_config',
@@ -471,6 +505,8 @@ export const PlusMenuView: React.FC = () => {
     t,
     canScannerMode,
     openScannerPickingMode,
+    canTransferBetweenDepots,
+    openStockTransferModal,
     currency,
     depots.length,
     maxDepots,
@@ -1126,6 +1162,45 @@ export const PlusMenuView: React.FC = () => {
               <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 relative z-20" />
             </button>
           )}
+
+          {canTransferBetweenDepots && (
+            <button
+              type="button"
+              data-testid="plus-menu-transfer-btn"
+              onClick={() => openStockTransferModal({})}
+              className="w-full p-3.5 flex items-center justify-between gap-2 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition text-left cursor-pointer relative overflow-hidden"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1 relative z-10 overflow-hidden">
+                <div className="w-8 h-8 rounded-xl bg-sky-100 dark:bg-sky-950/60 text-sky-600 flex items-center justify-center font-bold shrink-0 relative z-20">
+                  <ArrowLeftRight className="w-4 h-4 shrink-0 relative z-20" />
+                </div>
+                <div className="min-w-0 flex-1 relative z-0 overflow-hidden">
+                  <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 flex-wrap">
+                    <span>
+                      {tr(
+                        language,
+                        'Transfert entre dépôts',
+                        'Inter-depot transfer',
+                        'Overdracht tussen depots'
+                      )}
+                    </span>
+                    <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-md bg-sky-500/10 text-sky-600 border border-sky-500/20 shrink-0">
+                      {tr(language, 'Multi-articles', 'Multi-item', 'Multi-artikel')}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    {tr(
+                      language,
+                      'Transférer du matériel entre magasins ou camionnettes',
+                      'Transfer material between warehouses or vehicles',
+                      'Draag materiaal over tussen magazijnen of voertuigen'
+                    )}
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 relative z-20" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1270,7 +1345,7 @@ export const PlusMenuView: React.FC = () => {
           {t('menu_admin')}
         </div>
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 shadow-sm overflow-hidden text-xs">
-          {(canEmail || canDbConfig) && (
+          {canSmtp && (
             <button
               type="button"
               onClick={() => setSmtpSettingsModalOpen(true)}

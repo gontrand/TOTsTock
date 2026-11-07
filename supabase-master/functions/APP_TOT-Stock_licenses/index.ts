@@ -459,15 +459,9 @@ async function verifyVendorAdmin(req: Request, supabaseAdmin: any): Promise<bool
     return true;
   }
 
-  const { data: roleRow } = await supabaseAdmin
-    .from('users')
-    .select('role_id')
-    .eq('auth_user_id', user.id)
-    .maybeSingle();
-
-  if (roleRow && Number(roleRow.role_id) === 0) {
-    return true;
-  }
+  // v45 : la base maître n'a pas de table de profils (users / core_users).
+  // Les administrateurs éditeur sont reconnus uniquement par VENDOR_ADMIN_EMAILS
+  // ou par app_metadata (is_vendor_admin / role = super_admin).
 
   return false;
 }

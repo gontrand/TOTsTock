@@ -1,8 +1,9 @@
 -- =========================================================================
 -- TOT STOCK - SCRIPT 04 : MOUVEMENTS ET DÉPÔTS VÉHICULES / CONTENEURS (04_mouvements_et_depots_vehicules.sql)
--- Multi-dépôts physiques (FIXED, VEHICLE, CONTAINER), conteneurs de chantiers rattachés
--- RLS granulaire can_view_movement, visibilité stricte stock_levels, quota max_depots actif
--- Rejouable : oui
+-- Description : Multi-dépôts physiques (FIXED, VEHICLE, CONTAINER), conteneurs de chantiers rattachés,
+--   RLS granulaire can_view_movement, visibilité stricte stk_stock_levels, quota max_depots actif.
+-- Dépendances : 02_rls_hardening.sql, 03_rpc_stock_and_orders.sql
+-- Rejouable : oui (idempotent)
 -- =========================================================================
 
 -- -------------------------------------------------------------------------
@@ -12,16 +13,16 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'depots'
+    WHERE table_schema = 'public' AND table_name = 'stk_depots'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (04_mouvements_et_depots_vehicules.sql) : La table public.depots est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (04_mouvements_et_depots_vehicules.sql) : La table public.stk_depots est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'stock_levels'
+    WHERE table_schema = 'public' AND table_name = 'stk_stock_levels'
   ) THEN
-    RAISE EXCEPTION 'Prérequis manquant (04_mouvements_et_depots_vehicules.sql) : La table public.stock_levels est absente. Exécutez d''abord 02_rls_hardening.sql.';
+    RAISE EXCEPTION 'Prérequis manquant (04_mouvements_et_depots_vehicules.sql) : La table public.stk_stock_levels est absente. Exécutez d''abord 02_rls_hardening.sql.';
   END IF;
 
   IF NOT EXISTS (
@@ -42,9 +43,9 @@ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
--- 1. SCHÉMA & ÉVOLUTION DE LA TABLE : public.depots (FIXED, VEHICLE, CONTAINER)
+-- 1. SCHÉMA & ÉVOLUTION DE LA TABLE : public.stk_depots (FIXED, VEHICLE, CONTAINER)
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.depots (
+CREATE TABLE IF NOT EXISTS public.stk_depots (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   company_id TEXT,
   name TEXT NOT NULL UNIQUE,
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS public.depots (
   vehicle_type TEXT DEFAULT NULL, -- 'FOURGON', 'CAMIONNETTE', 'UTILITAIRE', 'POIDS_LOURD', etc.
   license_plate TEXT DEFAULT NULL,
   container_ref TEXT DEFAULT NULL, -- Numéro / identifiant unique du conteneur de chantier
-  project_number TEXT DEFAULT NULL, -- Chantier rattaché (projects.project_number)
+  project_number TEXT DEFAULT NULL, -- Chantier rattaché (core_projects.project_number)
   manager_id TEXT DEFAULT NULL,
   manager_name TEXT DEFAULT NULL,
   binome_ids JSONB DEFAULT '[]'::jsonb,
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS public.depots (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE public.depots
+ALTER TABLE public.stk_depots
   ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'FIXED', -- 'FIXED', 'VEHICLE' ou 'CONTAINER'
   ADD COLUMN IF NOT EXISTS vehicle_type TEXT DEFAULT NULL,
   ADD COLUMN IF NOT EXISTS license_plate TEXT DEFAULT NULL,
@@ -86,11 +87,11 @@ ALTER TABLE public.depots
   ADD COLUMN IF NOT EXISTS pickup_zones JSONB DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
-CREATE INDEX IF NOT EXISTS idx_depots_name ON public.depots(name);
-CREATE INDEX IF NOT EXISTS idx_depots_type ON public.depots(type);
-CREATE INDEX IF NOT EXISTS idx_depots_project_number ON public.depots(project_number);
-CREATE INDEX IF NOT EXISTS idx_depots_manager ON public.depots(manager_id);
-CREATE INDEX IF NOT EXISTS idx_depots_license_plate ON public.depots(license_plate);
+CREATE INDEX IF NOT EXISTS idx_depots_name ON public.stk_depots(name);
+CREATE INDEX IF NOT EXISTS idx_depots_type ON public.stk_depots(type);
+CREATE INDEX IF NOT EXISTS idx_depots_project_number ON public.stk_depots(project_number);
+CREATE INDEX IF NOT EXISTS idx_depots_manager ON public.stk_depots(manager_id);
+CREATE INDEX IF NOT EXISTS idx_depots_license_plate ON public.stk_depots(license_plate);
 
 -- Trigger de quota licence max_depots : un conteneur ou dépôt fermé (is_active = false) ne compte pas dans le quota
 DROP FUNCTION IF EXISTS public.enforce_license_max_depots_quota() CASCADE;
@@ -119,7 +120,7 @@ BEGIN
   BEGIN
     SELECT max_depots, LOWER(COALESCE(plan_type, 'free')), signed_token
     INTO v_max_depots, v_plan_type, v_signed_token
-    FROM public.license_config
+    FROM public.core_license_config
     LIMIT 1;
   EXCEPTION WHEN OTHERS THEN
     v_max_depots := 1;
@@ -172,7 +173,7 @@ BEGIN
 
   -- Ne compter QUE les dépôts actifs (les conteneurs ou véhicules fermés ne comptent plus)
   SELECT COUNT(*) INTO v_current_count
-  FROM public.depots
+  FROM public.stk_depots
   WHERE is_active = true
     AND (TG_OP = 'INSERT' OR id != NEW.id);
 
@@ -186,16 +187,16 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_enforce_license_max_depots ON public.depots;
+DROP TRIGGER IF EXISTS trg_enforce_license_max_depots ON public.stk_depots;
 CREATE TRIGGER trg_enforce_license_max_depots
-  BEFORE INSERT OR UPDATE OF is_active ON public.depots
+  BEFORE INSERT OR UPDATE OF is_active ON public.stk_depots
   FOR EACH ROW
   EXECUTE FUNCTION public.enforce_license_max_depots_quota();
 
 -- -------------------------------------------------------------------------
--- 2. TABLE DES NIVEAUX DE STOCK PAR DÉPÔT : public.stock_levels
+-- 2. TABLE DES NIVEAUX DE STOCK PAR DÉPÔT : public.stk_stock_levels
 -- -------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.stock_levels (
+CREATE TABLE IF NOT EXISTS public.stk_stock_levels (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   product_id TEXT NOT NULL,
   depot_name TEXT NOT NULL,
@@ -206,46 +207,41 @@ CREATE TABLE IF NOT EXISTS public.stock_levels (
   updated_at TIMESTAMPTZ DEFAULT now(),
   CONSTRAINT uq_product_depot UNIQUE (product_id, depot_name)
 );
-ALTER TABLE public.stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
-ALTER TABLE public.stock_levels
+ALTER TABLE public.stk_stock_levels ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
+ALTER TABLE public.stk_stock_levels
   ADD COLUMN IF NOT EXISTS min_alert NUMERIC DEFAULT 0,
   ADD COLUMN IF NOT EXISTS rack_location TEXT DEFAULT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_stock_levels_product ON public.stock_levels(product_id);
-CREATE INDEX IF NOT EXISTS idx_stock_levels_depot ON public.stock_levels(depot_name);
+CREATE INDEX IF NOT EXISTS idx_stock_levels_product ON public.stk_stock_levels(product_id);
+CREATE INDEX IF NOT EXISTS idx_stock_levels_depot ON public.stk_stock_levels(depot_name);
 
 -- -------------------------------------------------------------------------
--- 3. MIGRATION DE L'EXISTANT DEPUIS public.products VERS public.stock_levels
+-- 3. MIGRATION DE L'EXISTANT DEPUIS public.stk_products VERS public.stk_stock_levels
 -- -------------------------------------------------------------------------
-INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stk_stock_levels_product_depot ON public.stk_stock_levels (product_id, depot_name);
+
+INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, updated_at)
 SELECT 
   p.id::text AS product_id,
   COALESCE(NULLIF(TRIM(p.store_name), ''), 'Dépôt Principal') AS depot_name,
   COALESCE(p.quantity, 0) AS quantity,
   now() AS updated_at
-FROM public.products p
-ON CONFLICT (product_id, depot_name) 
-DO UPDATE SET 
-  quantity = EXCLUDED.quantity,
-  updated_at = now();
+FROM public.stk_products p
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.stk_stock_levels sl WHERE sl.product_id::text = p.id::text
+)
+ON CONFLICT (product_id, depot_name) DO NOTHING;
 
 -- -------------------------------------------------------------------------
--- 4. COLONNES depot_name DANS movements ET stock_movements
+-- 4. COLONNES depot_name DANS public.stk_movements
 -- -------------------------------------------------------------------------
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
-    ALTER TABLE public.movements
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
+    ALTER TABLE public.stk_movements
       ADD COLUMN IF NOT EXISTS depot_name TEXT DEFAULT NULL,
       ADD COLUMN IF NOT EXISTS dest_depot_name TEXT DEFAULT NULL;
-    CREATE INDEX IF NOT EXISTS idx_movements_depot_name ON public.movements(depot_name);
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
-    ALTER TABLE public.stock_movements
-      ADD COLUMN IF NOT EXISTS depot_name TEXT DEFAULT NULL,
-      ADD COLUMN IF NOT EXISTS dest_depot_name TEXT DEFAULT NULL;
-    CREATE INDEX IF NOT EXISTS idx_stock_movements_depot_name ON public.stock_movements(depot_name);
+    CREATE INDEX IF NOT EXISTS idx_stock_movements_depot_name ON public.stk_movements(depot_name);
   END IF;
 END $$;
 
@@ -254,9 +250,9 @@ END $$;
 -- Règle stricte :
 -- 1. Rôles 0 et 1 (Super Super Admin, Administrateur) ou perm_mov_view_all voient TOUT.
 -- 2. Ses propres mouvements pour chaque utilisateur (user_id = public.current_user_id()).
--- 3. Mouvements du département pour son responsable ou suppléants (departments.manager_id / deputy_manager_ids)
+-- 3. Mouvements du département pour son responsable ou suppléants (core_departments.manager_id / deputy_manager_ids)
 --    et NON pour quiconque a perm_kpi_scope_department.
--- 4. Mouvements d'un chantier pour son conducteur ou suppléants (projects.manager_id / deputy_manager_ids via site_number).
+-- 4. Mouvements d'un chantier pour son conducteur ou suppléants (core_projects.manager_id / deputy_manager_ids via site_number).
 -- 5. Mouvements de ses dépôts autorisés avec perm_mov_view_depot.
 -- -------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.is_super_admin() CASCADE;
@@ -305,7 +301,7 @@ BEGIN
   -- Récupération du profil appelant
   SELECT id::text, role_id, department, allowed_depots, is_blocked
   INTO v_caller_id, v_role, v_caller_dept, v_allowed_depots, v_is_blocked
-  FROM public.users
+  FROM public.core_users
   WHERE auth_user_id = auth.uid() AND COALESCE(is_blocked, false) = false
   LIMIT 1;
 
@@ -324,10 +320,10 @@ BEGIN
   END IF;
 
   -- 3. Mouvements du département pour son responsable ou suppléants
-  -- (departments.manager_id / deputy_manager_ids, et NON pour quiconque a perm_kpi_scope_department)
+  -- (core_departments.manager_id / deputy_manager_ids, et NON pour quiconque a perm_kpi_scope_department)
   IF p_mov_department IS NOT NULL THEN
     IF EXISTS (
-      SELECT 1 FROM public.departments d
+      SELECT 1 FROM public.core_departments d
       WHERE (d.name::text = p_mov_department::text OR d.id::text = p_mov_department::text)
         AND (
           d.manager_id::text = v_caller_id::text 
@@ -341,7 +337,7 @@ BEGIN
   -- 4. Mouvements d'un chantier pour son conducteur de travaux ou suppléants (via site_number)
   IF p_site_number IS NOT NULL THEN
     IF EXISTS (
-      SELECT 1 FROM public.projects pr
+      SELECT 1 FROM public.core_projects pr
       WHERE pr.project_number::text = p_site_number::text
         AND (
           pr.manager_id::text = v_caller_id::text 
@@ -366,58 +362,32 @@ BEGIN
 END;
 $$;
 
--- RLS SELECT et INSERT sur public.movements & public.stock_movements (purge de toute règle existante avant recréation)
+-- RLS SELECT et INSERT sur public.stk_movements (purge de toute règle existante avant recréation)
 DO $$
 DECLARE
   r RECORD;
 BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
-    ALTER TABLE public.movements ENABLE ROW LEVEL SECURITY;
-    REVOKE ALL ON TABLE public.movements FROM anon, public;
-    GRANT SELECT, INSERT ON TABLE public.movements TO authenticated;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
+    ALTER TABLE public.stk_movements ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON TABLE public.stk_movements FROM anon, public;
+    GRANT SELECT, INSERT ON TABLE public.stk_movements TO authenticated;
 
     FOR r IN
       SELECT policyname
       FROM pg_policies
-      WHERE schemaname = 'public' AND tablename = 'movements'
+      WHERE schemaname = 'public' AND tablename = 'stk_movements'
     LOOP
-      EXECUTE format('DROP POLICY IF EXISTS %I ON public.movements', r.policyname);
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_movements', r.policyname);
     END LOOP;
 
-    CREATE POLICY "Authenticated read movements"
-      ON public.movements
+    CREATE POLICY "Authenticated read stk_movements"
+      ON public.stk_movements
       FOR SELECT
       TO authenticated
       USING (public.can_view_movement(user_id::text, department_name::text, depot_name::text, site_number::text));
 
-    CREATE POLICY "Authenticated insert movements"
-      ON public.movements
-      FOR INSERT
-      TO authenticated
-      WITH CHECK (user_id::text = public.current_user_id() OR user_id::text = auth.uid()::text);
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
-    ALTER TABLE public.stock_movements ENABLE ROW LEVEL SECURITY;
-    REVOKE ALL ON TABLE public.stock_movements FROM anon, public;
-    GRANT SELECT, INSERT ON TABLE public.stock_movements TO authenticated;
-
-    FOR r IN
-      SELECT policyname
-      FROM pg_policies
-      WHERE schemaname = 'public' AND tablename = 'stock_movements'
-    LOOP
-      EXECUTE format('DROP POLICY IF EXISTS %I ON public.stock_movements', r.policyname);
-    END LOOP;
-
-    CREATE POLICY "Authenticated read stock_movements"
-      ON public.stock_movements
-      FOR SELECT
-      TO authenticated
-      USING (public.can_view_movement(user_id::text, department_name::text, depot_name::text, site_number::text));
-
-    CREATE POLICY "Authenticated insert stock_movements"
-      ON public.stock_movements
+    CREATE POLICY "Authenticated insert stk_movements"
+      ON public.stk_movements
       FOR INSERT
       TO authenticated
       WITH CHECK (user_id::text = public.current_user_id() OR user_id::text = auth.uid()::text);
@@ -425,17 +395,17 @@ BEGIN
 END $$;
 
 -- -------------------------------------------------------------------------
--- 6. DURCISSEMENT RLS SUR public.stock_levels
+-- 6. DURCISSEMENT RLS SUR public.stk_stock_levels
 -- Règle :
 -- - Dépôt de type FIXED : visible par tout utilisateur connecté (public.current_user_id() IS NOT NULL).
 -- - Dépôt VEHICLE ou CONTAINER : visible par son responsable (manager_id),
 --   les utilisateurs qui l'ont dans allowed_depots, le conducteur de travaux
---   du chantier rattaché (projects.manager_id / deputy_manager_ids via project_number),
+--   du chantier rattaché (core_projects.manager_id / deputy_manager_ids via project_number),
 --   et les rôles 0 et 1.
 -- -------------------------------------------------------------------------
-ALTER TABLE public.stock_levels ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.stock_levels FROM anon, public;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stock_levels TO authenticated;
+ALTER TABLE public.stk_stock_levels ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.stk_stock_levels FROM anon, public;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stk_stock_levels TO authenticated;
 
 DO $$
 DECLARE
@@ -444,21 +414,21 @@ BEGIN
   FOR r IN
     SELECT policyname
     FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'stock_levels'
+    WHERE schemaname = 'public' AND tablename = 'stk_stock_levels'
   LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stock_levels', r.policyname);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_stock_levels', r.policyname);
   END LOOP;
 END $$;
 
-CREATE POLICY "Authenticated read stock_levels"
-  ON public.stock_levels
+CREATE POLICY "Authenticated read stk_stock_levels"
+  ON public.stk_stock_levels
   FOR SELECT
   TO authenticated
   USING (
     public.is_administrator()
     OR EXISTS (
-      SELECT 1 FROM public.depots d
-      WHERE d.name::text = stock_levels.depot_name::text
+      SELECT 1 FROM public.stk_depots d
+      WHERE d.name::text = stk_stock_levels.depot_name::text
         AND (
           -- Dépôt FIXED visible par tout utilisateur connecté
           COALESCE(d.type, 'FIXED') = 'FIXED'
@@ -468,7 +438,7 @@ CREATE POLICY "Authenticated read stock_levels"
           OR (d.binome_ids IS NOT NULL AND d.binome_ids::jsonb ? public.current_user_id())
           -- Autorisé explicitement dans allowed_depots de l'utilisateur
           OR EXISTS (
-            SELECT 1 FROM public.users u
+            SELECT 1 FROM public.core_users u
             WHERE u.id::text = public.current_user_id()
               AND (
                 u.allowed_depots IS NULL
@@ -483,7 +453,7 @@ CREATE POLICY "Authenticated read stock_levels"
             COALESCE(d.type, 'FIXED') = 'CONTAINER'
             AND d.project_number IS NOT NULL
             AND EXISTS (
-              SELECT 1 FROM public.projects pr
+              SELECT 1 FROM public.core_projects pr
               WHERE pr.project_number::text = d.project_number::text
                 AND (
                   pr.manager_id::text = public.current_user_id() 
@@ -495,8 +465,8 @@ CREATE POLICY "Authenticated read stock_levels"
     )
   );
 
-CREATE POLICY "Admin write stock_levels"
-  ON public.stock_levels
+CREATE POLICY "Admin write stk_stock_levels"
+  ON public.stk_stock_levels
   FOR ALL
   TO authenticated
   USING (public.current_user_role() = 0 OR public.current_user_has_perm('perm_prod_edit'))
@@ -504,11 +474,11 @@ CREATE POLICY "Admin write stock_levels"
 
 -- -------------------------------------------------------------------------
 -- 7. NOUVELLE RPC DE MOUVEMENT ATOMIQUE PAR DÉPÔT (process_stock_movement V4)
--- - Pose set_config('app.stock_rpc', 'on', true) dans la transaction pour satisfaire le trigger products.quantity
--- - Verrouille et met à jour stock_levels du dépôt concerné (SELECT FOR UPDATE)
+-- - Pose set_config('app.stock_rpc', 'on', true) dans la transaction pour satisfaire le trigger stk_products.quantity
+-- - Verrouille et met à jour stk_stock_levels du dépôt concerné (SELECT FOR UPDATE)
 -- - En cas de TRANSFER : décrémente dépôt source ET incrémente dépôt destination
--- - Maintient products.quantity comme la somme totale de tous les dépôts stock_levels
--- - Renseigne depot_name et site_number dans movements et stock_movements
+-- - Maintient stk_products.quantity comme la somme totale de tous les dépôts stk_stock_levels
+-- - Renseigne depot_name et site_number dans stk_movements
 -- -------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.process_stock_movement(UUID, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.process_stock_movement(
@@ -558,10 +528,15 @@ DECLARE
   v_unit_price NUMERIC;
   v_total_cost NUMERIC;
 BEGIN
+  -- 0. Sonde de diagnostic (sans effet de bord) pour vérifier la présence de la signature à 12 paramètres
+  IF p_action = 'DIAGNOSTIC_PING' OR p_product_id = '__DIAGNOSTIC_PING__' THEN
+    RETURN jsonb_build_object('success', true, 'ready', true, 'params', 12);
+  END IF;
+
   -- 1. Authentification & vérification stricte du profil (ignore utilisateurs bloqués)
   SELECT id::text, role_id, name, trigram, allowed_depots, is_blocked
   INTO v_caller_id, v_caller_role, v_caller_name, v_caller_trigram, v_allowed_depots, v_is_blocked
-  FROM public.users
+  FROM public.core_users
   WHERE auth_user_id = auth.uid() AND COALESCE(is_blocked, false) = false
   LIMIT 1;
 
@@ -569,11 +544,11 @@ BEGIN
     RAISE EXCEPTION 'User profile not found or blocked' USING ERRCODE = '42501';
   END IF;
 
-  -- Autorisation du trigger de verrouillage de products.quantity dans la transaction
+  -- Autorisation du trigger de verrouillage de stk_products.quantity dans la transaction
   PERFORM set_config('app.stock_rpc', 'on', true);
 
   -- 2. Idempotence : si cette opération a déjà été exécutée
-  SELECT * INTO v_existing_op FROM public.processed_operations WHERE operation_id = p_operation_id LIMIT 1;
+  SELECT * INTO v_existing_op FROM public.core_processed_operations WHERE operation_id = p_operation_id LIMIT 1;
   IF v_existing_op.operation_id IS NOT NULL THEN
     IF v_existing_op.user_id IS DISTINCT FROM v_caller_id THEN
       RAISE EXCEPTION 'Operation ID already registered by another user' USING ERRCODE = '42501';
@@ -602,11 +577,12 @@ BEGIN
   ELSIF v_mov_type = 'TRANSFER' THEN
     IF NOT (
       public.is_administrator()
+      OR public.current_user_has_perm('perm_stock_transfer')
       OR public.current_user_has_perm('perm_mov_out') 
       OR public.current_user_has_perm('perm_stock_in') 
       OR public.current_user_has_perm('perm_prod_movement_direct')
     ) THEN
-      RAISE EXCEPTION 'Permission denied: stock transfer rights required (perm_mov_out or perm_stock_in)' USING ERRCODE = '42501';
+      RAISE EXCEPTION 'Permission denied: stock transfer rights required (perm_stock_transfer, perm_mov_out or perm_stock_in)' USING ERRCODE = '42501';
     END IF;
   ELSIF v_mov_type = 'INVENTORY' THEN
     IF NOT (
@@ -650,10 +626,10 @@ BEGIN
     END IF;
   END IF;
 
-  -- 5. Verrouillage FOR UPDATE de l'article dans public.products
+  -- 5. Verrouillage FOR UPDATE de l'article dans public.stk_products
   SELECT reference, unit_price, COALESCE(quantity, 0), COALESCE(NULLIF(TRIM(store_name), ''), 'Dépôt Principal')
   INTO v_product_ref, v_unit_price, v_prod_initial_qty, v_prod_store_name
-  FROM public.products
+  FROM public.stk_products
   WHERE id::text = p_product_id::text
   FOR UPDATE;
 
@@ -665,20 +641,26 @@ BEGIN
     RAISE EXCEPTION 'La quantité du mouvement est invalide.' USING ERRCODE = '22023';
   END IF;
 
-  -- 6. Initialisation paresseuse et verrouillage FOR UPDATE du niveau de stock dans public.stock_levels (dépôt source)
-  IF NOT EXISTS (SELECT 1 FROM public.stock_levels WHERE product_id = p_product_id) THEN
-    INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
+  -- 6. Initialisation paresseuse et verrouillage FOR UPDATE du niveau de stock dans public.stk_stock_levels (dépôt source)
+  IF NOT EXISTS (SELECT 1 FROM public.stk_stock_levels WHERE product_id = p_product_id) THEN
+    INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, updated_at)
     VALUES (p_product_id, v_prod_store_name, v_prod_initial_qty, now())
     ON CONFLICT (product_id, depot_name) DO NOTHING;
   END IF;
 
-  INSERT INTO public.stock_levels (product_id, depot_name, quantity, updated_at)
-  VALUES (p_product_id, v_source_depot, 0, now())
+  INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
+  VALUES (
+    p_product_id,
+    v_source_depot,
+    0,
+    CASE WHEN v_mov_type != 'TRANSFER' THEN NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '') ELSE NULL END,
+    now()
+  )
   ON CONFLICT (product_id, depot_name) DO NOTHING;
 
   SELECT quantity
   INTO v_current_depot_stock
-  FROM public.stock_levels
+  FROM public.stk_stock_levels
   WHERE product_id = p_product_id AND depot_name = v_source_depot
   FOR UPDATE;
 
@@ -697,39 +679,49 @@ BEGIN
   END IF;
 
   -- Mise à jour du stock dans le dépôt source
-  UPDATE public.stock_levels
+  UPDATE public.stk_stock_levels
   SET quantity = v_new_depot_stock,
+      rack_location = CASE
+        WHEN v_mov_type != 'TRANSFER' AND NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '') IS NOT NULL
+        THEN NULLIF(TRIM(COALESCE(p_dest_rack, p_metadata->>'rack_location')), '')
+        ELSE rack_location
+      END,
+      min_alert = CASE
+        WHEN p_metadata ? 'min_alert' AND (p_metadata->>'min_alert') ~ '^[0-9]+(\.[0-9]+)?$'
+        THEN (p_metadata->>'min_alert')::numeric
+        ELSE min_alert
+      END,
       updated_at = now()
   WHERE product_id = p_product_id AND depot_name = v_source_depot;
 
   -- 8. Gestion spécifique du TRANSFER : augmentation du dépôt destination
   IF v_mov_type = 'TRANSFER' AND v_dest_depot IS NOT NULL THEN
-    INSERT INTO public.stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
+    INSERT INTO public.stk_stock_levels (product_id, depot_name, quantity, rack_location, updated_at)
     VALUES (p_product_id, v_dest_depot, 0, p_dest_rack, now())
     ON CONFLICT (product_id, depot_name) DO NOTHING;
 
     SELECT quantity
     INTO v_dest_depot_stock
-    FROM public.stock_levels
+    FROM public.stk_stock_levels
     WHERE product_id = p_product_id AND depot_name = v_dest_depot
     FOR UPDATE;
 
     v_new_dest_stock := v_dest_depot_stock + p_quantity;
 
-    UPDATE public.stock_levels
+    UPDATE public.stk_stock_levels
     SET quantity = v_new_dest_stock,
         rack_location = COALESCE(p_dest_rack, rack_location),
         updated_at = now()
     WHERE product_id = p_product_id AND depot_name = v_dest_depot;
   END IF;
 
-  -- 9. Mise à jour de la quantité totale dans public.products (somme de tous les dépôts)
+  -- 9. Mise à jour de la quantité totale dans public.stk_products (somme de tous les dépôts)
   SELECT COALESCE(SUM(quantity), 0)
   INTO v_total_product_stock
-  FROM public.stock_levels
+  FROM public.stk_stock_levels
   WHERE product_id = p_product_id;
 
-  UPDATE public.products
+  UPDATE public.stk_products
   SET quantity = v_total_product_stock,
       store_name = CASE
         WHEN v_mov_type = 'TRANSFER' AND v_dest_depot IS NOT NULL AND v_new_depot_stock = 0 THEN v_dest_depot
@@ -742,7 +734,7 @@ BEGIN
       updated_at = now()
   WHERE id::text = p_product_id::text;
 
-  -- 10. Insertion dans public.movements, public.stock_movements et public.audit_logs
+  -- 10. Insertion dans public.stk_movements et public.core_audit_logs
   IF v_mov_type = 'INVENTORY' THEN
     v_recorded_qty := ABS(v_new_depot_stock - v_current_depot_stock);
     v_effective_dir := CASE WHEN v_new_depot_stock >= v_current_depot_stock THEN 'IN' ELSE 'OUT' END;
@@ -757,44 +749,29 @@ BEGIN
   v_mov_id := 'MOV-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text;
   v_total_cost := ROUND(v_recorded_qty * COALESCE(v_unit_price, 0), 2);
 
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
-    INSERT INTO public.movements (
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
+    INSERT INTO public.stk_movements (
       id, product_id, product_ref, user_id, user_name, movement_type,
-      quantity_changed, site_number, department_name, total_cost, order_number,
+      quantity_changed, reason, site_number, department_name, total_cost, order_number,
       depot_name, dest_depot_name, created_at
     ) VALUES (
       v_mov_id, p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
       v_caller_id, v_caller_name,
       v_effective_dir,
-      v_recorded_qty, COALESCE(p_project_name, p_reason), p_department, v_total_cost,
-      (p_metadata->>'order_number'),
+      v_recorded_qty, COALESCE(p_reason, 'Mouvement de stock'),
+      COALESCE(p_project_name, p_reason), p_department, v_total_cost, (p_metadata->>'order_number'),
       v_source_depot, v_dest_depot, now()
     );
   END IF;
 
-  -- Insertion dans public.stock_movements avec depot_name et dest_depot_name
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stock_movements') THEN
-    INSERT INTO public.stock_movements (
-      product_id, product_ref, user_id, user_name, movement_type,
-      quantity_changed, reason, site_number, department_name, total_cost, order_number,
-      depot_name, dest_depot_name, created_at
-    ) VALUES (
-      p_product_id, COALESCE((p_metadata->>'product_ref'), v_product_ref),
-      v_caller_id, v_caller_name,
-      v_effective_dir,
-      ROUND(v_recorded_qty)::integer, COALESCE(p_reason, 'Mouvement de stock'),
-      p_project_name, p_department, v_total_cost, (p_metadata->>'order_number'),
-      v_source_depot, v_dest_depot, now()
-    );
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'audit_logs') THEN
-    INSERT INTO public.audit_logs (
-      id, type, category, user_id, user_name, user_trigram,
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'core_audit_logs') THEN
+    INSERT INTO public.core_audit_logs (
+      id, app, type, category, user_id, user_name, user_trigram,
       product_id, product_ref, quantity_changed, site_number, depot_name,
       title, description, badge_text, meta, created_at
     ) VALUES (
       'AUD-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || p_operation_id::text,
+      'stock',
       'STOCK_' || v_mov_type,
       'MOVEMENTS',
       v_caller_id,
@@ -842,8 +819,8 @@ BEGIN
     'timestamp', now()
   );
 
-  INSERT INTO public.processed_operations (operation_id, user_id, entity, action, action_type, result, created_at)
-  VALUES (p_operation_id, v_caller_id, 'product_stock', v_mov_type, 'STOCK_MOVE_V4', v_result, now())
+  INSERT INTO public.core_processed_operations (operation_id, app, user_id, entity, action, action_type, result, created_at)
+  VALUES (p_operation_id, 'stock', v_caller_id, 'product_stock', v_mov_type, 'STOCK_MOVE_V4', v_result, now())
   ON CONFLICT (operation_id) DO NOTHING;
 
   RETURN v_result;
@@ -883,7 +860,7 @@ BEGIN
   -- Récupérer l'utilisateur connecté
   SELECT id::text, role_id, department, allowed_depots
   INTO v_caller_id, v_caller_role, v_caller_dept, v_caller_allowed
-  FROM public.users
+  FROM public.core_users
   WHERE auth_user_id = auth.uid() AND COALESCE(is_blocked, false) = false
   LIMIT 1;
 
@@ -891,15 +868,15 @@ BEGIN
     RAISE EXCEPTION 'Utilisateur non authentifié' USING ERRCODE = '42501';
   END IF;
 
-  -- 1. Calcul des statistiques de stock (via stock_levels et products)
+  -- 1. Calcul des statistiques de stock (via stk_stock_levels et stk_products)
   SELECT 
     COALESCE(SUM(sl.quantity * COALESCE(p.unit_price, 0)), 0),
     COALESCE(SUM(sl.quantity), 0),
     COALESCE(COUNT(DISTINCT p.id) FILTER (WHERE sl.quantity > 0 AND sl.quantity <= COALESCE(p.min_stock_alert, 2)), 0),
     COALESCE(COUNT(DISTINCT p.id) FILTER (WHERE sl.quantity = 0), 0)
   INTO v_total_value, v_total_units, v_low_stock_count, v_out_stock_count
-  FROM public.stock_levels sl
-  JOIN public.products p ON p.id::text = sl.product_id::text
+  FROM public.stk_stock_levels sl
+  JOIN public.stk_products p ON p.id::text = sl.product_id::text
   WHERE (p_depot_filter = 'ALL' OR sl.depot_name = p_depot_filter)
     AND (
       public.is_administrator()
@@ -916,12 +893,12 @@ BEGIN
   END IF;
 
   -- 2. Compteurs de flux respectant STRICTEMENT can_view_movement
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'movements') THEN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'stk_movements') THEN
     SELECT 
       COALESCE(COUNT(*) FILTER (WHERE m.movement_type = 'OUT'), 0),
       COALESCE(COUNT(*) FILTER (WHERE m.movement_type = 'IN'), 0)
     INTO v_outflow_count, v_inflow_count
-    FROM public.movements m
+    FROM public.stk_movements m
     WHERE public.can_view_movement(m.user_id::text, m.department_name, m.depot_name, m.site_number)
       AND (p_depot_filter = 'ALL' OR m.depot_name = p_depot_filter);
   END IF;
@@ -944,13 +921,243 @@ REVOKE ALL ON FUNCTION public.get_dashboard_kpis(TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_dashboard_kpis(TEXT, TEXT) TO authenticated;
 
 -- -------------------------------------------------------------------------
--- 8. MISE À JOUR DES RÔLES EXISTANTS : Ajout de perm_mov_view_all et perm_view_all_login_logs au rôle Administrateur (role_id = 1)
+-- 9. MISE À JOUR DES RÔLES EXISTANTS : Ajout de perm_mov_view_all et perm_view_all_login_logs au rôle Administrateur (role_id = 1)
 -- -------------------------------------------------------------------------
-UPDATE public.roles
+UPDATE public.core_roles
 SET permissions = array_append(permissions, 'perm_mov_view_all')
 WHERE id::text = '1' AND NOT ('perm_mov_view_all' = ANY(permissions));
 
-UPDATE public.roles
+UPDATE public.core_roles
 SET permissions = array_append(permissions, 'perm_view_all_login_logs')
 WHERE id::text = '1' AND NOT ('perm_view_all_login_logs' = ANY(permissions));
 
+-- -------------------------------------------------------------------------
+-- 10. HISTORIQUE DES AUDITS D'INVENTAIRE (stk_inventory_audits & stk_inventory_audit_items)
+-- Intégration de fix_inventory_audits.sql :
+-- - Création idempotente des tables, colonnes et index
+-- - Règles RLS strictes :
+--   * SELECT / INSERT : rôle 0 ou perm_menu_inventory_audit ou perm_inventory_validate
+--   * UPDATE / DELETE : rôle 0 uniquement
+--   * anon : zéro accès
+-- -------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'inventory_audits' AND c.relkind = 'r'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'stk_inventory_audits' AND c.relkind = 'r'
+  ) THEN
+    DROP VIEW IF EXISTS public.stk_inventory_audits;
+    ALTER TABLE public.inventory_audits RENAME TO stk_inventory_audits;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'inventory_audit_items' AND c.relkind = 'r'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'stk_inventory_audit_items' AND c.relkind = 'r'
+  ) THEN
+    DROP VIEW IF EXISTS public.stk_inventory_audit_items;
+    ALTER TABLE public.inventory_audit_items RENAME TO stk_inventory_audit_items;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS public.stk_inventory_audits (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  depot_name TEXT,
+  auditor_id TEXT,
+  auditor_name TEXT,
+  validator_id TEXT,
+  validator_name TEXT,
+  status TEXT DEFAULT 'COMPLETED',
+  items_counted INT DEFAULT 0,
+  items_with_diff INT DEFAULT 0,
+  total_diff_cost NUMERIC(12,2) DEFAULT 0,
+  audit_notes TEXT,
+  total_references INT DEFAULT 0,
+  counted_references INT DEFAULT 0,
+  discrepancies_count INT DEFAULT 0,
+  positive_diff_value NUMERIC(12,2) DEFAULT 0,
+  negative_diff_value NUMERIC(12,2) DEFAULT 0,
+  net_diff_value NUMERIC(12,2) DEFAULT 0,
+  notes TEXT,
+  started_at TIMESTAMPTZ DEFAULT now(),
+  completed_at TIMESTAMPTZ DEFAULT now(),
+  validated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.stk_inventory_audits
+  ADD COLUMN IF NOT EXISTS depot_name TEXT,
+  ADD COLUMN IF NOT EXISTS auditor_id TEXT,
+  ADD COLUMN IF NOT EXISTS auditor_name TEXT,
+  ADD COLUMN IF NOT EXISTS validator_id TEXT,
+  ADD COLUMN IF NOT EXISTS validator_name TEXT,
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'COMPLETED',
+  ADD COLUMN IF NOT EXISTS items_counted INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS items_with_diff INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS total_diff_cost NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS audit_notes TEXT,
+  ADD COLUMN IF NOT EXISTS total_references INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS counted_references INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS discrepancies_count INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS positive_diff_value NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS negative_diff_value NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS net_diff_value NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS notes TEXT,
+  ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_stk_inventory_audits_created_at
+  ON public.stk_inventory_audits (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stk_inventory_audits_depot_name
+  ON public.stk_inventory_audits (depot_name);
+
+CREATE TABLE IF NOT EXISTS public.stk_inventory_audit_items (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  audit_id TEXT NOT NULL REFERENCES public.stk_inventory_audits(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL,
+  product_ref TEXT,
+  product_name TEXT,
+  theoretical_qty NUMERIC(12,2) DEFAULT 0,
+  physical_count NUMERIC(12,2) DEFAULT 0,
+  difference NUMERIC(12,2) DEFAULT 0,
+  unit_price NUMERIC(12,2) DEFAULT 0,
+  diff_cost NUMERIC(12,2) DEFAULT 0,
+  scanned_barcode TEXT,
+  scanned_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.stk_inventory_audit_items
+  ADD COLUMN IF NOT EXISTS audit_id TEXT,
+  ADD COLUMN IF NOT EXISTS product_id TEXT,
+  ADD COLUMN IF NOT EXISTS product_ref TEXT,
+  ADD COLUMN IF NOT EXISTS product_name TEXT,
+  ADD COLUMN IF NOT EXISTS theoretical_qty NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS physical_count NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS difference NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS unit_price NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS diff_cost NUMERIC(12,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS scanned_barcode TEXT,
+  ADD COLUMN IF NOT EXISTS scanned_at TIMESTAMPTZ DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_stk_inventory_audit_items_audit_id
+  ON public.stk_inventory_audit_items (audit_id);
+CREATE INDEX IF NOT EXISTS idx_stk_inventory_audit_items_product_id
+  ON public.stk_inventory_audit_items (product_id);
+
+ALTER TABLE public.stk_inventory_audits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stk_inventory_audit_items ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE public.stk_inventory_audits FROM PUBLIC, anon;
+REVOKE ALL ON TABLE public.stk_inventory_audit_items FROM PUBLIC, anon;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stk_inventory_audits TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stk_inventory_audit_items TO authenticated;
+
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'stk_inventory_audits'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_inventory_audits', r.policyname);
+  END LOOP;
+
+  FOR r IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'stk_inventory_audit_items'
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON public.stk_inventory_audit_items', r.policyname);
+  END LOOP;
+END $$;
+
+CREATE POLICY "Authenticated read stk_inventory_audits"
+  ON public.stk_inventory_audits
+  FOR SELECT
+  TO authenticated
+  USING (
+    public.current_user_role() = 0
+    OR public.current_user_has_perm('perm_menu_inventory_audit')
+    OR public.current_user_has_perm('perm_inventory_validate')
+  );
+
+CREATE POLICY "Authenticated insert stk_inventory_audits"
+  ON public.stk_inventory_audits
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    public.current_user_role() = 0
+    OR public.current_user_has_perm('perm_menu_inventory_audit')
+    OR public.current_user_has_perm('perm_inventory_validate')
+  );
+
+CREATE POLICY "SuperAdmin update stk_inventory_audits"
+  ON public.stk_inventory_audits
+  FOR UPDATE
+  TO authenticated
+  USING (public.current_user_role() = 0)
+  WITH CHECK (public.current_user_role() = 0);
+
+CREATE POLICY "SuperAdmin delete stk_inventory_audits"
+  ON public.stk_inventory_audits
+  FOR DELETE
+  TO authenticated
+  USING (public.current_user_role() = 0);
+
+CREATE POLICY "Authenticated read stk_inventory_audit_items"
+  ON public.stk_inventory_audit_items
+  FOR SELECT
+  TO authenticated
+  USING (
+    public.current_user_role() = 0
+    OR public.current_user_has_perm('perm_menu_inventory_audit')
+    OR public.current_user_has_perm('perm_inventory_validate')
+  );
+
+CREATE POLICY "Authenticated insert stk_inventory_audit_items"
+  ON public.stk_inventory_audit_items
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    public.current_user_role() = 0
+    OR public.current_user_has_perm('perm_menu_inventory_audit')
+    OR public.current_user_has_perm('perm_inventory_validate')
+  );
+
+CREATE POLICY "SuperAdmin update stk_inventory_audit_items"
+  ON public.stk_inventory_audit_items
+  FOR UPDATE
+  TO authenticated
+  USING (public.current_user_role() = 0)
+  WITH CHECK (public.current_user_role() = 0);
+
+CREATE POLICY "SuperAdmin delete stk_inventory_audit_items"
+  ON public.stk_inventory_audit_items
+  FOR DELETE
+  TO authenticated
+  USING (public.current_user_role() = 0);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = '_tot_refresh_compat_views'
+  ) THEN
+    PERFORM public._tot_refresh_compat_views();
+  END IF;
+END $$;

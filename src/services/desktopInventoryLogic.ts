@@ -1,4 +1,5 @@
-import { Depot, Product, SubCategory } from '../types';
+import { Depot, Product, StockLevel, SubCategory, User } from '../types';
+import { isUserAllowedForDepot } from '../utils/crypto';
 import { compareRackLocationsNatural } from './orderPickingLogic';
 
 export type InventoryStockStatusFilter = 'ALL' | 'LOW' | 'OUT';
@@ -17,6 +18,115 @@ export interface InventoryFilterOptions {
   isLambdaUser: boolean;
   includeClosedDepots: boolean;
   closedDepotNames: Set<string>;
+  stockLevels?: StockLevel[];
+  currentUser?: User | null;
+  expandMultiDepotOnSearch?: boolean;
+}
+
+export interface ProductDepotStockRow {
+  depotName: string;
+  quantity: number;
+  rackLocation: string;
+  minAlert: number;
+  isLow: boolean;
+  isOut: boolean;
+}
+
+export interface ProductDepotBreakdown {
+  /** Lignes de stock par dépôt visibles pour l'utilisateur courant (selon allowed_depots) */
+  depotRows: ProductDepotStockRow[];
+  /** Toutes les lignes de stock par dépôt (tous dépôts confondus) */
+  allDepotRows: ProductDepotStockRow[];
+  /** Total des quantités sur les dépôts autorisés */
+  allowedTotalQuantity: number;
+  /** Somme globale de toutes les lignes stock_levels de cet article */
+  sumOfStockLevels: number;
+  /** Quantité globale stockée sur products.quantity */
+  productQuantity: number;
+  /** Indique si la table stock_levels contient au moins une ligne pour cet article */
+  hasExplicitStockLevels: boolean;
+  /** Vrai si products.quantity diffère de la somme des stock_levels */
+  hasDiscrepancy: boolean;
+  /** Écart (products.quantity - sumOfStockLevels) */
+  discrepancyDelta: number;
+}
+
+/**
+ * Calcule la répartition exacte du stock par dépôt d'une référence à partir de `stock_levels`,
+ * filtre selon `allowed_depots` de l'utilisateur, et détecte tout écart de cohérence avec `products.quantity`.
+ */
+export function getProductDepotBreakdown(
+  product: Product | null | undefined,
+  stockLevels: StockLevel[] = [],
+  currentUser?: User | null
+): ProductDepotBreakdown {
+  if (!product) {
+    return {
+      depotRows: [],
+      allDepotRows: [],
+      allowedTotalQuantity: 0,
+      sumOfStockLevels: 0,
+      productQuantity: 0,
+      hasExplicitStockLevels: false,
+      hasDiscrepancy: false,
+      discrepancyDelta: 0,
+    };
+  }
+
+  const pid = String(product.id);
+  const matchingLevels = (stockLevels || []).filter((sl) => String(sl.product_id) === pid);
+  const hasExplicitStockLevels = matchingLevels.length > 0;
+  const defaultMin = Number(product.min_stock_alert) || 2;
+  const defaultRack = getProductDisplayLocation(product);
+
+  const allDepotRows: ProductDepotStockRow[] = hasExplicitStockLevels
+    ? matchingLevels
+        .map((sl) => {
+          const qty = Number(sl.quantity) || 0;
+          const min = sl.min_alert !== undefined && sl.min_alert !== null ? Number(sl.min_alert) : defaultMin;
+          return {
+            depotName: (sl.depot_name || product.store_name || 'Dépôt Principal').trim(),
+            quantity: qty,
+            rackLocation: (sl.rack_location || '').trim() || (sl.depot_name === product.store_name ? defaultRack : ''),
+            minAlert: min,
+            isOut: qty <= 0,
+            isLow: qty > 0 && qty <= min,
+          };
+        })
+        .sort((a, b) => a.depotName.localeCompare(b.depotName, 'fr', { sensitivity: 'base' }))
+    : [
+        {
+          depotName: (product.store_name || 'Dépôt Principal').trim(),
+          quantity: Number(product.quantity) || 0,
+          rackLocation: defaultRack,
+          minAlert: defaultMin,
+          isOut: (Number(product.quantity) || 0) <= 0,
+          isLow:
+            (Number(product.quantity) || 0) > 0 &&
+            (Number(product.quantity) || 0) <= defaultMin,
+        },
+      ];
+
+  const depotRows = currentUser
+    ? allDepotRows.filter((row) => isUserAllowedForDepot(currentUser, row.depotName))
+    : allDepotRows;
+
+  const sumOfStockLevels = allDepotRows.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
+  const allowedTotalQuantity = depotRows.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
+  const productQuantity = Number(product.quantity) || 0;
+  const discrepancyDelta = productQuantity - sumOfStockLevels;
+  const hasDiscrepancy = hasExplicitStockLevels && discrepancyDelta !== 0;
+
+  return {
+    depotRows,
+    allDepotRows,
+    allowedTotalQuantity,
+    sumOfStockLevels,
+    productQuantity,
+    hasExplicitStockLevels,
+    hasDiscrepancy,
+    discrepancyDelta,
+  };
 }
 
 export type InventorySortColumn =
@@ -96,9 +206,14 @@ export function getProductStockState(p: Product): 'OUT' | 'LOW' | 'OK' {
 }
 
 /**
- * Filtre les produits d'inventaire avec les mêmes règles que la vue mobile :
+ * Filtre les produits d'inventaire avec les mêmes règles sur mobile et Bureau :
  * - Les opérateurs standards (`isLambdaUser === true`) ne voient jamais les articles des dépôts fermés.
  * - Les responsables peuvent afficher/masquer les dépôts fermés via `includeClosedDepots`.
+ * - Respecte `allowed_depots` de l'utilisateur courant (`currentUser`).
+ * - Quand un dépôt précis (`selectedStore`) est sélectionné, n'affiche que les articles présents dans ce dépôt
+ *   et projette `quantity`, `rack_location` et `min_stock_alert` avec les valeurs exactes de `stock_levels` pour ce dépôt.
+ * - Quand une recherche (`searchQuery`) est active sans filtre de dépôt et qu'une référence existe dans plusieurs dépôts,
+ *   retourne une ligne par dépôt autorisé où la référence est présente.
  */
 export function filterInventoryProducts(
   products: Product[],
@@ -110,39 +225,45 @@ export function filterInventoryProducts(
   const sq = (filters.shelfQuery || '').toLowerCase().trim();
   const stockStatus = filters.stockStatus || 'ALL';
   const selectedSubCat = filters.selectedSubCat || '';
-  const selectedStore = filters.selectedStore || '';
+  const selectedStore = (filters.selectedStore || '').trim();
   const selectedSupplier = filters.selectedSupplier || '';
+  const stockLevels = options.stockLevels || [];
+  const currentUser = options.currentUser || null;
+  const expandMultiDepot = options.expandMultiDepotOnSearch !== false;
 
-  return (products || []).filter((p) => {
-    const storeNameTrimmed = (p.store_name || '').toLowerCase().trim();
-    const isDepotClosed = Boolean(p.store_name && options.closedDepotNames.has(storeNameTrimmed));
+  // Regrouper stock_levels par product_id pour un accès O(1)
+  const levelsByProduct = new Map<string, StockLevel[]>();
+  for (const sl of stockLevels) {
+    const pid = String(sl.product_id);
+    const list = levelsByProduct.get(pid);
+    if (list) list.push(sl);
+    else levelsByProduct.set(pid, [sl]);
+  }
 
-    if (options.isLambdaUser && isDepotClosed) {
+  const isDepotVisible = (depotName: string | undefined): boolean => {
+    const clean = (depotName || '').trim();
+    if (currentUser && clean && !isUserAllowedForDepot(currentUser, clean)) {
       return false;
     }
-    if (!options.isLambdaUser && isDepotClosed && !options.includeClosedDepots) {
-      return false;
-    }
+    const lower = clean.toLowerCase();
+    const isDepotClosed = Boolean(clean && options.closedDepotNames.has(lower));
+    if (options.isLambdaUser && isDepotClosed) return false;
+    if (!options.isLambdaUser && isDepotClosed && !options.includeClosedDepots) return false;
+    return true;
+  };
 
-    const qty = Number(p.quantity) || 0;
-    const min = Number(p.min_stock_alert) || 2;
+  const results: Product[] = [];
 
-    if (stockStatus === 'LOW' && (qty <= 0 || qty > min)) return false;
-    if (stockStatus === 'OUT' && qty > 0) return false;
-
-    if (selectedSubCat && String(p.sub_category_id) !== selectedSubCat) return false;
-    if (selectedStore && p.store_name !== selectedStore) return false;
-
+  for (const p of products || []) {
+    if (selectedSubCat && String(p.sub_category_id) !== selectedSubCat) continue;
     if (
       selectedSupplier &&
       p.supplier_1_name !== selectedSupplier &&
       p.supplier_2_name !== selectedSupplier
     ) {
-      return false;
+      continue;
     }
-
-    if (rq && (!p.room_name || !p.room_name.toLowerCase().includes(rq))) return false;
-    if (sq && (!p.shelf_name || !p.shelf_name.toLowerCase().includes(sq))) return false;
+    if (rq && (!p.room_name || !p.room_name.toLowerCase().includes(rq))) continue;
 
     if (q) {
       const matchRef = (p.reference || '').toLowerCase().includes(q);
@@ -161,12 +282,143 @@ export function filterInventoryProducts(
         !matchBarcode &&
         !matchQr
       ) {
-        return false;
+        continue;
       }
     }
 
-    return true;
-  });
+    const pLevels = levelsByProduct.get(String(p.id)) || [];
+
+    // Cas A : Un dépôt précis est sélectionné dans le filtre
+    if (selectedStore) {
+      if (!isDepotVisible(selectedStore)) continue;
+
+      let effectiveQty: number | null = null;
+      let effectiveRack = p.rack_location;
+      let effectiveShelf = p.shelf_name;
+      let effectiveMin = Number(p.min_stock_alert) || 2;
+
+      if (pLevels.length > 0) {
+        const matchLevel = pLevels.find(
+          (sl) => sl.depot_name.trim().toLowerCase() === selectedStore.toLowerCase()
+        );
+        if (!matchLevel) {
+          continue; // Cette référence n'est pas présente dans ce dépôt
+        }
+        effectiveQty = Number(matchLevel.quantity) || 0;
+        if (matchLevel.rack_location) {
+          effectiveRack = matchLevel.rack_location;
+          effectiveShelf = matchLevel.rack_location;
+        }
+        if (matchLevel.min_alert !== undefined && matchLevel.min_alert !== null) {
+          effectiveMin = Number(matchLevel.min_alert);
+        }
+      } else {
+        if ((p.store_name || '').trim().toLowerCase() !== selectedStore.toLowerCase()) {
+          continue;
+        }
+        effectiveQty = Number(p.quantity) || 0;
+      }
+
+      if (
+        sq &&
+        !(effectiveShelf && effectiveShelf.toLowerCase().includes(sq)) &&
+        !(effectiveRack && effectiveRack.toLowerCase().includes(sq))
+      ) {
+        continue;
+      }
+
+      if (stockStatus === 'LOW' && (effectiveQty <= 0 || effectiveQty > effectiveMin)) continue;
+      if (stockStatus === 'OUT' && effectiveQty > 0) continue;
+
+      results.push({
+        ...p,
+        store_name: selectedStore,
+        quantity: effectiveQty,
+        rack_location: effectiveRack,
+        shelf_name: effectiveShelf,
+        min_stock_alert: effectiveMin,
+      });
+      continue;
+    }
+
+    // Cas B : Tous les dépôts ("ALL")
+    if (pLevels.length > 0) {
+      const visibleLevels = pLevels.filter((sl) => isDepotVisible(sl.depot_name));
+      if (visibleLevels.length === 0) continue;
+
+      // Si recherche active et référence présente dans plusieurs dépôts autorisés : une ligne par dépôt
+      if (q && expandMultiDepot && visibleLevels.length > 1) {
+        for (const sl of visibleLevels) {
+          const dQty = Number(sl.quantity) || 0;
+          const dMin =
+            sl.min_alert !== undefined && sl.min_alert !== null
+              ? Number(sl.min_alert)
+              : Number(p.min_stock_alert) || 2;
+          const dRack = sl.rack_location || p.rack_location;
+          const dShelf = sl.rack_location || p.shelf_name;
+
+          if (
+            sq &&
+            !(dShelf && dShelf.toLowerCase().includes(sq)) &&
+            !(dRack && dRack.toLowerCase().includes(sq))
+          ) {
+            continue;
+          }
+          if (stockStatus === 'LOW' && (dQty <= 0 || dQty > dMin)) continue;
+          if (stockStatus === 'OUT' && dQty > 0) continue;
+
+          results.push({
+            ...p,
+            store_name: sl.depot_name,
+            quantity: dQty,
+            rack_location: dRack,
+            shelf_name: dShelf,
+            min_stock_alert: dMin,
+          });
+        }
+        continue;
+      }
+
+      // Sinon : 1 ligne globale pour la référence (somme des dépôts autorisés si restriction, ou quantité totale)
+      const isRestrictedUser = Boolean(
+        currentUser?.allowed_depots &&
+          currentUser.allowed_depots.length > 0 &&
+          !currentUser.allowed_depots.includes('*')
+      );
+      const effectiveQty = isRestrictedUser
+        ? visibleLevels.reduce((acc, sl) => acc + (Number(sl.quantity) || 0), 0)
+        : Number(p.quantity) || 0;
+      const min = Number(p.min_stock_alert) || 2;
+
+      if (sq && (!p.shelf_name || !p.shelf_name.toLowerCase().includes(sq))) continue;
+      if (stockStatus === 'LOW' && (effectiveQty <= 0 || effectiveQty > min)) continue;
+      if (stockStatus === 'OUT' && effectiveQty > 0) continue;
+
+      results.push(
+        isRestrictedUser
+          ? {
+              ...p,
+              quantity: effectiveQty,
+              store_name: visibleLevels[0]?.depot_name || p.store_name,
+            }
+          : p
+      );
+      continue;
+    }
+
+    // Repli si aucune ligne stock_levels n'est chargée pour ce produit
+    if (!isDepotVisible(p.store_name)) continue;
+    if (sq && (!p.shelf_name || !p.shelf_name.toLowerCase().includes(sq))) continue;
+
+    const qty = Number(p.quantity) || 0;
+    const min = Number(p.min_stock_alert) || 2;
+    if (stockStatus === 'LOW' && (qty <= 0 || qty > min)) continue;
+    if (stockStatus === 'OUT' && qty > 0) continue;
+
+    results.push(p);
+  }
+
+  return results;
 }
 
 /**

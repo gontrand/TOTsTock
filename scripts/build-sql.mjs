@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildEdgeFunctions, verifyEdgeFunctionsSync } from './build-edge.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,16 +15,22 @@ export const SQL_STEPS = [
     label: 'Schéma de base TOT Stock (tables, index, RLS initial)',
   },
   {
+    step: '09',
+    sourceRel: 'supabase-client/09_core_prefixes.sql',
+    migrationName: '20261004000000_09_core_prefixes.sql',
+    label: 'Renommage idempotent des tables vers core_* et stk_* + vues de compatibilité',
+  },
+  {
     step: '01',
     sourceRel: 'supabase-client/01_auth_link.sql',
     migrationName: '20261005010000_01_auth_link.sql',
-    label: 'Liaison Supabase Auth (auth.users <-> public.users)',
+    label: 'Liaison Supabase Auth (auth.users <-> public.core_users)',
   },
   {
     step: '01b',
     sourceRel: 'supabase-client/01b_migrate_users_id_to_text.sql',
     migrationName: '20261005013000_01b_migrate_users_id_to_text.sql',
-    label: 'Migration auto-protégée public.users.id vers TEXT',
+    label: 'Migration auto-protégée public.core_users.id vers TEXT',
   },
   {
     step: '02',
@@ -58,8 +65,32 @@ export const SQL_STEPS = [
   {
     step: '08',
     sourceRel: 'supabase-client/08_print_jobs.sql',
-    migrationName: '20261005080000_08_print_jobs.sql',
+    migrationName: '20261005065000_08_print_jobs.sql',
     label: 'Postes et file de travaux d\'impression d\'étiquettes à distance (print_stations, print_jobs)',
+  },
+  {
+    step: '11',
+    sourceRel: 'supabase-client/11_suite_tables.sql',
+    migrationName: '20261005068000_11_suite_tables.sql',
+    label: 'Tables manquantes (stk_order_preparations_log, stk_categories, stk_material_order_items), core_files et bucket privé tot-files',
+  },
+  {
+    step: '12',
+    sourceRel: 'supabase-client/12_user_preferences.sql',
+    migrationName: '20261005069000_12_user_preferences.sql',
+    label: 'Préférences utilisateur synchronisées entre appareils (core_user_preferences)',
+  },
+  {
+    step: '13',
+    sourceRel: 'supabase-client/13_transfer_stock_batch.sql',
+    migrationName: '20261005069500_13_transfer_stock_batch.sql',
+    label: 'Transfert de matériel entre dépôts par lot (transfer_stock_batch) & permission perm_stock_transfer',
+  },
+  {
+    step: '14',
+    sourceRel: 'supabase-client/14_mailing.sql',
+    migrationName: '20261005069800_14_mailing.sql',
+    label: 'Mailing multi-fournisseurs, expéditeurs par application (stk, hab, rpt, tools) et journal core_mail_log',
   },
   {
     step: '07',
@@ -68,6 +99,280 @@ export const SQL_STEPS = [
     label: 'Table app_compat, is_active_admin(), diagnostic_installation() et durcissement final anon',
   },
 ];
+
+export const CREATE_TABLE_SOURCE_FILES = [
+  'supabase-client/02_rls_hardening.sql',
+  'supabase-client/00_complete_tot_stock_schema.sql',
+  'supabase-client/03_rpc_stock_and_orders.sql',
+  'supabase-client/04_mouvements_et_depots_vehicules.sql',
+  'supabase-client/07_app_compat.sql',
+  'supabase-client/08_print_jobs.sql',
+  'supabase-client/11_suite_tables.sql',
+  'supabase-client/12_user_preferences.sql',
+  'supabase-client/14_mailing.sql',
+];
+
+const AUTO_COLUMNS_START_MARKER = '-- [BEGIN AUTO_GENERATED_ADD_COLUMNS]';
+const AUTO_COLUMNS_END_MARKER = '-- [END AUTO_GENERATED_ADD_COLUMNS]';
+
+export function stripSqlComments(sql) {
+  let out = '';
+  let i = 0;
+  let inSingleQuote = false;
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (inSingleQuote) {
+      out += ch;
+      if (ch === "'" && next === "'") {
+        out += next;
+        i += 2;
+        continue;
+      }
+      if (ch === "'") {
+        inSingleQuote = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "'") {
+      inSingleQuote = true;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '-' && next === '-') {
+      while (i < sql.length && sql[i] !== '\n') {
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) {
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+function splitTopLevelCommas(body) {
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let inSingleQuote = false;
+
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    const next = body[i + 1];
+    if (inSingleQuote) {
+      current += ch;
+      if (ch === "'" && next === "'") {
+        current += next;
+        i += 1;
+        continue;
+      }
+      if (ch === "'") {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      inSingleQuote = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) {
+    parts.push(current.trim());
+  }
+  return parts;
+}
+
+function stripBalancedCheckClauses(input) {
+  let result = input;
+  const checkRegex = /\bCHECK\s*\(/i;
+  let safety = 0;
+  while (safety < 20) {
+    safety += 1;
+    const m = checkRegex.exec(result);
+    if (!m) break;
+    const startIdx = m.index;
+    const openParenIdx = startIdx + m[0].length - 1;
+    let depth = 1;
+    let inQuote = false;
+    let j = openParenIdx + 1;
+    while (j < result.length && depth > 0) {
+      const ch = result[j];
+      const next = result[j + 1];
+      if (inQuote) {
+        if (ch === "'" && next === "'") {
+          j += 2;
+          continue;
+        }
+        if (ch === "'") inQuote = false;
+        j += 1;
+        continue;
+      }
+      if (ch === "'") {
+        inQuote = true;
+      } else if (ch === '(') {
+        depth += 1;
+      } else if (ch === ')') {
+        depth -= 1;
+      }
+      j += 1;
+    }
+    result = `${result.slice(0, startIdx)} ${result.slice(j)}`;
+  }
+  return result;
+}
+
+export function cleanColumnDefinitionForAddColumn(rawDef) {
+  let def = stripBalancedCheckClauses(rawDef);
+  def = def.replace(
+    /\bREFERENCES\s+[a-zA-Z0-9_.]+\s*\([^)]*\)(?:\s+ON\s+(?:DELETE|UPDATE)\s+(?:CASCADE|SET\s+NULL|SET\s+DEFAULT|RESTRICT|NO\s+ACTION))*/gi,
+    ' '
+  );
+  def = def.replace(/\bPRIMARY\s+KEY\b/gi, ' ');
+  def = def.replace(/\bNOT\s+NULL\b/gi, ' ');
+  def = def.replace(/\bUNIQUE\b/gi, ' ');
+  def = def.replace(/(?<!DEFAULT\s)\bNULL\b/gi, ' ');
+  def = def.replace(/^BIGSERIAL\b/i, 'BIGINT').replace(/^SERIAL\b/i, 'INT');
+  return def.replace(/\s+/g, ' ').trim();
+}
+
+export function extractCreateTableColumnsFromSql(sqlContent) {
+  let withoutAutoBlock = sqlContent;
+  const sIdx = withoutAutoBlock.indexOf(AUTO_COLUMNS_START_MARKER);
+  const eIdx = withoutAutoBlock.indexOf(AUTO_COLUMNS_END_MARKER);
+  if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
+    withoutAutoBlock =
+      withoutAutoBlock.slice(0, sIdx) +
+      withoutAutoBlock.slice(eIdx + AUTO_COLUMNS_END_MARKER.length);
+  }
+  const cleanSql = stripSqlComments(withoutAutoBlock);
+  const createRegex = /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+public\.([a-zA-Z0-9_]+)\s*\(/gi;
+  const extracted = [];
+  let match;
+
+  while ((match = createRegex.exec(cleanSql)) !== null) {
+    const tableName = match[1];
+    const openParenIdx = match.index + match[0].length - 1;
+    let depth = 1;
+    let inQuote = false;
+    let j = openParenIdx + 1;
+    while (j < cleanSql.length && depth > 0) {
+      const ch = cleanSql[j];
+      const next = cleanSql[j + 1];
+      if (inQuote) {
+        if (ch === "'" && next === "'") {
+          j += 2;
+          continue;
+        }
+        if (ch === "'") inQuote = false;
+        j += 1;
+        continue;
+      }
+      if (ch === "'") {
+        inQuote = true;
+      } else if (ch === '(') {
+        depth += 1;
+      } else if (ch === ')') {
+        depth -= 1;
+      }
+      j += 1;
+    }
+    const body = cleanSql.slice(openParenIdx + 1, j - 1);
+    const items = splitTopLevelCommas(body);
+    for (const rawItem of items) {
+      const normalized = rawItem.replace(/\s+/g, ' ').trim();
+      if (!normalized) continue;
+      if (/^(CONSTRAINT|PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY)\b/i.test(normalized)) {
+        continue;
+      }
+      const colMatch = normalized.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s+(.+)$/);
+      if (!colMatch) continue;
+      const colName = colMatch[1];
+      if (colName.toLowerCase() === 'id') continue;
+      const cleanedDef = cleanColumnDefinitionForAddColumn(colMatch[2]);
+      if (!cleanedDef) continue;
+      extracted.push({
+        tableName,
+        columnName: colName,
+        definition: cleanedDef,
+      });
+    }
+  }
+  return extracted;
+}
+
+export function generateLegacyColumnsAlignmentSql(rootDir = ROOT_DIR) {
+  const seen = new Set();
+  const statements = [];
+
+  for (const relPath of CREATE_TABLE_SOURCE_FILES) {
+    const absPath = path.join(rootDir, relPath);
+    if (!fs.existsSync(absPath)) continue;
+    const content = fs.readFileSync(absPath, 'utf8');
+    const cols = extractCreateTableColumnsFromSql(content);
+    for (const c of cols) {
+      const key = `${c.tableName.toLowerCase()}.${c.columnName.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      statements.push(
+        `ALTER TABLE IF EXISTS public.${c.tableName} ADD COLUMN IF NOT EXISTS ${c.columnName} ${c.definition};`
+      );
+    }
+  }
+
+  return [
+    AUTO_COLUMNS_START_MARKER,
+    '-- Alignement automatique des colonnes manquantes sur les tables déjà existantes (généré par scripts/build-sql.mjs)',
+    ...statements,
+    AUTO_COLUMNS_END_MARKER,
+  ].join('\n');
+}
+
+export function syncScript02AutoGeneratedColumns(rootDir = ROOT_DIR) {
+  const script02Path = path.join(rootDir, 'supabase-client', '02_rls_hardening.sql');
+  if (!fs.existsSync(script02Path)) return;
+  const raw = fs.readFileSync(script02Path, 'utf8');
+  const startIdx = raw.indexOf(AUTO_COLUMNS_START_MARKER);
+  const endIdx = raw.indexOf(AUTO_COLUMNS_END_MARKER);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
+
+  const generatedBlock = generateLegacyColumnsAlignmentSql(rootDir);
+  const updated =
+    raw.slice(0, startIdx) +
+    generatedBlock +
+    raw.slice(endIdx + AUTO_COLUMNS_END_MARKER.length);
+
+  if (updated !== raw) {
+    fs.writeFileSync(script02Path, updated, 'utf8');
+  }
+}
 
 export function readAppVersionInfo(rootDir = ROOT_DIR) {
   const pkgPath = path.join(rootDir, 'package.json');
@@ -153,6 +458,8 @@ export function buildSqlArtifacts(rootDir = ROOT_DIR) {
     fs.copyFileSync(step0Migration, step0Source);
   }
 
+  syncScript02AutoGeneratedColumns(rootDir);
+
   const writtenMigrations = [];
   for (const item of SQL_STEPS) {
     const absSource = path.join(rootDir, item.sourceRel);
@@ -170,9 +477,12 @@ export function buildSqlArtifacts(rootDir = ROOT_DIR) {
   const installSqlPath = path.join(distDir, 'install.sql');
   fs.writeFileSync(installSqlPath, installSql, 'utf8');
 
+  const edgeResult = buildEdgeFunctions(rootDir);
+
   return {
     writtenMigrations,
     installSqlPath,
+    edgeResult,
   };
 }
 
@@ -211,6 +521,9 @@ export function verifySqlArtifactsSync(rootDir = ROOT_DIR) {
     }
   }
 
+  const edgeErrors = verifyEdgeFunctionsSync(rootDir);
+  errors.push(...edgeErrors);
+
   return {
     inSync: errors.length === 0,
     errors,
@@ -218,8 +531,26 @@ export function verifySqlArtifactsSync(rootDir = ROOT_DIR) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  const args = process.argv.slice(2);
+  if (args.includes('--check')) {
+    const sync = verifySqlArtifactsSync(ROOT_DIR);
+    if (!sync.inSync) {
+      for (const err of sync.errors) {
+        console.error(`[build:sql --check] ERREUR : ${err}`);
+      }
+      process.exit(1);
+    }
+    console.log(
+      '[build:sql --check] OK : migrations, dist/install.sql et supabase-client/generated/edge-functions* sont à jour.'
+    );
+    process.exit(0);
+  }
+
   const res = buildSqlArtifacts();
   console.log(`[build:sql] ${res.writtenMigrations.length} migrations générées dans supabase/migrations/`);
   console.log(`[build:sql] Fichier consolidé généré : ${path.relative(ROOT_DIR, res.installSqlPath)}`);
+  console.log(
+    `[build:sql] ${res.edgeResult.writtenClientFiles.length} fonctions Edge clientes + 1 fonction maître générées dans supabase-client/generated/edge-functions/`
+  );
 }
 
