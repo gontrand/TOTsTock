@@ -29,6 +29,7 @@ import {
   Loader2,
   Sliders,
 } from 'lucide-react';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export const EmailReportsModal: React.FC = () => {
   const {
@@ -82,8 +83,8 @@ export const EmailReportsModal: React.FC = () => {
   };
 
   const loadStockLevelProductsFromRpcOrLocal = async () => {
-    const url = (supabaseUrl || localStorage.getItem('tot_inv_supabase_url') || '').trim();
-    const key = (supabaseKey || localStorage.getItem('tot_inv_supabase_key') || '').trim();
+    const url = (supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+    const key = (supabaseKey || safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
     const client = getClientSupabase(url, key);
     if (client && typeof (client as any).rpc === 'function') {
       try {
@@ -193,8 +194,8 @@ export const EmailReportsModal: React.FC = () => {
 
     setIsSending(true);
     try {
-      const supabaseUrl = (localStorage.getItem('tot_inv_supabase_url') || '').trim();
-      const supabaseKey = (localStorage.getItem('tot_inv_supabase_key') || '').trim();
+      const supabaseUrl = (safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+      const supabaseKey = (safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
       const client = getClientSupabase(supabaseUrl, supabaseKey);
 
       let success = false;

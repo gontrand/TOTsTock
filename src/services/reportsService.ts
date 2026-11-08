@@ -1987,13 +1987,13 @@ export async function sendReportEmailViaEdgeFunction(params: {
 }> {
   const supabaseUrl = (
     params.supabaseUrl ||
-    localStorage.getItem('tot_inv_supabase_url') ||
+    safeGetSensitiveItem('tot_inv_supabase_url') ||
     safeGetSensitiveItem('tqt_company_url') ||
     ''
   ).trim();
   const supabaseKey = (
     params.supabaseKey ||
-    localStorage.getItem('tot_inv_supabase_key') ||
+    safeGetSensitiveItem('tot_inv_supabase_key') ||
     safeGetSensitiveItem('tqt_company_key') ||
     ''
   ).trim();

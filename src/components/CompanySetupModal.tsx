@@ -757,7 +757,18 @@ export const CompanySetupModal: React.FC = () => {
       }
 
       const { data: sessionData } = await client.auth.getSession();
-      const accessToken = sessionData?.session?.access_token || cleanKey;
+      const accessToken = sessionData?.session?.access_token || '';
+      if (!accessToken) {
+        setLicenseMsg({
+          type: 'error',
+          text: tr(
+            language,
+            'Aucune session Supabase active : déconnectez-vous puis reconnectez-vous, puis relancez la découverte.',
+            'No active Supabase session: sign out and sign in again, then retry the discovery.'
+          ),
+        });
+        return;
+      }
 
       const res = await discoverLicenseByProjectUrl(cleanUrl, cleanKey, accessToken, {
         force: true,

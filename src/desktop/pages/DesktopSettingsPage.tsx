@@ -4442,7 +4442,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               const { data: sessionData } = client
                                 ? await client.auth.getSession()
                                 : { data: { session: null } };
-                              const token = sessionData?.session?.access_token || cleanKey;
+                              const token = sessionData?.session?.access_token || '';
+                              if (!token) {
+                                setErrorMessage(
+                                  'Aucune session Supabase active : déconnectez-vous puis reconnectez-vous avec votre compte, puis relancez la découverte.'
+                                );
+                                setIsBusyLicense(false);
+                                return;
+                              }
                               const res = await discoverLicenseByProjectUrl(
                                 cleanUrl,
                                 cleanKey,

@@ -50,6 +50,7 @@ import {
   saveSuiteMailSender,
   sendTestEmailRequest,
 } from '../services/mailingService';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export interface EmailSettingsPanelProps {
   embedded?: boolean;
@@ -128,8 +129,8 @@ export const EmailSettingsPanel: React.FC<EmailSettingsPanelProps> = ({
   const [isPurgingLogs, setIsPurgingLogs] = useState(false);
 
   const getSupabaseClient = useCallback(() => {
-    const supabaseUrl = (localStorage.getItem('tot_inv_supabase_url') || '').trim();
-    const supabaseKey = (localStorage.getItem('tot_inv_supabase_key') || '').trim();
+    const supabaseUrl = (safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+    const supabaseKey = (safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
     return getClientSupabase(supabaseUrl, supabaseKey);
   }, []);
 

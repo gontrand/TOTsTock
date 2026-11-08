@@ -55,6 +55,7 @@ import {
   Smartphone,
   ExternalLink,
 } from 'lucide-react';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export const APP_BUILD_DATE = '2026-11-08';
 
@@ -286,7 +287,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
 
   const encryptionMode = getLocalCryptoMode();
   const safeHost = extractSafeSupabaseHost(
-    supabaseUrl || localStorage.getItem('tot_inv_supabase_url')
+    supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url')
   );
   const schemaStatus = evaluateDbSchemaStatus(
     appCompat?.schemaVersion,
@@ -322,8 +323,8 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
   const pendingOfflineCount = countPendingOfflineOperationsSafe();
 
   const loadCurrentAppSender = useCallback(async () => {
-    const url = (supabaseUrl || localStorage.getItem('tot_inv_supabase_url') || '').trim();
-    const key = (supabaseKey || localStorage.getItem('tot_inv_supabase_key') || '').trim();
+    const url = (supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+    const key = (supabaseKey || safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
     const client = getClientSupabase(url, key);
     if (!client) return;
     try {
@@ -345,8 +346,8 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
   }, [loadCurrentAppSender]);
 
   const handleCheckAllEdgeFunctions = async () => {
-    const url = (supabaseUrl || localStorage.getItem('tot_inv_supabase_url') || '').trim();
-    const key = (supabaseKey || localStorage.getItem('tot_inv_supabase_key') || '').trim();
+    const url = (supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+    const key = (supabaseKey || safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
     const client = getClientSupabase(url, key);
     if (!client) return;
     setCheckingEdges(true);
@@ -382,7 +383,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
       depotsMax: licenseSnapshot.maxDepots,
       usersUsed: users.length,
       signedTokenPresent: licenseSnapshot.signedTokenPresent,
-      supabaseUrl: supabaseUrl || localStorage.getItem('tot_inv_supabase_url'),
+      supabaseUrl: supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url'),
       edgeResults: edgeItems,
       appSenderName: stkSender.fromName,
       appSenderEmail: stkSender.fromEmail,
