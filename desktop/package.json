@@ -4,6 +4,8 @@
   "private": true,
   "description": "Application de bureau TOT Stock (Windows, macOS, Linux) avec impression silencieuse d'étiquettes",
   "author": "TOT Inventory & Scan Edition",
+  "homepage": "https://github.com/gontrand/TOTsTock",
+  "desktopName": "tot-stock.desktop",
   "license": "UNLICENSED",
   "type": "module",
   "main": "main.mjs",
