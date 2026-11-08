@@ -156,13 +156,16 @@ const ORDERED_CLIENT_SCRIPTS = [
   '13_transfer_stock_batch.sql',
   '14_mailing.sql',
   '15_search_orders_movements.sql',
+  '16_audit_trail.sql',
+  '17_transferts_valides.sql',
+  '18_password_reset.sql',
   '07_app_compat.sql',
 ];
 
-describe('Prompt v50 & v51 — LOT 1 : Cohérence des versions (5.13.0 / 2.7.0), en-têtes SQL 00..17 et build:sql --check', () => {
-  it('aligne APP_VERSION=5.13.0, EXPECTED_SCHEMA_VERSION=2.7.0, MIN_SUPPORTED_SCHEMA_VERSION=1.0.0 et déclare le script 14 dans SQL_STEPS, supabaseScripts, INSTALL.md et les traductions FR/EN/NL', () => {
-    expect(APP_VERSION).toBe('5.13.0');
-    expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
+describe('Prompt v50 & v51 — LOT 1 : Cohérence des versions (5.16.0 / 2.10.0), en-têtes SQL 00..18 et build:sql --check', () => {
+  it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0, MIN_SUPPORTED_SCHEMA_VERSION=1.0.0 et déclare le script 14 dans SQL_STEPS, supabaseScripts, INSTALL.md et les traductions FR/EN/NL', () => {
+    expect(APP_VERSION).toBe('5.16.0');
+    expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
     expect(TABLES.mailAccounts).toBe('core_mail_accounts');
@@ -194,8 +197,8 @@ describe('Prompt v50 & v51 — LOT 1 : Cohérence des versions (5.13.0 / 2.7.0),
 
     const installMd = fs.readFileSync(path.join(ROOT_DIR, 'supabase-client/INSTALL.md'), 'utf8');
     expect(installMd).toContain('14_mailing.sql');
-    expect(installMd).toContain('2.7.0');
-    expect(installMd).toContain('5.13.0');
+    expect(installMd).toContain('2.10.0');
+    expect(installMd).toContain('5.16.0');
 
     expect(translations.fr.sql_script_14_title).toContain('14_mailing.sql');
     expect(translations.en.sql_script_14_title).toContain('14_mailing.sql');
@@ -314,7 +317,7 @@ describe('Prompt v50 & v51 — LOT 1 & 2.1 : Tests SQL PGlite de 14_mailing.sql 
       expect(mailingRow?.status).toBe('OK');
       expect(mailingRow?.details).toContain('msgraph');
       expect(compatRow?.status).toBe('OK');
-      expect(compatRow?.details).toContain('2.7.0');
+      expect(compatRow?.details).toContain('2.10.0');
 
       // 3. Tester la migration automatique d'une ancienne configuration Brevo (core_app_settings + vault.secrets)
       await db.exec(`
@@ -1409,8 +1412,8 @@ describe('Prompt v50 & v51 — LOT 2.3, 3 & 4 : Presets E-mails (dont Microsoft 
 
   it('expose les 5 dernières versions dans RECENT_CHANGELOG (FR/EN/NL) et génère un diagnostic À propos sans aucun secret', () => {
     expect(RECENT_CHANGELOG.length).toBeGreaterThanOrEqual(5);
-    expect(RECENT_CHANGELOG[0].version).toBe('5.13.0');
-    expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.7.0');
+    expect(RECENT_CHANGELOG[0].version).toBe('5.16.0');
+    expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.10.0');
     for (const entry of RECENT_CHANGELOG.slice(0, 5)) {
       expect(entry.title.fr.length).toBeGreaterThan(5);
       expect(entry.title.en.length).toBeGreaterThan(5);
@@ -1418,19 +1421,19 @@ describe('Prompt v50 & v51 — LOT 2.3, 3 & 4 : Presets E-mails (dont Microsoft 
       expect(entry.highlights.fr.length).toBeGreaterThanOrEqual(2);
     }
 
-    expect(evaluateDbSchemaStatus('2.7.0', '2.7.0', '1.0.0')).toBe('up_to_date');
-    expect(evaluateDbSchemaStatus('2.2.0', '2.7.0', '1.0.0')).toBe('tolerated');
-    expect(evaluateDbSchemaStatus('0.9.0', '2.7.0', '1.0.0')).toBe('outdated');
+    expect(evaluateDbSchemaStatus('2.10.0', '2.10.0', '1.0.0')).toBe('up_to_date');
+    expect(evaluateDbSchemaStatus('2.2.0', '2.10.0', '1.0.0')).toBe('tolerated');
+    expect(evaluateDbSchemaStatus('0.9.0', '2.10.0', '1.0.0')).toBe('outdated');
 
     expect(
       extractSafeSupabaseHost('https://monprojet.supabase.co/rest/v1?apikey=eyJhbGciOiJIUzI1NiJ9.secret.sig')
     ).toBe('monprojet.supabase.co');
 
     const summary = formatDiagnosticSupportSummary({
-      appVersion: '5.13.0',
-      expectedSchemaVersion: '2.7.0',
+      appVersion: '5.16.0',
+      expectedSchemaVersion: '2.10.0',
       minSupportedSchemaVersion: '1.0.0',
-      actualSchemaVersion: '2.7.0',
+      actualSchemaVersion: '2.10.0',
       platform: 'Desktop Electron',
       planCode: 'pro',
       referencesUsed: 120,
@@ -1446,7 +1449,7 @@ describe('Prompt v50 & v51 — LOT 2.3, 3 & 4 : Presets E-mails (dont Microsoft 
       pendingOfflineCount: 0,
     });
 
-    expect(summary).toContain('TOT Stock v5.13.0');
+    expect(summary).toContain('TOT Stock v5.16.0');
     expect(summary).toContain('monprojet.supabase.co');
     expect(summary).toContain('TOT Stock <stock@entreprise.fr>');
     expect(summary).not.toContain('sb_secret_123456');

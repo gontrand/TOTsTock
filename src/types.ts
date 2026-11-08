@@ -212,6 +212,7 @@ export interface MaterialOrder {
   order_number: string; // Auto-generated with site number prefix e.g. "CH-2026-01-CMD-261002-001"
   site_number: string;
   site_name?: string;
+  depot_id?: string | number | null;
   depot_name?: string;
   requester_id: string | number;
   requester_name: string;
@@ -244,6 +245,9 @@ export interface MaterialOrder {
   pickup_delegate_at?: string | null;
   pickup_delegate_by?: string | null;
   pickup_delegate_notes?: string | null;
+  cancelled_by?: string | null;
+  cancelled_at?: string | null;
+  cancellation_reason?: string | null;
   updated_at?: string;
 }
 

@@ -18,6 +18,15 @@ import {
 } from '../services/desktopInventoryLogic';
 import { canUserAccessScannerMode } from '../services/orderPickingLogic';
 import {
+  buildNotificationKey,
+  computeTargetedBellBadgeCount,
+  getNotificationCardDescriptor,
+  getTargetedOrderNotificationsForUser,
+  isUserRecipientForStockAlert,
+  shouldAutoDismissOnCardClick,
+  shouldShowNotificationBanner,
+} from '../services/notificationService';
+import {
   DesktopPageId,
   DesktopSettingsSection,
   DESKTOP_GLOBAL_DEPOT_KEY,
@@ -130,6 +139,10 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     setLanguage,
     t,
     depots,
+    departments,
+    projects,
+    depotHolders,
+    transfers,
     products,
     subCategories,
     orders,
@@ -148,6 +161,11 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     retryRejectedMovement,
     discardRejectedMovement,
     transferBadgeCount,
+    roles,
+    users,
+    dismissedNotificationKeys,
+    dismissNotificationKeys,
+    resetMyNotificationDismissals,
   } = useApp();
 
   // Persisted sidebar collapse state
@@ -228,6 +246,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [confirmingResetBell, setConfirmingResetBell] = useState(false);
   const [syncQueuePopoverOpen, setSyncQueuePopoverOpen] = useState(false);
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
 
@@ -487,12 +506,50 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     Number(currentUser?.role_id) === 0 ||
     Number(currentUser?.role_id) === 1;
 
-  const pendingPrepCount = orders.filter(
-    (o) => o.status === 'PENDING' || o.status === 'PREPARING'
+  const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
+    orders,
+    user: currentUser,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const pendingPrepCount = targetedOrderNotifs.filter(
+    (n) => n.notificationType === 'ORDER_PENDING_PREP'
   ).length;
-  const lowStockProducts = products.filter(
-    (p) => (p.quantity || 0) <= (p.min_stock_alert || 2)
-  );
+  const lowStockProducts = shouldShowNotificationBanner('STOCK_LOW_ALERT', currentUser?.id)
+    ? products.filter(
+        (p) =>
+          (p.quantity || 0) <= (p.min_stock_alert || 2) &&
+          isUserRecipientForStockAlert({
+            product: p,
+            user: currentUser,
+            departments,
+            depots,
+            depotHolders,
+            roles,
+            dismissedKeys: dismissedNotificationKeys,
+            alertStatus: (p.quantity || 0) <= 0 ? 'OUT' : 'LOW',
+          })
+      )
+    : [];
+  const targetedBellCount = computeTargetedBellBadgeCount({
+    user: currentUser,
+    orders,
+    transfers,
+    products,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    hasReceiveAllPerm: userHasPermission('perm_stock_receive_all'),
+    dismissedKeys: dismissedNotificationKeys,
+  });
 
   const canonicalPlan = normalizeToCanonicalPlan(
     license?.plan || license?.plan_type,
@@ -1231,47 +1288,232 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                 className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer relative"
               >
                 <Bell className="w-4 h-4" />
-                {lowStockProducts.length > 0 && (
-                  <span className="ml-1 font-mono text-[10px] font-bold text-amber-600">
-                    {lowStockProducts.length}
+                {targetedBellCount > 0 && (
+                  <span
+                    data-testid="desktop-bell-badge"
+                    className="ml-1 font-mono text-[10px] font-bold text-amber-600"
+                  >
+                    {targetedBellCount}
                   </span>
                 )}
               </button>
 
               {notificationsOpen && (
-                <div className="absolute right-0 mt-2 w-80 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl p-3 z-40 text-xs space-y-2">
-                  <div className="font-bold text-slate-900 dark:text-white flex items-center justify-between">
-                    <span>{t('header_notifications')}</span>
-                    <span className="font-mono text-slate-400">{lowStockProducts.length}</span>
-                  </div>
-                  {lowStockProducts.length === 0 ? (
-                    <div className="py-4 text-center text-slate-500">
-                      {tr(language, 'Aucune alerte de stock.', 'No stock alerts.', 'Geen voorraadmeldingen.')}
+                <div className="absolute right-0 mt-2 w-96 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl p-3.5 z-40 text-xs space-y-2.5">
+                  <div className="font-bold text-slate-900 dark:text-white flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 dark:border-slate-800">
+                    <div>
+                      <span>{t('header_notifications')}</span>
+                      <span
+                        aria-live="polite"
+                        data-testid="desktop-notifications-active-count"
+                        className="ml-2 font-mono text-slate-400"
+                      >
+                        ({targetedOrderNotifs.length + lowStockProducts.length})
+                      </span>
                     </div>
-                  ) : (
-                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800">
-                      {lowStockProducts.slice(0, 12).map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            setNotificationsOpen(false);
-                            handleNavigatePage('inventory');
-                            setActiveProductId(p.id);
-                          }}
-                          className="w-full py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between gap-2 cursor-pointer"
-                        >
-                          <span className="truncate font-medium">
-                            <span className="font-mono text-slate-500 mr-1">{p.reference}</span>
-                            {p.brand} {p.model}
-                          </span>
-                          <span className="font-mono tabular-nums font-bold text-amber-600 shrink-0">
-                            {p.quantity ?? 0} / {p.min_stock_alert ?? 2}
-                          </span>
-                        </button>
-                      ))}
+                    <button
+                      type="button"
+                      data-testid="desktop-mark-all-notifications-read-btn"
+                      disabled={targetedOrderNotifs.length + lowStockProducts.length === 0}
+                      onClick={() => {
+                        const allKeys = [
+                          ...targetedOrderNotifs.map((n) => n.notifKey),
+                          ...lowStockProducts.map((p) =>
+                            buildNotificationKey(
+                              'STOCK_LOW_ALERT',
+                              p.id,
+                              (p.quantity || 0) <= 0 ? 'OUT' : 'LOW'
+                            )
+                          ),
+                        ];
+                        if (allKeys.length > 0) {
+                          dismissNotificationKeys(allKeys).catch(() => {});
+                        }
+                      }}
+                      className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                    >
+                      {tr(language, 'Tout marquer comme lu', 'Mark all as read', 'Alles als gelezen')}
+                    </button>
+                  </div>
+
+                  {targetedOrderNotifs.length > 0 && (
+                    <div className="max-h-48 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800 pb-1">
+                      {targetedOrderNotifs.slice(0, 10).map((n) => {
+                        const descriptor = getNotificationCardDescriptor(
+                          n,
+                          (language as 'fr' | 'en' | 'nl') || 'fr'
+                        );
+                        const isCancelledOrRejected =
+                          n.notificationType === 'ORDER_MODIFIED_OR_CANCELLED' ||
+                          n.order.status === 'CANCELLED' ||
+                          n.order.status === 'REJECTED';
+                        return (
+                          <div
+                            key={n.notifKey}
+                            className="py-1.5 flex items-center justify-between gap-2"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (
+                                  shouldAutoDismissOnCardClick(n.notificationType) ||
+                                  shouldAutoDismissOnCardClick(n.order.status)
+                                ) {
+                                  dismissNotificationKeys([n.notifKey]).catch(() => {});
+                                }
+                                setNotificationsOpen(false);
+                                setSelectedOrderId(n.order.id);
+                                handleNavigatePage(
+                                  n.notificationType === 'ORDER_PENDING_PREP' ||
+                                    n.notificationType === 'ORDER_ASSIGNED'
+                                    ? 'preparation'
+                                    : 'orders'
+                                );
+                              }}
+                              className="flex-1 min-w-0 text-left hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg p-1 cursor-pointer"
+                            >
+                              <div
+                                className={`truncate font-bold ${
+                                  isCancelledOrRejected
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : 'text-orange-600 dark:text-orange-400'
+                                }`}
+                              >
+                                {descriptor.title}
+                              </div>
+                              {isCancelledOrRejected && (descriptor.reason || descriptor.author) && (
+                                <div className="text-[10px] text-rose-600 dark:text-rose-300 truncate">
+                                  {descriptor.reason ? `${descriptor.reason} ` : ''}
+                                  {descriptor.author ? `(${descriptor.author})` : ''}
+                                </div>
+                              )}
+                              <div className="text-[10px] text-slate-500">
+                                {n.order.order_number} • {descriptor.actionLabel}
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`desktop-dismiss-notif-${n.notifKey}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dismissNotificationKeys([n.notifKey]).catch(() => {});
+                              }}
+                              className="min-w-[44px] min-h-[44px] rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-800 dark:hover:text-white shrink-0 cursor-pointer"
+                              title={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                              aria-label={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
+
+                  {lowStockProducts.length === 0 && targetedOrderNotifs.length === 0 ? (
+                    <div className="py-4 text-center text-slate-500">
+                      {tr(language, 'Aucune notification ciblée.', 'No targeted notifications.', 'Geen gerichte meldingen.')}
+                    </div>
+                  ) : (
+                    lowStockProducts.length > 0 && (
+                      <div className="max-h-56 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800">
+                        {lowStockProducts.slice(0, 12).map((p) => {
+                          const stockKey = buildNotificationKey(
+                            'STOCK_LOW_ALERT',
+                            p.id,
+                            (p.quantity || 0) <= 0 ? 'OUT' : 'LOW'
+                          );
+                          return (
+                            <div
+                              key={stockKey}
+                              className="py-1 flex items-center justify-between gap-2"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  dismissNotificationKeys([stockKey]).catch(() => {});
+                                  setNotificationsOpen(false);
+                                  handleNavigatePage('inventory');
+                                  setActiveProductId(p.id);
+                                }}
+                                className="flex-1 min-w-0 py-1 text-left hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between gap-2 cursor-pointer"
+                              >
+                                <span className="truncate font-medium">
+                                  <span className="font-mono text-slate-500 mr-1">{p.reference}</span>
+                                  {p.brand} {p.model}
+                                </span>
+                                <span className="font-mono tabular-nums font-bold text-amber-600 shrink-0">
+                                  {p.quantity ?? 0} / {p.min_stock_alert ?? 2}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`desktop-dismiss-notif-${stockKey}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  dismissNotificationKeys([stockKey]).catch(() => {});
+                                }}
+                                className="min-w-[44px] min-h-[44px] rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-800 dark:hover:text-white shrink-0 cursor-pointer"
+                                title={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                                aria-label={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                    {!confirmingResetBell ? (
+                      <button
+                        type="button"
+                        data-testid="desktop-reset-my-bell-btn"
+                        onClick={() => setConfirmingResetBell(true)}
+                        className="w-full text-center text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 py-1 cursor-pointer"
+                      >
+                        {tr(
+                          language,
+                          'Réinitialiser ma cloche',
+                          'Reset my bell',
+                          'Mijn meldingen herstellen'
+                        )}
+                      </button>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 dark:bg-slate-800 p-2 rounded-xl">
+                        <span className="text-slate-600 dark:text-slate-300">
+                          {tr(
+                            language,
+                            "Cela n'affecte que votre cloche",
+                            'This only affects your bell',
+                            'Dit heeft alleen invloed op uw eigen bel'
+                          )}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingResetBell(false)}
+                            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600"
+                          >
+                            {t('common_cancel')}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="desktop-confirm-reset-my-bell-btn"
+                            onClick={() => {
+                              resetMyNotificationDismissals().catch(() => {});
+                              setConfirmingResetBell(false);
+                            }}
+                            className="px-2 py-0.5 rounded bg-orange-600 text-white font-bold"
+                          >
+                            {tr(language, 'Confirmer', 'Confirm', 'Bevestigen')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

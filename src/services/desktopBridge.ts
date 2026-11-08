@@ -158,6 +158,10 @@ export interface TotDesktopBridge {
     errorMessage?: string;
   }>;
   clearSafeStorageKey?: () => Promise<{ ok: boolean }>;
+  copyText?: (text: string) => Promise<{ ok: boolean; errorMessage?: string }>;
+  onPowerResume?: (
+    callback: (payload: { reason: 'resume' | 'unlock-screen'; ts: number }) => void
+  ) => () => void;
 }
 
 declare global {
@@ -209,6 +213,10 @@ function getBridge(): TotDesktopBridge | null {
     return null;
   }
   return winObj.totDesktop;
+}
+
+export function getDesktopBridge(): TotDesktopBridge | null {
+  return getBridge();
 }
 
 /**
@@ -657,3 +665,28 @@ export async function clearDesktopSafeStorageKey(): Promise<boolean> {
     return false;
   }
 }
+
+export async function copyDesktopText(text: string): Promise<boolean> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.copyText !== 'function') {
+    return false;
+  }
+  try {
+    const res = await bridge.copyText(text);
+    return Boolean(res?.ok);
+  } catch {
+    return false;
+  }
+}
+
+export function subscribeDesktopPowerResume(
+  callback: (payload: { reason: 'resume' | 'unlock-screen'; ts: number }) => void
+): () => void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.onPowerResume !== 'function') {
+    return () => {};
+  }
+  return bridge.onPowerResume(callback);
+}
+
+

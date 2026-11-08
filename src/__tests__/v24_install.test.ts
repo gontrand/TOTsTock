@@ -60,7 +60,7 @@ describe('TOT Stock v24 — Installation rapide, migrations générées, Edge Fu
 
   it('Point 2 : les Edge Functions partagent _shared/, n\'exigent aucun secret manuel et génèrent dist/functions/*.single.ts', () => {
     const writtenPaths = bundleAllFunctions(ROOT_DIR);
-    expect(writtenPaths.length).toBe(3);
+    expect(writtenPaths.length).toBe(4);
 
     for (const fnDef of EDGE_FUNCTIONS) {
       const singlePath = path.join(ROOT_DIR, 'dist', 'functions', `${fnDef.name}.single.ts`);

@@ -39,6 +39,8 @@ import {
 import {
   prewarmSmartphoneCameraStream,
   stopSmartphoneCameraStream,
+  stopAllCameras,
+  releaseAllWakeLocks,
 } from '../utils/qrCodeHelper';
 import {
   ActivityItem,
@@ -198,6 +200,14 @@ import {
   mergeDepotsPreservingInFlight,
 } from '../services/depotMutationService';
 import {
+  requestPasswordResetCode,
+  confirmPasswordResetCode,
+  validateResetEmail,
+  validateResetCode,
+  validateResetPassword,
+  GENERIC_PASSWORD_RESET_REQUEST_MESSAGE,
+} from '../services/passwordResetService';
+import {
   APP_VERSION,
   EXPECTED_SCHEMA_VERSION,
   MIN_SUPPORTED_SCHEMA_VERSION,
@@ -245,6 +255,29 @@ import {
   resetPinFailedAttempts,
   LAST_ACTIVITY_TS_KEY,
 } from '../services/deviceSecurityService';
+import {
+  InactivityWatchdog,
+  ALLOWED_USER_ACTIVITY_EVENTS,
+  computeEffectiveIdleMinutes,
+  DEFAULT_COMPANY_MAX_IDLE_MINUTES,
+  registerGlobalExplicitUserActivityCallback,
+  recordExplicitUserScanActivity,
+} from '../services/inactivityWatchdog';
+import { subscribeDesktopPowerResume } from '../services/desktopBridge';
+import {
+  buildNotificationKey,
+  isUserRecipientForOrderEvent,
+  isUserRecipientForTransferEvent,
+  shouldEmitNotificationBeep,
+} from '../services/notificationService';
+import {
+  clearMyDismissals,
+  dismissNotifications,
+  flushPendingOfflineDismissals,
+  getDismissedKeysSync,
+  loadMyDismissedKeys,
+  subscribeNotificationDismissals,
+} from '../services/notificationReadService';
 
 interface AppContextType {
   currentUser: User | null;
@@ -547,6 +580,9 @@ interface AppContextType {
   setScannerPickingModeOpen: (open: boolean) => void;
   scannerInitialOrderId: string | null;
   openScannerPickingMode: (orderId?: string | null) => void;
+  dismissedNotificationKeys: ReadonlySet<string>;
+  dismissNotificationKeys: (keys: string[]) => Promise<void>;
+  resetMyNotificationDismissals: () => Promise<void>;
 
   // Departments CRUD
   saveDepartment: (dep: Partial<Department>) => Promise<boolean>;
@@ -586,6 +622,10 @@ interface AppContextType {
 
   // Security / Inactivity
   autoLogoutMinutes: number;
+  effectiveAutoLogoutMinutes: number;
+  inactivityRemainingSeconds: number;
+  inactivityWarning: { active: boolean; remainingSeconds: number; effectiveMinutes: number };
+  stayConnectedFromInactivity: () => void;
   setAutoLogoutMinutes: (minutes: number) => void;
 
   // Currency selection
@@ -890,7 +930,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || localStorage.getItem('tqt_company_url') || '');
       const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || localStorage.getItem('tqt_company_key') || '');
       const res = await verifyLicenseKey(key, effectiveUrl);
-      if (res.license) {
+      if (res.success && res.license) {
         saveLicenseLocally(res.license);
         setLicense(res.license);
         const client = getClientSupabase(effectiveUrl, effectiveKey);
@@ -1296,6 +1336,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [appInfoModalOpen, setAppInfoModalOpen] = useState(false);
   const [releaseNotesModalOpen, setReleaseNotesModalOpen] = useState(false);
   const [notificationsModalOpen, setNotificationsModalOpen] = useState(false);
+
+  // Notifications « lues » par utilisateur (v58 : serveur + repli localStorage)
+  const [dismissedNotificationKeys, setDismissedNotificationKeys] = useState<ReadonlySet<string>>(
+    () => getDismissedKeysSync(currentUser?.id)
+  );
+
+  useEffect(() => {
+    setDismissedNotificationKeys(getDismissedKeysSync(currentUser?.id));
+    if (!currentUser?.id) return;
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    loadMyDismissedKeys({ userId: currentUser.id, client })
+      .then((keys) => {
+        setDismissedNotificationKeys(new Set(keys));
+      })
+      .catch(() => {});
+  }, [currentUser?.id, supabaseUrl, supabaseKey]);
+
+  useEffect(() => {
+    return subscribeNotificationDismissals((uid, nextKeys) => {
+      if (String(uid ?? '') === String(currentUser?.id ?? '')) {
+        setDismissedNotificationKeys(new Set(nextKeys));
+      }
+    });
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !currentUser?.id) return;
+    const handleFocusOrOnline = () => {
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      flushPendingOfflineDismissals({ userId: currentUser.id, client })
+        .then(() => loadMyDismissedKeys({ userId: currentUser.id, client }))
+        .then((keys) => setDismissedNotificationKeys(new Set(keys)))
+        .catch(() => {});
+    };
+    window.addEventListener('focus', handleFocusOrOnline);
+    window.addEventListener('online', handleFocusOrOnline);
+    return () => {
+      window.removeEventListener('focus', handleFocusOrOnline);
+      window.removeEventListener('online', handleFocusOrOnline);
+    };
+  }, [currentUser?.id, supabaseUrl, supabaseKey]);
+
+  const dismissNotificationKeys = useCallback(
+    async (keys: string[]) => {
+      if (!currentUser?.id || !Array.isArray(keys) || keys.length === 0) return;
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const updated = await dismissNotifications(keys, {
+        userId: currentUser.id,
+        client,
+        existingDismissed: dismissedNotificationKeys,
+      });
+      setDismissedNotificationKeys(new Set(updated));
+    },
+    [currentUser?.id, supabaseUrl, supabaseKey, dismissedNotificationKeys]
+  );
+
+  const resetMyNotificationDismissals = useCallback(async () => {
+    if (!currentUser?.id) return;
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    await clearMyDismissals({ userId: currentUser.id, client });
+    setDismissedNotificationKeys(new Set());
+  }, [currentUser?.id, supabaseUrl, supabaseKey]);
   const [printLabelsModal, setPrintLabelsModal] = useState<{ open: boolean; initialProductId?: string | null }>({
     open: false,
   });
@@ -2711,10 +2813,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAppInfoModalOpen(false);
     setReleaseNotesModalOpen(false);
     setPrintLabelsModal({ open: false });
+    setPrintStationModalOpen(false);
     setInventoryAuditModalOpen(false);
+    setDiagnosticModalOpen(false);
     setStockTransferModal({ open: false });
+    setTransfersModalOpen(false);
+    setOrderCartModalOpen(false);
+    setPreparerOrdersModalOpen(false);
+    setScannerPickingModeOpen(false);
     setDocumentationModalOpen({ open: false, tab: 'manual' });
-  }, [currentUser, logActivity, language, supabaseUrl, supabaseKey]);
+    stopAllCameras();
+    releaseAllWakeLocks();
+  }, [currentUser, logActivity, language, supabaseUrl, supabaseKey, setScanState]);
 
   const wipeDeviceAndSignOut = useCallback(async () => {
     const client = getClientSupabase(supabaseUrl, supabaseKey);
@@ -2731,15 +2841,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProfileModalOpen(false);
   }, [supabaseUrl, supabaseKey]);
 
-  // Inactivity auto-logout (centralized through userPreferencesService)
+  // Inactivity auto-logout (centralized through userPreferencesService + InactivityWatchdog)
   const [autoLogoutMinutes, setAutoLogoutMinutesState] = useState<number>(() => {
-    return getUserPreference('auto_logout_minutes') ?? 0;
+    const rawPref = getUserPreference('auto_logout_minutes');
+    return computeEffectiveIdleMinutes(
+      rawPref ?? DEFAULT_COMPANY_MAX_IDLE_MINUTES,
+      DEFAULT_COMPANY_MAX_IDLE_MINUTES
+    );
   });
 
-  const setAutoLogoutMinutes = useCallback((minutes: number) => {
-    setAutoLogoutMinutesState(minutes);
-    setUserPreference('auto_logout_minutes', minutes);
-  }, []);
+  const effectiveAutoLogoutMinutes = useMemo(() => {
+    return computeEffectiveIdleMinutes(
+      autoLogoutMinutes,
+      settings.security_max_idle_minutes ?? DEFAULT_COMPANY_MAX_IDLE_MINUTES
+    );
+  }, [autoLogoutMinutes, settings.security_max_idle_minutes]);
+
+  const setAutoLogoutMinutes = useCallback(
+    (minutes: number) => {
+      const clamped = computeEffectiveIdleMinutes(
+        minutes,
+        settings.security_max_idle_minutes ?? DEFAULT_COMPANY_MAX_IDLE_MINUTES
+      );
+      setAutoLogoutMinutesState(clamped);
+      setUserPreference('auto_logout_minutes', clamped);
+    },
+    [settings.security_max_idle_minutes]
+  );
 
   // Réagir aux préférences mises à jour par core_user_preferences ou un autre composant
   useEffect(() => {
@@ -2751,12 +2879,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setLanguageState((prev) => (prev === prefs.language ? prev : prefs.language!));
       }
       if (prefs.auto_logout_minutes !== undefined) {
-        setAutoLogoutMinutesState((prev) =>
-          prev === prefs.auto_logout_minutes ? prev : prefs.auto_logout_minutes!
+        const clamped = computeEffectiveIdleMinutes(
+          prefs.auto_logout_minutes,
+          settings.security_max_idle_minutes ?? DEFAULT_COMPANY_MAX_IDLE_MINUTES
         );
+        setAutoLogoutMinutesState((prev) => (prev === clamped ? prev : clamped));
       }
     });
-  }, []);
+  }, [settings.security_max_idle_minutes]);
 
   // Synchronisation core_user_preferences au login et au retour réseau (LOT 1.3)
   useEffect(() => {
@@ -2795,37 +2925,161 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [supabaseUrl, supabaseKey, currentUser?.id, currentUser?.auth_user_id]);
 
-  const logoutTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
+  const watchdogRef = useRef<InactivityWatchdog | null>(null);
+  const [inactivityRemainingSeconds, setInactivityRemainingSeconds] = useState<number>(
+    effectiveAutoLogoutMinutes * 60
+  );
+  const [inactivityWarning, setInactivityWarning] = useState<{
+    active: boolean;
+    remainingSeconds: number;
+    effectiveMinutes: number;
+  }>({
+    active: false,
+    remainingSeconds: 0,
+    effectiveMinutes: effectiveAutoLogoutMinutes,
+  });
 
-  const resetInactivityTimer = useCallback(() => {
-    const now = Date.now();
-    if (now - lastActivityRef.current < 2500 && logoutTimerRef.current) {
-      return;
+  const handleForcedInactivityLogout = useCallback(async () => {
+    stopAllCameras();
+    releaseAllWakeLocks();
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    if (currentUser) {
+      logAuditEventServer(
+        {
+          category: 'SECURITY',
+          type: 'AUTO_LOGOUT_INACTIVITY',
+          title: 'Déconnexion automatique (inactivité)',
+          description: `${currentUser.name} (${currentUser.trigram})`,
+          meta: {
+            actor_user_id: String(currentUser.id),
+            actor_name: currentUser.name,
+            actor_role: String(currentUser.role_id ?? ''),
+            effective_idle_minutes: effectiveAutoLogoutMinutes,
+          },
+        },
+        client
+      ).catch(() => {});
     }
+    setInactivityWarning({
+      active: false,
+      remainingSeconds: 0,
+      effectiveMinutes: effectiveAutoLogoutMinutes,
+    });
+    await logout();
+    setLoginModalOpen(true);
+  }, [supabaseUrl, supabaseKey, currentUser, effectiveAutoLogoutMinutes, logout]);
+
+  const stayConnectedFromInactivity = useCallback(() => {
+    const now = Date.now();
     lastActivityRef.current = now;
     try {
       localStorage.setItem(LAST_ACTIVITY_TS_KEY, String(now));
     } catch {}
-    if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
-    if (!currentUser || autoLogoutMinutes <= 0) return;
-
-    logoutTimerRef.current = setTimeout(() => {
-      logout();
-    }, autoLogoutMinutes * 60 * 1000);
-  }, [currentUser, autoLogoutMinutes, logout]);
+    if (watchdogRef.current) {
+      watchdogRef.current.recordActivity(now);
+      setInactivityRemainingSeconds(watchdogRef.current.getRemainingSeconds(now));
+    }
+    setInactivityWarning((prev) => (prev.active ? { ...prev, active: false } : prev));
+  }, []);
 
   useEffect(() => {
-    const handleActivity = () => resetInactivityTimer();
-    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
-    events.forEach((e) => window.addEventListener(e, handleActivity, { passive: true }));
-    resetInactivityTimer();
+    if (!currentUser) {
+      setInactivityWarning({
+        active: false,
+        remainingSeconds: 0,
+        effectiveMinutes: effectiveAutoLogoutMinutes,
+      });
+      return;
+    }
+
+    const watchdog = new InactivityWatchdog({
+      userIdleMinutes: autoLogoutMinutes,
+      companyMaxIdleMinutes: settings.security_max_idle_minutes ?? DEFAULT_COMPANY_MAX_IDLE_MINUTES,
+      onWarning: ({ remainingSeconds, effectiveMinutes }) => {
+        setInactivityRemainingSeconds(remainingSeconds);
+        setInactivityWarning({
+          active: true,
+          remainingSeconds,
+          effectiveMinutes,
+        });
+      },
+      onWarningClear: () => {
+        setInactivityWarning((prev) => (prev.active ? { ...prev, active: false } : prev));
+      },
+      onLogout: () => {
+        handleForcedInactivityLogout();
+      },
+    });
+
+    watchdogRef.current = watchdog;
+    watchdog.start(Date.now());
+    setInactivityRemainingSeconds(watchdog.getRemainingSeconds(Date.now()));
+
+    const onExplicitEvent = (ev: Event) => {
+      const now = Date.now();
+      lastActivityRef.current = now;
+      watchdog.handleDomEvent(ev.type, now);
+      setInactivityRemainingSeconds(watchdog.getRemainingSeconds(now));
+    };
+
+    ALLOWED_USER_ACTIVITY_EVENTS.forEach((evtName) => {
+      window.addEventListener(evtName, onExplicitEvent, { passive: true });
+    });
+
+    registerGlobalExplicitUserActivityCallback((nowMs) => {
+      lastActivityRef.current = nowMs;
+      watchdog.recordActivity(nowMs);
+      setInactivityRemainingSeconds(watchdog.getRemainingSeconds(nowMs));
+    });
+
+    const tickInterval = setInterval(() => {
+      const now = Date.now();
+      const res = watchdog.evaluateNow(now);
+      setInactivityRemainingSeconds(res.remainingSeconds);
+    }, 1000);
+
+    const evaluateImmediate = () => {
+      const now = Date.now();
+      const res = watchdog.evaluateNow(now);
+      setInactivityRemainingSeconds(res.remainingSeconds);
+    };
+
+    const onVisibility = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        evaluateImmediate();
+      }
+    };
+
+    window.addEventListener('focus', evaluateImmediate);
+    window.addEventListener('pageshow', evaluateImmediate);
+    document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('resume', evaluateImmediate);
+    const unsubPower = subscribeDesktopPowerResume(() => {
+      evaluateImmediate();
+    });
 
     return () => {
-      events.forEach((e) => window.removeEventListener(e, handleActivity));
-      if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current);
+      clearInterval(tickInterval);
+      ALLOWED_USER_ACTIVITY_EVENTS.forEach((evtName) => {
+        window.removeEventListener(evtName, onExplicitEvent);
+      });
+      window.removeEventListener('focus', evaluateImmediate);
+      window.removeEventListener('pageshow', evaluateImmediate);
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('resume', evaluateImmediate);
+      unsubPower();
+      registerGlobalExplicitUserActivityCallback(null);
+      watchdog.stop();
+      watchdogRef.current = null;
     };
-  }, [resetInactivityTimer]);
+  }, [
+    currentUser,
+    autoLogoutMinutes,
+    settings.security_max_idle_minutes,
+    effectiveAutoLogoutMinutes,
+    handleForcedInactivityLogout,
+  ]);
 
   // Tâche 2.2 : Reprise de l'application au premier plan (visibilitychange / événement resume de Capacitor)
   useEffect(() => {
@@ -2856,7 +3110,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           currentUser,
           isOnline,
           isSupabaseConfigured: Boolean(client && supabaseUrl && supabaseKey),
-          autoLogoutMinutes,
+          autoLogoutMinutes: effectiveAutoLogoutMinutes,
           lastActivityTimestamp: storedLastTs,
           fetchRemoteProfile: async (user) => {
             if (!client) return { found: true, networkError: true };
@@ -2989,7 +3243,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       document.removeEventListener('resume', handleAppResume);
       window.removeEventListener('resume', handleAppResume);
     };
-  }, [currentUser, supabaseUrl, supabaseKey, autoLogoutMinutes, logout]);
+  }, [currentUser, supabaseUrl, supabaseKey, effectiveAutoLogoutMinutes, logout]);
 
   // Permissions Check
   const userHasPermission = useCallback(
@@ -3134,29 +3388,126 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return userHasPermission('perm_history_view') || userHasPermission('perm_reports_audit');
   }, [currentUser, isAdmin, isDepartmentManager, userHasPermission]);
 
-  // Audio beep for preparers on incoming new orders
-  const prevPendingIdsRef = useRef<Set<string>>(new Set());
+  // Audio beep for targeted recipients on incoming order events (Point 4)
+  const prevOrderStatusMapRef = useRef<Map<string, string>>(new Map());
   const isFirstPendingCheckRef = useRef<boolean>(true);
 
   useEffect(() => {
-    const currentPendingIds = new Set(orders.filter((o) => o.status === 'PENDING').map((o) => o.id));
+    const nextMap = new Map<string, string>();
+    orders.forEach((o) => nextMap.set(String(o.id), String(o.status || '')));
+
     if (isFirstPendingCheckRef.current) {
       isFirstPendingCheckRef.current = false;
-      prevPendingIdsRef.current = currentPendingIds;
+      prevOrderStatusMapRef.current = nextMap;
       return;
     }
-    let hasNewPending = false;
-    for (const id of currentPendingIds) {
-      if (!prevPendingIdsRef.current.has(id)) {
-        hasNewPending = true;
-        break;
+
+    if (currentUser) {
+      let shouldBeep = false;
+      for (const ord of orders) {
+        const prevStatus = prevOrderStatusMapRef.current.get(String(ord.id));
+        if (prevStatus === ord.status) continue;
+
+        if (
+          ord.status === 'PENDING' &&
+          isUserRecipientForOrderEvent({
+            eventType: 'ORDER_TO_PREPARE',
+            order: ord,
+            user: currentUser,
+            departments,
+            projects,
+            depots,
+            depotHolders,
+            roles,
+          }) &&
+          shouldEmitNotificationBeep(
+            'ORDER_TO_PREPARE',
+            currentUser.id,
+            buildNotificationKey('ORDER_PENDING_PREP', ord.id, ord.status),
+            dismissedNotificationKeys
+          )
+        ) {
+          shouldBeep = true;
+          break;
+        }
+        if (
+          ord.status === 'WAITING_APPROVAL' &&
+          isUserRecipientForOrderEvent({
+            eventType: 'ORDER_WAITING_APPROVAL',
+            order: ord,
+            user: currentUser,
+            departments,
+            projects,
+            depots,
+            depotHolders,
+            roles,
+          }) &&
+          shouldEmitNotificationBeep(
+            'ORDER_WAITING_APPROVAL',
+            currentUser.id,
+            buildNotificationKey('ORDER_WAITING_APPROVAL', ord.id, ord.status),
+            dismissedNotificationKeys
+          )
+        ) {
+          shouldBeep = true;
+          break;
+        }
+        if (
+          ord.status === 'READY' &&
+          isUserRecipientForOrderEvent({
+            eventType: 'ORDER_READY_FOR_PICKUP',
+            order: ord,
+            user: currentUser,
+            departments,
+            projects,
+            depots,
+            depotHolders,
+            roles,
+          }) &&
+          shouldEmitNotificationBeep(
+            'ORDER_READY_FOR_PICKUP',
+            currentUser.id,
+            buildNotificationKey(
+              ord.pickup_delegate_id ? 'ORDER_PICKUP_DELEGATED' : 'ORDER_READY',
+              ord.id,
+              ord.status
+            ),
+            dismissedNotificationKeys
+          )
+        ) {
+          shouldBeep = true;
+          break;
+        }
+        if (
+          (ord.status === 'CANCELLED' || ord.status === 'REJECTED') &&
+          isUserRecipientForOrderEvent({
+            eventType: 'ORDER_MODIFIED_OR_CANCELLED',
+            order: ord,
+            user: currentUser,
+            departments,
+            projects,
+            depots,
+            depotHolders,
+            roles,
+          }) &&
+          shouldEmitNotificationBeep(
+            'ORDER_MODIFIED_OR_CANCELLED',
+            currentUser.id,
+            buildNotificationKey('ORDER_MODIFIED_OR_CANCELLED', ord.id, ord.status),
+            dismissedNotificationKeys
+          )
+        ) {
+          shouldBeep = true;
+          break;
+        }
+      }
+      if (shouldBeep) {
+        playNewOrderBeep();
       }
     }
-    prevPendingIdsRef.current = currentPendingIds;
-    if (hasNewPending && isPreparer) {
-      playNewOrderBeep();
-    }
-  }, [orders, isPreparer]);
+
+    prevOrderStatusMapRef.current = nextMap;
+  }, [orders, currentUser, departments, projects, depots, depotHolders, roles, dismissedNotificationKeys]);
 
   // Authentication with Supabase Auth (signInWithPassword) + local PBKDF2 quick unlock
   const [passwordRecoveryMode, setPasswordRecoveryMode] = useState<boolean>(false);
@@ -3607,34 +3958,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const requestPasswordReset = useCallback(
     async (emailInput: string): Promise<{ success: boolean; message: string }> => {
-      const cleanEmail = String(emailInput || '').trim().toLowerCase();
-      if (!cleanEmail || !cleanEmail.includes('@')) {
+      const emailCheck = validateResetEmail(emailInput);
+      if (!emailCheck.valid) {
         return {
           success: false,
           message:
-            tr(language, 'Veuillez saisir une adresse e-mail valide.', 'Please enter a valid email address.'),
+            tr(
+              language,
+              emailCheck.error || 'Veuillez saisir une adresse e-mail valide.',
+              'Please enter a valid email address.'
+            ),
         };
       }
 
+      const cleanEmail = emailCheck.cleanEmail;
       const client = getClientSupabase(supabaseUrl, supabaseKey);
       if (client) {
-        const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined;
-        const { error } = await client.auth.resetPasswordForEmail(cleanEmail, {
-          ...(redirectTo ? { redirectTo } : {}),
-        });
-
-        if (error) {
-          const isNetErr = isNetworkOrFetchError(error);
-          if (isNetErr) {
-            return {
-              success: false,
-              message:
-                tr(language, 'Impossible de joindre le serveur Supabase pour envoyer l\'e-mail de réinitialisation.', 'Unable to reach Supabase server to send reset email.'),
-            };
-          }
+        const res = await requestPasswordResetCode(client, cleanEmail);
+        if (!res.success) {
           return {
             success: false,
-            message: error.message || (tr(language, 'Erreur lors de la demande de réinitialisation.', 'Error requesting password reset.')),
+            message: res.message,
           };
         }
 
@@ -3642,8 +3986,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           type: 'USER_ACTION',
           category: 'SYSTEM',
           title: tr(language, 'Demande Mot de Passe Oublié', 'Password Reset Requested'),
-          description:
-            tr(language, `Un lien/code de réinitialisation de mot de passe a été envoyé à ${cleanEmail}.`, `A password reset link/code was sent to ${cleanEmail}.`),
+          description: tr(
+            language,
+            `Demande de code de réinitialisation de mot de passe pour ${cleanEmail}.`,
+            `Password reset code requested for ${cleanEmail}.`
+          ),
           user_name: cleanEmail,
           user_trigram: 'PWD',
           badgeText: 'PWD',
@@ -3651,130 +3998,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         return {
           success: true,
-          message:
-            tr(language, `Un e-mail de réinitialisation a été envoyé à ${cleanEmail}. Cliquez sur le lien reçu par e-mail ou saisissez ci-dessous le code de récupération reçu.`, `A password reset email has been sent to ${cleanEmail}. Click the link in the email or enter the recovery code below.`),
+          message: GENERIC_PASSWORD_RESET_REQUEST_MESSAGE,
         };
       }
 
-      // Offline / local demo mode
-      const matchedUser = users.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail);
-      if (!matchedUser) {
-        return {
-          success: false,
-          message:
-            tr(language, 'Aucun compte associé à cette adresse e-mail.', 'No account found with this email address.'),
-        };
-      }
-
+      // Mode démo / hors-ligne : toujours la même réponse générique
       return {
         success: true,
-        message:
-          tr(language, `Mode hors-ligne : Pour le compte ${cleanEmail}, utilisez le code ci-dessous ou contactez votre administrateur pour définir un nouveau mot de passe.`, `Offline mode: For ${cleanEmail}, use the form below or contact your administrator to set a new password.`),
+        message: GENERIC_PASSWORD_RESET_REQUEST_MESSAGE,
       };
     },
-    [supabaseUrl, supabaseKey, users, language, logActivity]
+    [supabaseUrl, supabaseKey, language, logActivity]
   );
 
   const verifyPasswordResetOtp = useCallback(
     async (emailInput: string, token: string, newPassword: string): Promise<{ success: boolean; message: string }> => {
-      const cleanEmail = String(emailInput || '').trim().toLowerCase();
-      const cleanToken = String(token || '').trim();
-      if (!cleanEmail || !cleanEmail.includes('@')) {
+      const emailCheck = validateResetEmail(emailInput);
+      if (!emailCheck.valid) {
         return {
           success: false,
           message: tr(language, 'Adresse e-mail invalide.', 'Invalid email address.'),
         };
       }
-      if (!newPassword || newPassword.length < 6) {
+      const codeCheck = validateResetCode(token);
+      if (!codeCheck.valid) {
         return {
           success: false,
-          message:
-            tr(language, 'Le nouveau mot de passe doit comporter au moins 6 caractères.', 'New password must be at least 6 characters.'),
+          message: tr(
+            language,
+            'Veuillez saisir le code à 6 chiffres reçu par e-mail.',
+            'Please enter the 6-digit code received by email.'
+          ),
+        };
+      }
+      const pwdCheck = validateResetPassword(newPassword);
+      if (!pwdCheck.valid) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            pwdCheck.error || 'Le mot de passe doit contenir entre 6 et 72 caractères.',
+            'Password must be between 6 and 72 characters.'
+          ),
         };
       }
 
+      const cleanEmail = emailCheck.cleanEmail;
       const client = getClientSupabase(supabaseUrl, supabaseKey);
       if (client) {
-        if (!cleanToken) {
+        const res = await confirmPasswordResetCode(
+          client,
+          cleanEmail,
+          codeCheck.cleanCode,
+          newPassword
+        );
+        if (!res.success) {
           return {
             success: false,
-            message:
-              tr(language, 'Veuillez saisir le code de récupération reçu par e-mail (ou cliquez directement sur le lien dans l\'e-mail).', 'Please enter the recovery code from your email (or click the link in the email).'),
+            message: res.message,
           };
-        }
-
-        const { data: otpData, error: otpErr } = await client.auth.verifyOtp({
-          email: cleanEmail,
-          token: cleanToken,
-          type: 'recovery',
-        });
-
-        if (otpErr) {
-          return {
-            success: false,
-            message:
-              tr(language, `Code de récupération invalide ou expiré : ${otpErr.message}`, `Invalid or expired recovery code: ${otpErr.message}`),
-          };
-        }
-
-        const { error: updateErr } = await client.auth.updateUser({ password: newPassword });
-        if (updateErr) {
-          return {
-            success: false,
-            message: updateErr.message,
-          };
-        }
-
-        const matched = users.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail);
-        if (matched) {
-          await adminClearMustChangePin(client, matched.id).catch(() => {});
-          const updatedProfile = { ...matched, must_change_pin: false };
-          setCurrentUser(updatedProfile);
-          localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(updatedProfile));
-        } else if (otpData?.user) {
-          const fallbackProfile: User = {
-            id: otpData.user.id,
-            auth_user_id: otpData.user.id,
-            name: cleanEmail.split('@')[0],
-            trigram: cleanEmail.substring(0, 3).toUpperCase(),
-            email: cleanEmail,
-            department: 'Général',
-            role_id: 4,
-            allowed_depots: ['*'],
-            is_blocked: false,
-            must_change_pin: false,
-          };
-          setCurrentUser(fallbackProfile);
-          localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(fallbackProfile));
         }
 
         localStorage.setItem('tot_last_login_email', cleanEmail);
         setPasswordRecoveryMode(false);
-        setLoginModalOpen(false);
-        setActiveTab('home');
-
         return {
           success: true,
           message:
-            tr(language, 'Votre mot de passe a été réinitialisé avec succès.', 'Your password has been reset successfully.'),
+            res.message ||
+            tr(
+              language,
+              'Mot de passe modifié avec succès. Vous pouvez maintenant vous connecter.',
+              'Your password has been updated. You can now sign in.'
+            ),
         };
       }
 
-      // Offline demo fallback
+      // Mode démo local
       const matched = users.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail);
       if (!matched) {
         return {
           success: false,
-          message: tr(language, 'Utilisateur introuvable.', 'User not found.'),
+          message: tr(language, 'Code invalide ou expiré.', 'Invalid or expired code.'),
         };
       }
-      setCurrentUser(matched);
+      localStorage.setItem('tot_last_login_email', cleanEmail);
       setPasswordRecoveryMode(false);
-      setLoginModalOpen(false);
-      setActiveTab('home');
       return {
         success: true,
-        message: tr(language, 'Mot de passe mis à jour.', 'Password updated.'),
+        message: tr(
+          language,
+          'Mot de passe modifié avec succès. Vous pouvez maintenant vous connecter.',
+          'Password updated successfully. You can now sign in.'
+        ),
       };
     },
     [supabaseUrl, supabaseKey, users, language]
@@ -4315,11 +4630,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           let shouldBeep = false;
           for (const t of remoteTransfers) {
             const prevT = prevMap.get(String(t.id));
+            const trKey = buildNotificationKey('TRANSFER_EVENT', t.id ?? '', t.status ?? 'IN_TRANSIT');
             if (
               !prevT &&
               t.status === 'IN_TRANSIT' &&
-              String(t.sender_id) !== String(currentUser.id) &&
-              canUserReceiveTransfer(t, currentUser, depots, remoteHolders.length > 0 ? remoteHolders : depotHolders, canReceiveAll)
+              isUserRecipientForTransferEvent({
+                eventType: 'TRANSFER_INCOMING',
+                transfer: t,
+                user: currentUser,
+                depots,
+                depotHolders: remoteHolders.length > 0 ? remoteHolders : depotHolders,
+                hasReceiveAllPerm: canReceiveAll,
+              }) &&
+              shouldEmitNotificationBeep('TRANSFER_INCOMING', currentUser.id, trKey, dismissedNotificationKeys)
             ) {
               shouldBeep = true;
               break;
@@ -4327,10 +4650,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (
               prevT &&
               prevT.status !== t.status &&
-              String(t.sender_id) === String(currentUser.id) &&
-              (t.status === 'AWAITING_SENDER' ||
-                t.status === 'PARTIALLY_RECEIVED' ||
-                t.status === 'REJECTED')
+              isUserRecipientForTransferEvent({
+                eventType: 'TRANSFER_ANOMALY_OR_RETURN',
+                transfer: t,
+                user: currentUser,
+                depots,
+                depotHolders: remoteHolders.length > 0 ? remoteHolders : depotHolders,
+                hasReceiveAllPerm: canReceiveAll,
+              }) &&
+              shouldEmitNotificationBeep('TRANSFER_ANOMALY_OR_RETURN', currentUser.id, trKey, dismissedNotificationKeys)
             ) {
               shouldBeep = true;
               break;
@@ -4344,7 +4672,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTransfers(remoteTransfers);
       }
     } catch {}
-  }, [supabaseUrl, supabaseKey, currentUser, depots, depotHolders, userHasPermission]);
+  }, [supabaseUrl, supabaseKey, currentUser, depots, depotHolders, userHasPermission, dismissedNotificationKeys]);
 
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
@@ -6043,11 +6371,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      const nowIso = new Date().toISOString();
       const targetOrder: MaterialOrder = {
         ...existing,
         status: 'CANCELLED',
+        cancelled_by: currentUser?.name || 'Utilisateur',
+        cancelled_at: nowIso,
+        cancellation_reason: reason ? reason.trim() : existing.cancellation_reason,
         notes: reason ? `${existing.notes || ''} [Annulé: ${reason}]`.trim() : existing.notes,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       };
 
       setOrders((prev) => prev.map((o) => (o.id === orderId ? targetOrder : o)));
@@ -6462,6 +6794,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const nowIso = new Date().toISOString();
+      recordExplicitUserScanActivity();
       const updatedOrder: MaterialOrder = {
         ...target,
         items: target.items.map((it) =>
@@ -7944,6 +8277,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setScannerPickingModeOpen,
       scannerInitialOrderId,
       openScannerPickingMode,
+      dismissedNotificationKeys,
+      dismissNotificationKeys,
+      resetMyNotificationDismissals,
       saveDepartment,
       deleteDepartment,
       saveProject,
@@ -7967,6 +8303,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toggleLanguage,
       t,
       autoLogoutMinutes,
+      effectiveAutoLogoutMinutes,
+      inactivityRemainingSeconds,
+      inactivityWarning,
+      stayConnectedFromInactivity,
       setAutoLogoutMinutes,
       currency,
       setCurrency,
@@ -7989,6 +8329,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentUser,
       pendingScannedConfig,
       autoLogoutMinutes,
+      effectiveAutoLogoutMinutes,
+      inactivityRemainingSeconds,
+      inactivityWarning,
+      stayConnectedFromInactivity,
       setAutoLogoutMinutes,
       currency,
       setCurrency,
@@ -8169,6 +8513,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setScannerPickingModeOpen,
       scannerInitialOrderId,
       openScannerPickingMode,
+      dismissedNotificationKeys,
+      dismissNotificationKeys,
+      resetMyNotificationDismissals,
       saveDepartment,
       deleteDepartment,
       saveProject,

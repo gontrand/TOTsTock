@@ -106,7 +106,7 @@ export function buildClientEdgeFunctionBundle(rootDir, fnName, handlerFile, fact
     { label: 'cors.ts', absPath: path.join(sharedDir, 'cors.ts') },
     { label: 'config.ts', absPath: path.join(sharedDir, 'config.ts') },
     { label: 'auth.ts', absPath: path.join(sharedDir, 'auth.ts') },
-    ...(handlerFile === 'sendReportEmailHandler.ts'
+    ...(handlerFile === 'sendReportEmailHandler.ts' || handlerFile === 'passwordResetHandler.ts'
       ? [{ label: 'mailProviders.ts', absPath: path.join(sharedDir, 'mailProviders.ts') }]
       : []),
     { label: handlerFile, absPath: path.join(sharedDir, handlerFile) },
@@ -220,6 +220,13 @@ export function getEdgeFunctionSpecs(rootDir = ROOT_DIR) {
       handlerFile: 'sendReportEmailHandler.ts',
       factoryName: 'createSendReportEmailHandler',
       roleDescription: 'Envoi transactionnel des rapports et alertes par e-mail (Brevo / SMTP)',
+    },
+    {
+      key: 'passwordReset',
+      fnName: EDGE_FUNCTIONS.passwordReset,
+      handlerFile: 'passwordResetHandler.ts',
+      factoryName: 'createPasswordResetHandler',
+      roleDescription: 'Réinitialisation du mot de passe par code à usage unique à 6 chiffres envoyé par e-mail',
     },
   ];
 

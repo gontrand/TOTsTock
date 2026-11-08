@@ -10,6 +10,7 @@ import {
 } from '../utils/crypto';
 import { getProductDepotBreakdown } from '../services/desktopInventoryLogic';
 import { renderQrCodeWithTotLogo } from '../utils/qrCodeHelper';
+import { copyToClipboard } from '../services/clipboard';
 
 export function buildProductEditableSignature(product: Product | null | undefined): string {
   if (!product) return '';
@@ -412,11 +413,13 @@ export function useProductDetailController(productIdOverride?: string | null) {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [movements, product, historySearch, historyTypeFilter]);
 
-  const handleCopyRef = () => {
+  const handleCopyRef = async () => {
     if (!product) return;
-    navigator.clipboard?.writeText(product.reference);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    const ok = await copyToClipboard(product.reference);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const handleDelete = async () => {

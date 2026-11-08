@@ -49,6 +49,7 @@ import {
   decodeBarcodeFromCanvas,
   openSmartphoneCameraStream,
   attachStreamToVideoElement,
+  registerWakeLock,
 } from '../utils/qrCodeHelper';
 import {
   findCatalogProductByCode,
@@ -87,6 +88,8 @@ export const ScannerPickingMode: React.FC = () => {
     orders,
     products,
     depots,
+    depotHolders,
+    roles,
     currentUser,
     isPreparer,
     userHasPermission,
@@ -253,6 +256,7 @@ export const ScannerPickingMode: React.FC = () => {
       try {
         if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && (navigator as any).wakeLock?.request) {
           wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
+          registerWakeLock(wakeLockSentinel);
           if (!cancelled) setWakeLockActive(true);
         }
       } catch {
@@ -390,8 +394,11 @@ export const ScannerPickingMode: React.FC = () => {
       filterOrdersForPreparer(orders, currentUser, {
         searchQuery,
         depotFilter,
+        depots,
+        depotHolders,
+        roles,
       }),
-    [orders, currentUser, searchQuery, depotFilter]
+    [orders, currentUser, searchQuery, depotFilter, depots, depotHolders, roles]
   );
 
   // Next item to pick on Screen 2

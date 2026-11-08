@@ -18,11 +18,13 @@ import script14 from '../../supabase-client/14_mailing.sql?raw';
 import script15 from '../../supabase-client/15_search_orders_movements.sql?raw';
 import script16 from '../../supabase-client/16_audit_trail.sql?raw';
 import script17 from '../../supabase-client/17_transferts_valides.sql?raw';
+import script18 from '../../supabase-client/18_password_reset.sql?raw';
 import scriptFixAudits from '../../supabase-client/fix_inventory_audits.sql?raw';
 import schemaMaster from '../../supabase-client/schema_master_licenses.sql?raw';
 import edgeFnSyncLicense from '../../supabase-client/generated/edge-functions/APP_TOT-Stock_licenses_sync-license/index.ts?raw';
 import edgeFnAdminUsers from '../../supabase-client/generated/edge-functions/APP_TOT-Stock_admin-users/index.ts?raw';
 import edgeFnSendReportEmail from '../../supabase-client/generated/edge-functions/APP_TOT-Stock_send-report-email/index.ts?raw';
+import edgeFnPasswordReset from '../../supabase-client/generated/edge-functions/APP_TOT-Stock_password-reset/index.ts?raw';
 import edgeFnMasterLicenses from '../../supabase-client/generated/edge-functions-master/APP_TOT-Stock_licenses/index.ts?raw';
 
 export const SQL_SCRIPT_01_AUTH_LINK = script01;
@@ -42,12 +44,15 @@ export const SQL_SCRIPT_14_MAILING = script14;
 export const SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS = script15;
 export const SQL_SCRIPT_16_AUDIT_TRAIL = script16;
 export const SQL_SCRIPT_17_TRANSFERTS_VALIDES = script17;
+export const SQL_SCRIPT_18_PASSWORD_RESET = script18;
 export const SQL_SCRIPT_FIX_INVENTORY_AUDITS = scriptFixAudits;
 export const SQL_MASTER_LICENSES_SCHEMA = schemaMaster;
 
 export const EDGE_FN_BUNDLE_SYNC_LICENSE = edgeFnSyncLicense;
 export const EDGE_FN_BUNDLE_ADMIN_USERS = edgeFnAdminUsers;
 export const EDGE_FN_BUNDLE_SEND_REPORT_EMAIL = edgeFnSendReportEmail;
+export const EDGE_FN_BUNDLE_PASSWORD_RESET = edgeFnPasswordReset;
 export const EDGE_FN_BUNDLE_MASTER_LICENSES = edgeFnMasterLicenses;
+
 
 

@@ -22,6 +22,10 @@ import { getClientSupabase } from './clientSupabase';
 import { logAuditEventServer } from './auditService';
 import { getResolvedEdgeFunctionName } from '../constants/edgeFunctions';
 import { extractEdgeFunctionError } from './mailingService';
+import {
+  formatOrderPickupTransferSummary,
+  isOrderPickupTransferred,
+} from './orderTraceabilityService';
 
 export const DEFAULT_LOCAL_WINDOW_DAYS = 7;
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
@@ -61,6 +65,8 @@ export interface OrderSearchFilters {
   minCost: string;
   maxCost: string;
   text: string;
+  collector?: string;
+  pickupTransferred?: 'ALL' | 'YES' | 'NO';
 }
 
 export interface MovementSearchFilters {
@@ -421,6 +427,24 @@ export function filterOrdersLocally(
         String(o.requester_id || '').toLowerCase() === qReq ||
         String(o.requester_name || '').toLowerCase().includes(qReq);
       if (!matchReq) return false;
+    }
+
+    if (filters.collector && filters.collector.trim()) {
+      const qCol = filters.collector.trim().toLowerCase();
+      const anyOrd = o as Record<string, any>;
+      const rawCollectorId = String(o.collected_by ?? anyOrd.collected_by_id ?? '').toLowerCase();
+      const matchCol =
+        rawCollectorId === qCol ||
+        rawCollectorId.includes(qCol) ||
+        String(anyOrd.collected_by_name || '').toLowerCase().includes(qCol);
+      if (!matchCol) return false;
+    }
+
+    if (filters.pickupTransferred === 'YES' && !isOrderPickupTransferred(o)) {
+      return false;
+    }
+    if (filters.pickupTransferred === 'NO' && isOrderPickupTransferred(o)) {
+      return false;
     }
 
     if (filters.site.trim()) {
@@ -1248,6 +1272,11 @@ export function buildOrdersReport(
     { key: 'status', label: tr(language, 'Statut', 'Status', 'Status') },
     { key: 'requester', label: tr(language, 'Demandeur', 'Requester', 'Aanvrager') },
     { key: 'preparer', label: tr(language, 'Préparateur', 'Preparer', 'Orderpicker') },
+    { key: 'collector', label: tr(language, 'Enleveur', 'Collector', 'Afhaler') },
+    {
+      key: 'pickup_transferred',
+      label: tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen'),
+    },
     { key: 'department', label: tr(language, 'Département', 'Department', 'Afdeling') },
     { key: 'site', label: tr(language, 'Chantier', 'Job site', 'Werf') },
     { key: 'depot', label: tr(language, 'Dépôt', 'Depot', 'Depot') },
@@ -1277,12 +1306,22 @@ export function buildOrdersReport(
     const linesCount = Array.isArray(o.items) ? o.items.length : 0;
     sumCost += cost;
     sumLines += linesCount;
+    const anyOrd = o as Record<string, any>;
+    const rawCollector =
+      anyOrd.collected_by_name ||
+      (o.collected_by !== undefined && o.collected_by !== null
+        ? String(o.collected_by)
+        : anyOrd.collected_by_id !== undefined && anyOrd.collected_by_id !== null
+        ? String(anyOrd.collected_by_id)
+        : '—');
     return {
       created_at: formatDate(o.created_at),
       order_number: o.order_number || '',
       status: o.status || '',
       requester: o.requester_name || '',
       preparer: o.preparer_name || '—',
+      collector: rawCollector || '—',
+      pickup_transferred: formatOrderPickupTransferSummary(o, language),
       department: o.requester_department || '—',
       site: o.site_number || '—',
       depot: o.depot_name || '—',

@@ -22,6 +22,10 @@ export const DesktopWorkspace: React.FC = () => {
   const {
     products,
     orders,
+    departments,
+    projects,
+    depots,
+    currentUser,
     activeProductId,
     printLabelsModal,
     setPrintLabelsModal,
@@ -61,22 +65,38 @@ export const DesktopWorkspace: React.FC = () => {
     };
   }, [syncFromSupabase]);
 
-  // Native system notifications on new orders waiting approval / pending prep (Lot 4.3)
+  // Native system notifications on new orders waiting approval / pending prep (filtered by recipient ID)
   useEffect(() => {
-    if (!isDesktopApp() || orders.length === 0) return;
-    getDesktopSystemSettings().then((sys) => {
-      if (!sys.notificationsEnabled) return;
-      const waitingApproval = orders.find((o) => o.status === 'WAITING_APPROVAL');
-      if (waitingApproval && sys.notifyOrdersWaitingApproval) {
-        triggerDesktopSystemNotification({
-          title: 'Commande à approuver',
-          body: `${waitingApproval.order_number} (${waitingApproval.requester_name})`,
-          route: 'orders',
-          dedupeKey: `order_approval_${waitingApproval.id}`,
+    if (!isDesktopApp() || orders.length === 0 || !currentUser) return;
+    import('../services/notificationService').then(
+      ({ isUserRecipientForOrderEvent, shouldShowNotificationBanner }) => {
+        getDesktopSystemSettings().then((sys) => {
+          if (!sys.notificationsEnabled) return;
+          const waitingApproval = orders.find(
+            (o) =>
+              o.status === 'WAITING_APPROVAL' &&
+              isUserRecipientForOrderEvent({
+                eventType: 'ORDER_WAITING_APPROVAL',
+                order: o,
+                user: currentUser,
+                departments,
+                projects,
+                depots,
+              }) &&
+              shouldShowNotificationBanner('ORDER_WAITING_APPROVAL', currentUser.id)
+          );
+          if (waitingApproval && sys.notifyOrdersWaitingApproval) {
+            triggerDesktopSystemNotification({
+              title: 'Commande à approuver',
+              body: `${waitingApproval.order_number} (${waitingApproval.requester_name})`,
+              route: 'orders',
+              dedupeKey: `order_approval_${waitingApproval.id}`,
+            });
+          }
         });
       }
-    });
-  }, [orders]);
+    );
+  }, [orders, currentUser, departments, projects, depots]);
 
   const productsToPrint = React.useMemo(() => {
     if (labelDialogProductIds.length === 0) return [];

@@ -11,6 +11,7 @@ import {
   canUserEnterStockInDepot,
 } from '../utils/crypto';
 import { renderQrCodeWithTotLogo } from '../utils/qrCodeHelper';
+import { copyToClipboard } from '../services/clipboard';
 import JsBarcode from 'jsbarcode';
 import {
   X,
@@ -321,11 +322,13 @@ export const ProductDetailModal: React.FC = () => {
     });
   }, [productMovements, historyTypeFilter, historySearch]);
 
-  const handleCopyRef = () => {
+  const handleCopyRef = async () => {
     if (!product) return;
-    navigator.clipboard.writeText(product.reference);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyToClipboard(product.reference);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const handleQuickMovement = (type: 'IN' | 'OUT') => {
@@ -1012,10 +1015,12 @@ export const ProductDetailModal: React.FC = () => {
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(product.barcode!);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
+                    onClick={async () => {
+                      const ok = await copyToClipboard(product.barcode!);
+                      if (ok) {
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }
                     }}
                     title={tr(language, 'Copier le code-barres fabricant', 'Copy manufacturer barcode')}
                     className="p-1.5 text-slate-400 hover:text-orange-500 dark:hover:text-orange-400 transition cursor-pointer rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"

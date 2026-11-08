@@ -9,6 +9,11 @@ import {
   attachStreamToVideoElement,
 } from '../utils/qrCodeHelper';
 import { useApp } from '../context/AppContext';
+import { buildOrderTraceabilityDetails } from '../services/orderTraceabilityService';
+import {
+  getAssignedDepotsForPreparer,
+  isUserAuthorizedPreparerForOrder,
+} from '../services/notificationService';
 import { MaterialOrder, OrderStatus } from '../types';
 import { SearchableSelect } from './SearchableSelect';
 import { printHtmlViaIframe, generateOrderSlipHtml, generateThermalLabelHtml } from '../utils/printHelper';
@@ -68,6 +73,8 @@ export const OrdersPreparationModal: React.FC = () => {
     orders,
     products,
     depots,
+    depotHolders,
+    roles,
     subCategories,
     assignOrderToMe,
     markOrderReady,
@@ -153,7 +160,7 @@ export const OrdersPreparationModal: React.FC = () => {
   const [printThermalQrUrl, setPrintThermalQrUrl] = useState<string | null>(null);
   const [thermalFormat, setThermalFormat] = useState<'60x40' | '100x150'>('60x40');
 
-  // User depot access evaluation
+  // User depot access evaluation (v58: union allowed_depots ∪ depotHolders; vide = aucun pour un non-admin)
   const isSuperAdmin =
     Number(currentUser?.id) === 0 ||
     Number(currentUser?.role_id) === 0 ||
@@ -162,11 +169,29 @@ export const OrdersPreparationModal: React.FC = () => {
   const userAllowedDepots = useMemo(() => {
     if (!currentUser) return [];
     if (isSuperAdmin) return depots.map((d) => d.name);
-    if (currentUser.allowed_depots && currentUser.allowed_depots.length > 0) {
-      return currentUser.allowed_depots;
+    const assigned = getAssignedDepotsForPreparer({
+      user: currentUser,
+      depotHolders,
+      depots,
+    });
+    if (assigned.includes('*')) {
+      return depots.map((d) => d.name);
     }
-    return depots.map((d) => d.name);
-  }, [currentUser, isSuperAdmin, depots]);
+    const resolvedNames = new Set<string>();
+    for (const entry of assigned) {
+      const matched = depots.find(
+        (d) =>
+          String(d.id) === String(entry) ||
+          d.name.trim().toLowerCase() === String(entry).trim().toLowerCase()
+      );
+      if (matched) {
+        resolvedNames.add(matched.name);
+      } else if (String(entry).trim()) {
+        resolvedNames.add(String(entry).trim());
+      }
+    }
+    return Array.from(resolvedNames);
+  }, [currentUser, isSuperAdmin, depots, depotHolders]);
 
   const hasMultipleDepots = isSuperAdmin || userAllowedDepots.length > 1;
   const singleAssignedDepot =
@@ -203,9 +228,10 @@ export const OrdersPreparationModal: React.FC = () => {
     [currentUser, userHasPermission]
   );
 
-  // Preparers see ALL orders across all departments and sites!
+  // Filtrage strict par isUserAuthorizedPreparerForOrder (union allowed_depots ∪ depotHolders, vide = aucun pour un non-admin, conservant preparer_id == currentUser.id)
   // Collected orders remain visible for 24h
   const visibleOrders = useMemo(() => {
+    if (!currentUser) return [];
     const now = Date.now();
     const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
@@ -217,25 +243,23 @@ export const OrdersPreparationModal: React.FC = () => {
           return false;
         }
       }
-      return true;
+      if (o.status === 'WAITING_APPROVAL' && canApproveOrder(o)) {
+        return true;
+      }
+      return isUserAuthorizedPreparerForOrder({
+        user: { ...currentUser, is_preparer: currentUser.is_preparer ?? isPreparer },
+        order: o,
+        depots,
+        depotHolders,
+        roles,
+      });
     });
-  }, [orders]);
+  }, [orders, currentUser, isPreparer, depots, depotHolders, roles, canApproveOrder]);
 
   // Apply UI filters with user depot permission constraints
   const filteredOrders = useMemo(() => {
     return visibleOrders
       .filter((o) => {
-        // Enforce user depot assignment:
-        if (singleAssignedDepot) {
-          if (o.depot_name && o.depot_name !== singleAssignedDepot) {
-            return false;
-          }
-        } else if (userAllowedDepots.length > 0 && !isSuperAdmin) {
-          if (o.depot_name && !userAllowedDepots.includes(o.depot_name)) {
-            return false;
-          }
-        }
-
         // Status filter
         if (statusFilter !== 'ALL' && o.status !== statusFilter) {
           return false;
@@ -259,7 +283,7 @@ export const OrdersPreparationModal: React.FC = () => {
         return true;
       })
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }, [visibleOrders, statusFilter, selectedDepotFilter, searchQuery, singleAssignedDepot, userAllowedDepots, isSuperAdmin]);
+  }, [visibleOrders, statusFilter, selectedDepotFilter, searchQuery]);
 
   // Counts by status
   const waitingApprovalCount = visibleOrders.filter((o) => o.status === 'WAITING_APPROVAL').length;
@@ -1145,6 +1169,49 @@ export const OrdersPreparationModal: React.FC = () => {
                       ></div>
                     </div>
                   </div>
+
+                  {/* Point 5.2 : Bloc « Traçabilité » */}
+                  {(() => {
+                    const trace = buildOrderTraceabilityDetails(focusedOrder, language);
+                    return (
+                      <div
+                        data-testid="prep-order-traceability-block"
+                        className="mt-2 pt-2.5 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]"
+                      >
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
+                          </span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.requesterName}</span>
+                          <span className="text-[10px] text-slate-400 block font-mono">{trace.createdAtFormatted}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
+                          </span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.preparerName}</span>
+                          <span className="text-[10px] text-slate-400 block font-mono">
+                            {trace.readyAtFormatted !== '—' ? trace.readyAtFormatted : trace.assignedAtFormatted}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Enleveur', 'Collector', 'Afhaler')}
+                          </span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.collectorName}</span>
+                          <span className="text-[10px] text-slate-400 block font-mono">{trace.collectedAtFormatted}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen')}
+                          </span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200">
+                            {trace.pickupTransferSummary}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Scan Barcode / QR Code Quick Input */}

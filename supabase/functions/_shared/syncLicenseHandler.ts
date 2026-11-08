@@ -454,3 +454,8 @@ export async function handleSyncLicenseRequest(req: Request): Promise<Response> 
     return jsonResponse({ success: false, error: err?.message || 'Erreur inattendue serveur' }, 500);
   }
 }
+
+export function createSyncLicenseHandler() {
+  return handleSyncLicenseRequest;
+}
+

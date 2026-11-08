@@ -3,6 +3,7 @@ import { tr } from '../i18n/dutchTranslator';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { useApp } from '../context/AppContext';
+import { buildOrderTraceabilityDetails } from '../services/orderTraceabilityService';
 import { SearchableSelect } from './SearchableSelect';
 import { MaterialOrder, MaterialOrderItem, OrderBasket } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
@@ -2507,6 +2508,81 @@ export const MaterialOrdersModal: React.FC = () => {
                       </button>
                     )}
                 </div>
+
+                {/* Point 5.2 : Bloc « Traçabilité » de la commande */}
+                {(() => {
+                  const trace = buildOrderTraceabilityDetails(selectedDetailOrder, language);
+                  return (
+                    <div
+                      data-testid="order-traceability-block"
+                      className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 space-y-2 text-xs"
+                    >
+                      <div className="font-black text-slate-900 dark:text-white uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-orange-500" />
+                        <span>{tr(language, 'Traçabilité', 'Traceability', 'Traceerbaarheid')}</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="p-2 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.requesterName}
+                          </span>
+                          <span className="text-[11px] text-slate-500 block font-mono">
+                            {trace.createdAtFormatted}
+                          </span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.preparerName}
+                          </span>
+                          <span className="text-[11px] text-slate-500 block font-mono">
+                            {trace.readyAtFormatted !== '—'
+                              ? `${tr(language, 'Prête :', 'Ready:', 'Klaar:')} ${trace.readyAtFormatted}`
+                              : trace.assignedAtFormatted !== '—'
+                              ? `${tr(language, 'Prise :', 'Assigned:', 'Toegewezen:')} ${trace.assignedAtFormatted}`
+                              : '—'}
+                          </span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Enleveur', 'Collector', 'Afhaler')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.collectorName}
+                          </span>
+                          <span className="text-[11px] text-slate-500 block font-mono">
+                            {trace.collectedAtFormatted}
+                          </span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen')}
+                          </span>
+                          <span
+                            data-testid="order-traceability-transferred"
+                            className={`font-bold ${
+                              trace.pickupTransferred
+                                ? 'text-purple-700 dark:text-purple-300'
+                                : 'text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            {trace.pickupTransferSummary}
+                          </span>
+                          {trace.pickupDelegateNotes && (
+                            <span className="text-[11px] text-slate-500 block italic">
+                              « {trace.pickupDelegateNotes} »
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Items List */}
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-xs">

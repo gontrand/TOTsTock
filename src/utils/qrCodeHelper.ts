@@ -218,18 +218,113 @@ export function decodeBarcodeFromCanvas(canvas: HTMLCanvasElement): string | nul
 }
 
 // ============================================================================
-// SINGLETON SMARTPHONE CAMERA STREAM COORDINATOR
-// Prevents concurrent getUserMedia() hardware lock collisions (NotReadableError)
-// and preserves synchronous user-gesture activation on Android & iOS.
+// SINGLETON SMARTPHONE CAMERA STREAM COORDINATOR & GLOBAL CAMERA REGISTRY
+// Prevents concurrent getUserMedia() hardware lock collisions (NotReadableError),
+// preserves synchronous user-gesture activation on Android & iOS, and guarantees
+// all camera tracks + WakeLocks are stopped on forced inactivity logout.
 // ============================================================================
 
 let inFlightCameraPromise: Promise<MediaStream> | null = null;
 let currentActiveStream: MediaStream | null = null;
 let prewarmedTimestamp = 0;
 
+const globalActiveCameraStreams = new Set<MediaStream>();
+const globalActiveWakeLocks = new Set<{ release?: () => Promise<void> | void }>();
+
+export function registerCameraStream(stream?: MediaStream | null): MediaStream | null {
+  if (!stream) return null;
+  globalActiveCameraStreams.add(stream);
+  return stream;
+}
+
+export function unregisterCameraStream(stream?: MediaStream | null): void {
+  if (!stream) return;
+  globalActiveCameraStreams.delete(stream);
+}
+
+export function getActiveCameraStreamsCount(): number {
+  return globalActiveCameraStreams.size;
+}
+
+export function registerWakeLock(sentinel?: { release?: () => Promise<void> | void } | null): void {
+  if (!sentinel) return;
+  globalActiveWakeLocks.add(sentinel);
+}
+
+export function releaseAllWakeLocks(): number {
+  let released = 0;
+  for (const sentinel of Array.from(globalActiveWakeLocks)) {
+    try {
+      if (sentinel && typeof sentinel.release === 'function') {
+        sentinel.release();
+        released += 1;
+      }
+    } catch {}
+    globalActiveWakeLocks.delete(sentinel);
+  }
+  return released;
+}
+
+/**
+ * Arrête immédiatement toutes les pistes caméra (`MediaStreamTrack.stop()`) enregistrées
+ * dans l'application (scanner, préparation, photo de preuve, QR) ainsi que tout élément `<video>` actif,
+ * et libère les WakeLocks associés. Retourne le nombre de pistes arrêtées.
+ */
+export function stopAllCameras(): number {
+  let stoppedTracksCount = 0;
+
+  const stopStreamTracks = (stream?: MediaStream | null) => {
+    if (!stream) return;
+    try {
+      const tracks =
+        typeof stream.getTracks === 'function'
+          ? stream.getTracks()
+          : typeof stream.getVideoTracks === 'function'
+          ? stream.getVideoTracks()
+          : [];
+      for (const track of tracks) {
+        if (track && typeof track.stop === 'function') {
+          try {
+            track.stop();
+            stoppedTracksCount += 1;
+          } catch {}
+        }
+      }
+    } catch {}
+  };
+
+  for (const stream of Array.from(globalActiveCameraStreams)) {
+    stopStreamTracks(stream);
+    globalActiveCameraStreams.delete(stream);
+  }
+
+  if (currentActiveStream) {
+    stopStreamTracks(currentActiveStream);
+    currentActiveStream = null;
+  }
+
+  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+    try {
+      const videos = document.querySelectorAll('video');
+      videos.forEach((video) => {
+        const srcObj = (video as HTMLVideoElement).srcObject as MediaStream | null;
+        if (srcObj) {
+          stopStreamTracks(srcObj);
+          try {
+            (video as HTMLVideoElement).srcObject = null;
+          } catch {}
+        }
+      });
+    } catch {}
+  }
+
+  releaseAllWakeLocks();
+  return stoppedTracksCount;
+}
+
 function isStreamLive(stream: MediaStream | null): stream is MediaStream {
   if (!stream) return false;
-  const tracks = stream.getVideoTracks();
+  const tracks = typeof stream.getVideoTracks === 'function' ? stream.getVideoTracks() : [];
   return tracks.length > 0 && tracks.some((t) => t.readyState === 'live' && t.enabled);
 }
 
@@ -248,6 +343,7 @@ export function stopSmartphoneCameraStream(
     try {
       streamToStop.getTracks().forEach((t) => t.stop());
     } catch {}
+    globalActiveCameraStreams.delete(streamToStop);
     if (currentActiveStream === streamToStop) {
       currentActiveStream = null;
     }
@@ -255,6 +351,7 @@ export function stopSmartphoneCameraStream(
     try {
       currentActiveStream.getTracks().forEach((t) => t.stop());
     } catch {}
+    globalActiveCameraStreams.delete(currentActiveStream);
     currentActiveStream = null;
   }
 }
@@ -341,6 +438,7 @@ export async function openSmartphoneCameraStream(preferredDeviceId?: string): Pr
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (isStreamLive(stream)) {
           currentActiveStream = stream;
+          registerCameraStream(stream);
           return stream;
         }
       } catch (err: any) {
@@ -372,6 +470,7 @@ export async function openSmartphoneCameraStream(preferredDeviceId?: string): Pr
             });
             if (isStreamLive(stream)) {
               currentActiveStream = stream;
+              registerCameraStream(stream);
               return stream;
             }
           } catch (err: any) {
@@ -392,6 +491,7 @@ export async function openSmartphoneCameraStream(preferredDeviceId?: string): Pr
       });
       if (isStreamLive(stream)) {
         currentActiveStream = stream;
+        registerCameraStream(stream);
         return stream;
       }
     } catch {
@@ -402,6 +502,7 @@ export async function openSmartphoneCameraStream(preferredDeviceId?: string): Pr
         });
         if (isStreamLive(fallbackStream)) {
           currentActiveStream = fallbackStream;
+          registerCameraStream(fallbackStream);
           return fallbackStream;
         }
       } catch (finalErr) {

@@ -1,6 +1,6 @@
-# Guide d'Installation et de Mise à Jour — Base Client Supabase TOT Stock (v54b / App 5.13.0 — Schéma 2.7.0)
+# Guide d'Installation et de Mise à Jour — Base Client Supabase TOT Stock (v58 / App 5.16.0 — Schéma 2.10.0)
 
-Ce document décrit les **trois méthodes officielles** pour installer ou mettre à jour un projet Supabase client TOT Stock en moins de 15 minutes, selon l'ordre **Scripts SQL (`00` à `17`, avec `07` en dernier) → Fonctions Edge → Synchronisation de licence**, sans saisir de secret manuellement dans les Edge Functions.
+Ce document décrit les **trois méthodes officielles** pour installer ou mettre à jour un projet Supabase client TOT Stock en moins de 15 minutes, selon l'ordre **Scripts SQL (`00` à `20`, avec `07` en dernier) → Fonctions Edge → Synchronisation de licence**, sans saisir de secret manuellement dans les Edge Functions.
 
 ---
 
@@ -19,7 +19,7 @@ Ce document décrit les **trois méthodes officielles** pour installer ou mettre
 
 **Durée estimée : 5 à 10 minutes.**
 
-L'installateur interactif `scripts/tot-install.mjs` enchaîne automatiquement les 7 étapes : vérification des prérequis, application des migrations SQL (`supabase/migrations/`), déploiement des 3 Edge Functions (`APP_TOT-Stock_admin-users`, `APP_TOT-Stock_licenses_sync-license`, `APP_TOT-Stock_send-report-email`) sans secret manuel, désactivation des inscriptions publiques, création du premier Super Administrateur (rôle 0), liaison optionnelle de la licence et exécution du diagnostic final `public.diagnostic_installation()`.
+L'installateur interactif `scripts/tot-install.mjs` enchaîne automatiquement les 7 étapes : vérification des prérequis, application des migrations SQL (`supabase/migrations/`), déploiement des 4 Edge Functions (`APP_TOT-Stock_admin-users`, `APP_TOT-Stock_licenses_sync-license`, `APP_TOT-Stock_send-report-email`, `APP_TOT-Stock_password-reset`) sans secret manuel, désactivation des inscriptions publiques, création du premier Super Administrateur (rôle 0), liaison optionnelle de la licence et exécution du diagnostic final `public.diagnostic_installation()`.
 
 ### 1. Lancer l'installateur
 
@@ -78,7 +78,8 @@ Cette commande génère dans `supabase/migrations/` la séquence complète ordon
 15. `20261005069900_15_search_orders_movements.sql` (`15_search_orders_movements.sql`)
 16. `20261005069950_16_audit_trail.sql` (`16_audit_trail.sql`)
 17. `20261005069970_17_transferts_valides.sql` (`17_transferts_valides.sql`)
-18. `20261005070000_07_app_compat.sql` (`07_app_compat.sql` — toujours en dernier)
+18. `20261005069980_18_password_reset.sql` (`18_password_reset.sql`)
+19. `20261005070000_07_app_compat.sql` (`07_app_compat.sql` — toujours en dernier)
 
 ### 2. Lier le projet et pousser les migrations SQL
 
@@ -88,7 +89,7 @@ npx supabase link --project-ref <VOTRE_PROJECT_REF>
 npx supabase db push
 ```
 
-### 3. Déployer les 3 Edge Functions
+### 3. Déployer les 4 Edge Functions
 
 Les fonctions lisent automatiquement `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KEY` injectés par Supabase, la clé publique de licence et l'URL maître dans `public.core_app_settings` (avec repli sur les valeurs embarquées), et le secret e-mail éventuel via `public.get_email_secret()` (Supabase Vault). Aucun `supabase secrets set` n'est requis :
 
@@ -96,6 +97,7 @@ Les fonctions lisent automatiquement `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KE
 npx supabase functions deploy APP_TOT-Stock_admin-users --project-ref <VOTRE_PROJECT_REF>
 npx supabase functions deploy APP_TOT-Stock_licenses_sync-license --project-ref <VOTRE_PROJECT_REF>
 npx supabase functions deploy APP_TOT-Stock_send-report-email --project-ref <VOTRE_PROJECT_REF>
+npx supabase functions deploy APP_TOT-Stock_password-reset --project-ref <VOTRE_PROJECT_REF>
 ```
 
 ### 4. Synchronisation de la licence & Création du premier Super Administrateur
@@ -119,21 +121,22 @@ npm run build:sql
 ```
 
 Cela produit :
-- **`dist/install.sql`** : fichier SQL unique contenant l'intégralité du schéma et des scripts `00` à `17` (avec `07_app_compat.sql` exécuté en dernier pour le durcissement final) et un `RAISE NOTICE` à chaque étape.
-- **`supabase-client/generated/edge-functions/APP_TOT-Stock_admin-users/index.ts`**, **`supabase-client/generated/edge-functions/APP_TOT-Stock_licenses_sync-license/index.ts`**, **`supabase-client/generated/edge-functions/APP_TOT-Stock_send-report-email/index.ts`** (et **`supabase-client/generated/edge-functions-master/APP_TOT-Stock_licenses/index.ts`** pour l'éditeur maître) : fichiers autonomes suivis par git et prêts à coller dans l'éditeur web Supabase (également disponibles directement dans l'onglet *4. Fonctions Edge* de l'application).
+- **`dist/install.sql`** : fichier SQL unique contenant l'intégralité du schéma et des scripts `00` à `18` (avec `07_app_compat.sql` exécuté en dernier pour le durcissement final) et un `RAISE NOTICE` à chaque étape.
+- **`supabase-client/generated/edge-functions/APP_TOT-Stock_admin-users/index.ts`**, **`supabase-client/generated/edge-functions/APP_TOT-Stock_licenses_sync-license/index.ts`**, **`supabase-client/generated/edge-functions/APP_TOT-Stock_send-report-email/index.ts`**, **`supabase-client/generated/edge-functions/APP_TOT-Stock_password-reset/index.ts`** (et **`supabase-client/generated/edge-functions-master/APP_TOT-Stock_licenses/index.ts`** pour l'éditeur maître) : fichiers autonomes suivis par git et prêts à coller dans l'éditeur web Supabase (également disponibles directement dans l'onglet *4. Fonctions Edge* de l'application).
 
 ### 2. Exécuter `dist/install.sql` dans le SQL Editor
 
 1. Ouvrez **Supabase Dashboard > SQL Editor > New query**.
 2. Copiez-collez l'intégralité du fichier **`dist/install.sql`** et cliquez sur **Run**.
-3. Vérifiez dans l'onglet *Messages* que les étapes `00` à `17` + `07` affichent `NOTICE: === [TOT STOCK ...] Étape ...`.
+3. Vérifiez dans l'onglet *Messages* que les étapes `00` à `18` + `07` affichent `NOTICE: === [TOT STOCK ...] Étape ...`.
 
-### 3. Déployer les 3 Edge Functions depuis le Dashboard
+### 3. Déployer les 4 Edge Functions depuis le Dashboard
 
-Dans **Supabase Dashboard > Edge Functions**, créez (ou mettez à jour) les 3 fonctions en conservant **exactement** leurs noms :
+Dans **Supabase Dashboard > Edge Functions**, créez (ou mettez à jour) les 4 fonctions en conservant **exactement** leurs noms :
 1. **`APP_TOT-Stock_admin-users`** : collez le contenu de `supabase-client/generated/edge-functions/APP_TOT-Stock_admin-users/index.ts`.
 2. **`APP_TOT-Stock_licenses_sync-license`** : collez le contenu de `supabase-client/generated/edge-functions/APP_TOT-Stock_licenses_sync-license/index.ts`.
 3. **`APP_TOT-Stock_send-report-email`** : collez le contenu de `supabase-client/generated/edge-functions/APP_TOT-Stock_send-report-email/index.ts`.
+4. **`APP_TOT-Stock_password-reset`** : collez le contenu de `supabase-client/generated/edge-functions/APP_TOT-Stock_password-reset/index.ts`.
 
 ### 4. Synchroniser la licence dans la base cliente
 
@@ -154,16 +157,16 @@ Les contrôles retournés doivent être à **`OK`** (ou `ATTENTION` uniquement s
 2. `anon_privileges` : aucun privilège accordé à `anon` sur `core_users`, `core_user_preferences`, `core_license_config`, `stk_movements`, `stk_products`, `stk_print_stations`, `stk_print_jobs`.
 3. `super_admin_linked` : au moins un Super Administrateur (`role_id = 0`) lié à `auth.users`.
 4. `no_plaintext_pin` : aucun code PIN en clair dans `public.core_users`.
-5. `app_compat` : ligne singleton `id = 1` présente dans `public.core_app_compat` (`schema_version = 2.7.0`, `min_schema_version = 1.0.0`, `latest_version = 5.13.0`).
+5. `app_compat` : ligne singleton `id = 1` présente dans `public.core_app_compat` (`schema_version = 2.10.0`, `min_schema_version = 1.0.0`, `latest_version = 5.16.0`).
 6. `license_status` : formule de licence et quota de dépôts actifs conformes.
-7. `sensitive_functions` : toutes les fonctions sensibles (dont les RPC d'impression à distance, `transfer_stock_batch`, les RPC mailing, `search_material_orders` / `search_stock_movements`, les RPC d'audit `log_audit_event`, `log_login_event`, `purge_audit_logs`, `search_audit_logs`, `search_login_logs` et les RPC de transferts validés `set_depot_holders`, `send_stock_transfer`, `receive_stock_transfer`, `reject_stock_transfer`, `cancel_stock_transfer`, `confirm_stock_transfer_adjustment`, `resolve_transfer_dispute`, `list_overdue_transfers`, `get_stock_levels_report`) sont interdites à `anon` (seule `log_login_failure` est exécutable par `anon` pour tracer les échecs de connexion avant authentification, sans jamais recevoir de secret).
-8. `edge_functions_deployed` : les 3 fonctions (`APP_TOT-Stock_admin-users`, `APP_TOT-Stock_licenses_sync-license`, `APP_TOT-Stock_send-report-email`) sont déployées et répondent à `{ action: 'ping' }`.
+7. `sensitive_functions` : toutes les fonctions sensibles (dont les RPC d'impression à distance, `transfer_stock_batch`, les RPC mailing, `search_material_orders` / `search_stock_movements`, les RPC d'audit `log_audit_event`, `log_login_event`, `purge_audit_logs`, `search_audit_logs`, `search_login_logs`, `purge_expired_password_resets` et les RPC de transferts validés `set_depot_holders`, `send_stock_transfer`, `receive_stock_transfer`, `reject_stock_transfer`, `cancel_stock_transfer`, `confirm_stock_transfer_adjustment`, `resolve_transfer_dispute`, `list_overdue_transfers`, `get_stock_levels_report`) sont interdites à `anon` (seule `log_login_failure` est exécutable par `anon` pour tracer les échecs de connexion avant authentification, sans jamais recevoir de secret).
+8. `edge_functions_deployed` : les 4 fonctions (`APP_TOT-Stock_admin-users`, `APP_TOT-Stock_licenses_sync-license`, `APP_TOT-Stock_send-report-email`, `APP_TOT-Stock_password-reset`) sont déployées et répondent à `{ action: 'ping' }`.
 9. `print_jobs_module` : tables `stk_print_stations` & `stk_print_jobs` et les 7 fonctions RPC d'impression à distance présentes.
 10. `permissive_rls_policies` : aucune règle RLS permissive (`public` / `anon` avec `USING (true)` ou `WITH CHECK (true)`) ne subsiste sur les tables du schéma `public` (hors lecture seule `SELECT` explicitement publique sur `core_app_compat`).
 11. `stock_movements_rpc` : présence de `public.process_stock_movement` (signature 12 paramètres) et `public.stk_stock_levels`.
 12. `unknown_stock_triggers` : aucun déclencheur inconnu ou hérité (`trg_process_stock_movement`, etc.) sur `stk_movements`, `stk_stock_levels` ou `stk_products` (les triggers d'audit officiels `trg_audit_stk_products` et `trg_audit_row` sont autorisés).
 13. `stock_consistency` : cohérence entre `stk_products.quantity` et la somme des lignes de `stk_stock_levels` par produit.
-14. `prefixed_tables` : toutes les tables physiques utilisent les préfixes `core_*` et `stk_*` (schéma `2.7.0`) et aucun ancien nom n'est resté sous forme de table physique (`relkind = 'r'`).
+14. `prefixed_tables` : toutes les tables physiques utilisent les préfixes `core_*` et `stk_*` (schéma `2.10.0`) et aucun ancien nom n'est resté sous forme de table physique (`relkind = 'r'`).
 15. `compat_views_present` : signale en `ATTENTION` la présence éventuelle de vues de compatibilité héritées d'une base 1.x (à supprimer via `supabase-client/10_drop_compat_views.sql` une fois tous les clients mis à jour).
 16. `suite_tables_and_storage` : présence des tables `stk_order_preparations_log`, `stk_categories`, `stk_material_order_items`, `core_files` et du bucket privé `tot-files`.
 17. `user_preferences_rls` : présence de `public.core_user_preferences`, RLS activé et ses 4 politiques (`user_preferences_select_own`, `user_preferences_insert_own`, `user_preferences_update_own`, `user_preferences_delete_own`).
@@ -171,6 +174,7 @@ Les contrôles retournés doivent être à **`OK`** (ou `ATTENTION` uniquement s
 19. `mailing_module` : présence des tables `core_mail_accounts` (avec support `msgraph`), `core_mail_senders`, `core_mail_log` (RLS activé) et des 4 RPC `set_mail_account_secret`, `mail_account_has_secret`, `get_mail_config` (`service_role` uniquement) et `purge_mail_log`.
 20. `audit_trail_module` (`16_audit_trail.sql`) : tables `core_audit_logs` et `core_login_logs` immuables (triggers `trg_core_audit_logs_immutable` & `trg_core_login_logs_immutable`), triggers automatiques avec masquage des secrets (`***`) sur 13 tables sensibles et RPC `log_audit_event`, `log_login_event`, `log_login_failure`, `search_audit_logs`, `search_login_logs` et `purge_audit_logs` ($\ge 90$ jours, Super Administrateur rôle 0 uniquement).
 21. `validated_transfers_module` (`17_transferts_valides.sql`) : tables `stk_depot_holders` et `stk_transfers` (RLS activé), 3 nouvelles permissions (`perm_stock_transfer_store`, `perm_stock_receive_all`, `perm_report_stock_levels`) et 9 RPC (`set_depot_holders`, `send_stock_transfer`, `receive_stock_transfer`, `reject_stock_transfer`, `cancel_stock_transfer`, `confirm_stock_transfer_adjustment`, `resolve_transfer_dispute`, `list_overdue_transfers`, `get_stock_levels_report`).
+22. `password_reset_module` (`18_password_reset.sql`) : table `core_password_resets` (RLS activé, aucun accès `anon`/`authenticated`) et fonction `purge_expired_password_resets` (`service_role` uniquement).
 
 ---
 
@@ -231,8 +235,9 @@ Lors d'une ré-exécution manuelle ou corrective des scripts SQL, **il faut touj
 13. `15_search_orders_movements.sql` (recherche serveur paginée `search_material_orders` et `search_stock_movements`)
 14. `16_audit_trail.sql` (journal d'audit serveur immuable `core_audit_logs` & `core_login_logs`, triggers automatiques et RPC d'audit)
 15. `17_transferts_valides.sql` (responsables de dépôt `stk_depot_holders`, transferts validés à la réception `stk_transfers` et permissions fines)
-16. `07_app_compat.sql` (table `core_app_compat`, `diagnostic_installation()` et durcissement final des fonctions `SECURITY DEFINER`)
-17. *(Optionnel, une fois tous les clients à jour)* `10_drop_compat_views.sql` (suppression des vues de compatibilité d'anciens noms)
+16. `18_password_reset.sql` (table `core_password_resets` et fonction `purge_expired_password_resets` pour la réinitialisation de mot de passe par code à 6 chiffres)
+17. `07_app_compat.sql` (table `core_app_compat`, `diagnostic_installation()` et durcissement final des fonctions `SECURITY DEFINER`)
+18. *(Optionnel, une fois tous les clients à jour)* `10_drop_compat_views.sql` (suppression des vues de compatibilité d'anciens noms)
 
 > **Purge intégrale des règles RLS anciennes** : Les scripts `02_rls_hardening.sql`, `03_rpc_stock_and_orders.sql`, `04_mouvements_et_depots_vehicules.sql`, `05_rpc_admin_users.sql`, `07_app_compat.sql` et `08_print_jobs.sql` interrogent `pg_policies` et suppriment **toutes** les règles RLS existantes sur chaque table protégée (quel que soit leur nom historique ou personnalisé) avant de recréer immédiatement les règles attendues dans le même script. **Après rejeu, aucune règle ancienne ne subsiste** (ni règle ouverte `USING (true)` héritée d'une installation initiale, ni règle récursive sur `public.users`).
 >

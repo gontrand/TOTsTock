@@ -135,8 +135,8 @@ describe('Prompt v48 — LOT 1 : Préférences utilisateur en base (core_user_pr
 
   it('1.1 déclare userPreferences dans TABLES, le script 12 dans SQL_STEPS (après 11 et avant 07), et met à jour les versions', () => {
     expect(TABLES.userPreferences).toBe('core_user_preferences');
-    expect(APP_VERSION).toBe('5.13.0');
-    expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
+    expect(APP_VERSION).toBe('5.16.0');
+    expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
@@ -537,7 +537,7 @@ describe('Prompt v48 — LOT 2.1 : Rejet des clés Supabase dangereuses (service
     expect(srResult.errorCode).toBe('FORBIDDEN_SECRET_KEY');
     expect(srResult.errorMessage).toBe(FORBIDDEN_SERVICE_ROLE_KEY_MESSAGE);
     expect(srResult.errorMessage).toBe(
-      "Cette clé est secrète (service_role). Utilisez la clé publique “anon”. Ne la collez jamais dans l'application."
+      'Cette clé est une clé SECRÈTE (service_role) : ne la collez jamais ici. Utilisez la clé anon / publishable.'
     );
 
     const sbSecretResult = validateSupabaseAnonKey('sb_secret_1234567890abcdef1234567890');

@@ -26,9 +26,11 @@ import {
   AUDIT_CSV_MAX_ROWS,
   AuditPeriodPreset,
   detectRepeatedLoginFailures,
+  extractOrderTargetFromAuditRow,
   formatAuditChangesDiff,
   generateAuditLogsCsv,
   generateLoginLogsCsv,
+  getAuditEventDisplayLabel,
   logAuditEventServer,
   purgeAuditLogsOnServer,
   PurgeAuditLogsResult,
@@ -820,7 +822,9 @@ export const DesktopAuditLogPage: React.FC<DesktopAuditLogPageProps> = ({
                 <option value="CONFIG">CONFIG</option>
                 <option value="CATALOG">CATALOG</option>
                 <option value="DEPOTS">DEPOTS</option>
-                <option value="ORDERS">ORDERS</option>
+                <option value="ORDERS">
+                  {tr(language, 'ORDERS (Commandes)', 'ORDERS (Orders)', 'ORDERS (Bestellingen)')}
+                </option>
                 <option value="MOVEMENTS">MOVEMENTS</option>
                 <option value="SECURITY">SECURITY</option>
                 <option value="EXPORTS">EXPORTS</option>
@@ -1131,14 +1135,44 @@ export const DesktopAuditLogPage: React.FC<DesktopAuditLogPageProps> = ({
                               </td>
                               <td className="py-2.5 px-3">
                                 <div className="font-bold text-slate-900 dark:text-white">
-                                  {row.title}
+                                  {row.title || getAuditEventDisplayLabel(row.type, language)}
                                 </div>
                                 <div className="text-[10px] font-mono text-slate-400">
-                                  {row.type}
+                                  {getAuditEventDisplayLabel(row.type, language)} ({row.type})
                                 </div>
                               </td>
                               <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300 max-w-xs truncate">
-                                {row.description || row.table_name || '—'}
+                                {(() => {
+                                  const orderTarget = extractOrderTargetFromAuditRow(row);
+                                  return (
+                                    <div className="flex items-center gap-2 truncate">
+                                      <span className="truncate">
+                                        {row.description || row.table_name || '—'}
+                                      </span>
+                                      {orderTarget && (
+                                        <button
+                                          type="button"
+                                          data-testid={`audit-order-link-${orderTarget.orderId || orderTarget.orderNumber}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            window.dispatchEvent(
+                                              new CustomEvent('tot-desktop-menu-command', {
+                                                detail: {
+                                                  command: 'nav-orders',
+                                                  orderId: orderTarget.orderId,
+                                                  orderNumber: orderTarget.orderNumber,
+                                                },
+                                              })
+                                            );
+                                          }}
+                                          className="px-2 py-0.5 rounded-md bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 font-mono text-[10px] font-bold hover:underline shrink-0 cursor-pointer"
+                                        >
+                                          {orderTarget.orderNumber || `#${orderTarget.orderId}`}
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td className="py-2.5 px-3 text-right">
                                 <ChevronRight className="w-4 h-4 text-slate-400 inline" />
@@ -1313,9 +1347,43 @@ export const DesktopAuditLogPage: React.FC<DesktopAuditLogPageProps> = ({
                   </span>
                 </div>
                 <h3 className="text-sm font-black text-slate-900 dark:text-white">
-                  {selectedEvent.title}
+                  {selectedEvent.title || getAuditEventDisplayLabel(selectedEvent.type, language)}
                 </h3>
-                <p className="text-[11px] font-mono text-slate-400">{selectedEvent.type}</p>
+                <p className="text-[11px] font-mono text-slate-400">
+                  {getAuditEventDisplayLabel(selectedEvent.type, language)} ({selectedEvent.type})
+                </p>
+                {(() => {
+                  const orderTarget = extractOrderTargetFromAuditRow(selectedEvent);
+                  if (!orderTarget) return null;
+                  return (
+                    <button
+                      type="button"
+                      data-testid="audit-detail-open-order-btn"
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent('tot-desktop-menu-command', {
+                            detail: {
+                              command: 'nav-orders',
+                              orderId: orderTarget.orderId,
+                              orderNumber: orderTarget.orderNumber,
+                            },
+                          })
+                        );
+                      }}
+                      className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-[11px] font-bold cursor-pointer"
+                    >
+                      <span>
+                        {tr(
+                          language,
+                          `Ouvrir la commande ${orderTarget.orderNumber || orderTarget.orderId}`,
+                          `Open order ${orderTarget.orderNumber || orderTarget.orderId}`,
+                          `Open bestelling ${orderTarget.orderNumber || orderTarget.orderId}`
+                        )}
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  );
+                })()}
               </div>
               <button
                 type="button"

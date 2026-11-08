@@ -2,6 +2,7 @@ import React from 'react';
 import { useApp } from '../context/AppContext';
 import { Home, Search, ArrowLeftRight, MoreHorizontal, Plus } from 'lucide-react';
 import { requestGuardedNavigation } from '../services/unsavedChangesGuard';
+import { getTargetedOrderNotificationsForUser } from '../services/notificationService';
 
 export const BottomNav: React.FC = () => {
   const {
@@ -13,6 +14,13 @@ export const BottomNav: React.FC = () => {
     currentUser,
     orders,
     orderCart,
+    depots,
+    depotHolders,
+    departments,
+    projects,
+    roles,
+    users,
+    dismissedNotificationKeys,
     isPreparer,
     t,
   } = useApp();
@@ -32,12 +40,24 @@ export const BottomNav: React.FC = () => {
   const canPlusTab = true; // Toujours visible pour permettre l'accès aux options, profil et administration selon les droits
   const showCenterBtn = userHasPermission('perm_btn_center_show');
 
-  const pendingPrepCount = orders.filter((o) => o.status === 'PENDING').length;
-  const userHasReadyOrder = orders.some(
-    (o) =>
-      (String(o.requester_id) === String(currentUser?.id) ||
-        (o.requester_name && o.requester_name.toLowerCase() === currentUser?.name?.toLowerCase())) &&
-      o.status === 'READY'
+  const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
+    user: currentUser,
+    orders,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const pendingPrepCount = targetedOrderNotifs.filter(
+    (n) => n.notificationType === 'ORDER_PENDING_PREP'
+  ).length;
+  const userHasReadyOrder = targetedOrderNotifs.some(
+    (n) =>
+      n.notificationType === 'ORDER_READY' ||
+      n.notificationType === 'ORDER_PICKUP_DELEGATED'
   );
   const showCenterBadge = (isPreparer && pendingPrepCount > 0) || userHasReadyOrder || orderCart.length > 0;
 

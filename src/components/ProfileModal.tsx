@@ -1,7 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
-import { X, User, Lock, CheckCircle, Shield, Clock, LogOut, Smartphone, Sparkles, Volume2, VolumeX, Trash2, Scan } from 'lucide-react';
+import { X, User, Lock, CheckCircle, Shield, Clock, LogOut, Smartphone, Sparkles, Volume2, VolumeX, Trash2, Scan, Bell } from 'lucide-react';
+import {
+  USER_IDLE_MINUTE_OPTIONS,
+  computeEffectiveIdleMinutes,
+  isUserIdleOptionAllowedByPolicy,
+  normalizeCompanyMaxIdleMinutes,
+} from '../services/inactivityWatchdog';
+import {
+  ALL_TARGETED_NOTIFICATION_TYPES,
+  TargetedNotificationEventType,
+  getNotificationTypeLabel,
+  getNotificationTypePreferences,
+  setNotificationTypePreference,
+} from '../services/notificationService';
 import {
   getLocalCryptoMode,
   isLocalEncryptionEnabled,
@@ -45,6 +58,8 @@ export const ProfileModal: React.FC = () => {
     roles,
     autoLogoutMinutes,
     setAutoLogoutMinutes,
+    inactivityRemainingSeconds,
+    settings,
     logout,
     wipeDeviceAndSignOut,
     syncFromSupabase,
@@ -73,7 +88,14 @@ export const ProfileModal: React.FC = () => {
   const [testedSound, setTestedSound] = useState(false);
   const [scannerSoundOn, setScannerSoundOn] = useState<boolean>(() => isScannerSoundEnabled());
   const [scannerVibOn, setScannerVibOn] = useState<boolean>(() => isScannerVibrationEnabled());
+  const [notifPrefs, setNotifPrefs] = useState(() =>
+    getNotificationTypePreferences(currentUser?.id)
+  );
   const vibrationSupported = isVibrationSupported();
+
+  useEffect(() => {
+    setNotifPrefs(getNotificationTypePreferences(currentUser?.id));
+  }, [currentUser?.id, profileModalOpen]);
 
   useEffect(() => {
     const syncPrefs = () => {
@@ -475,43 +497,169 @@ export const ProfileModal: React.FC = () => {
         </div>
 
         {/* Inactivity Auto-logout Settings */}
-        <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800">
-          <div className="flex items-center gap-2 mb-2">
-            <Clock className="w-4 h-4 text-orange-500" />
+        {(() => {
+          const companyCap = normalizeCompanyMaxIdleMinutes(settings?.security_max_idle_minutes);
+          const effectiveIdleMinutes = computeEffectiveIdleMinutes(autoLogoutMinutes, companyCap);
+          const idleChoices = [
+            ...USER_IDLE_MINUTE_OPTIONS.map((m) => ({ label: `${m} min`, val: m })),
+            ...(companyCap === 0
+              ? [{ label: tr(language, 'Désactivé', 'Disabled', 'Uitgeschakeld'), val: 0 }]
+              : []),
+          ];
+          const remSec = inactivityRemainingSeconds ?? effectiveIdleMinutes * 60;
+          const remMinStr =
+            effectiveIdleMinutes > 0
+              ? `${Math.floor(remSec / 60)}m ${String(remSec % 60).padStart(2, '0')}s`
+              : '—';
+
+          return (
+            <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-orange-500" />
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    {t('profile_auto_logout')}
+                  </h4>
+                </div>
+                {companyCap > 0 && (
+                  <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                    {tr(
+                      language,
+                      `Plafond entreprise : ${companyCap} min`,
+                      `Company max: ${companyCap} min`,
+                      `Bedrijfslimiet: ${companyCap} min`
+                    )}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2">
+                {tr(
+                  language,
+                  'Verrouille la session et coupe la caméra après une période sans interaction réelle.',
+                  'Locks session and stops camera after a period without real interaction.',
+                  'Vergrendelt de sessie en stopt de camera na een periode zonder interactie.'
+                )}
+              </p>
+              <div className="grid grid-cols-4 gap-1.5">
+                {idleChoices.map((opt) => {
+                  const allowed = isUserIdleOptionAllowedByPolicy(opt.val, companyCap);
+                  const isSelected = effectiveIdleMinutes === opt.val;
+                  return (
+                    <button
+                      key={opt.val}
+                      type="button"
+                      disabled={!allowed}
+                      onClick={() => {
+                        if (allowed) {
+                          setAutoLogoutMinutes(opt.val);
+                        }
+                      }}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition ${
+                        isSelected
+                          ? 'bg-orange-500 text-white border-orange-500 shadow-sm cursor-pointer'
+                          : allowed
+                          ? 'bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer'
+                          : 'bg-slate-100 dark:bg-slate-900 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-800 opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                <span>
+                  {effectiveIdleMinutes === 0
+                    ? tr(
+                        language,
+                        '⚠️ Aucune déconnexion automatique',
+                        '⚠️ No auto logout',
+                        '⚠️ Geen automatische afmelding'
+                      )
+                    : `${tr(
+                        language,
+                        'Délai effectif :',
+                        'Effective timeout:',
+                        'Effectieve tijdslimiet:'
+                      )} ${effectiveIdleMinutes} min`}
+                </span>
+                {effectiveIdleMinutes > 0 && (
+                  <span className="font-mono font-bold text-orange-600 dark:text-orange-400">
+                    {tr(language, 'Temps restant :', 'Remaining:', 'Resterend:')} {remMinStr}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Targeted Notification Preferences per Type (Beep & Banner) */}
+        <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
+          <div className="flex items-center gap-2">
+            <Bell className="w-4 h-4 text-orange-500 shrink-0" />
             <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200">
-              {t('profile_auto_logout')}
+              {tr(
+                language,
+                'Préférences par type de notification (Bip & Bandeau)',
+                'Preferences by notification type (Beep & Banner)',
+                'Voorkeuren per meldingstype (Pieptoon & Banner)'
+              )}
             </h4>
           </div>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2">
-            {tr(language, 'Verrouille la session après une période sans interaction sur cet appareil.', 'Locks session after a period of inactivity on this device.')}
-          </p>
-          <div className="grid grid-cols-3 gap-1.5">
-            {[
-              { label: '1 min', val: 1 },
-              { label: '3 min', val: 3 },
-              { label: '5 min', val: 5 },
-              { label: '10 min', val: 10 },
-              { label: '15 min', val: 15 },
-              { label: tr(language, 'Désactivé', 'Disabled'), val: 0 },
-            ].map((opt) => (
-              <button
-                key={opt.val}
-                type="button"
-                onClick={() => setAutoLogoutMinutes(opt.val)}
-                className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition ${
-                  autoLogoutMinutes === opt.val
-                    ? 'bg-orange-500 text-white border-orange-500 shadow-sm'
-                    : 'bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <div className="mt-2 text-[10px] text-right text-slate-400">
-            {autoLogoutMinutes === 0
-              ? (tr(language, '⚠️ Aucune déconnexion automatique', '⚠️ No auto logout'))
-              : `${tr(language, 'Actif : Déconnexion après', 'Active: Logout after')} ${autoLogoutMinutes} min`}
+          <div className="space-y-1.5">
+            {ALL_TARGETED_NOTIFICATION_TYPES.map((nType: TargetedNotificationEventType) => {
+              const pref = notifPrefs[nType] || { beep: true, banner: true };
+              return (
+                <div
+                  key={nType}
+                  className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2"
+                >
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 leading-tight">
+                    {getNotificationTypeLabel(nType, language)}
+                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated = setNotificationTypePreference(
+                          nType,
+                          'beep',
+                          !pref.beep,
+                          currentUser.id
+                        );
+                        setNotifPrefs(updated);
+                      }}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                        pref.beep
+                          ? 'bg-orange-500 text-white border-orange-500'
+                          : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      {tr(language, 'Bip', 'Beep', 'Piep')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated = setNotificationTypePreference(
+                          nType,
+                          'banner',
+                          !pref.banner,
+                          currentUser.id
+                        );
+                        setNotifPrefs(updated);
+                      }}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                        pref.banner
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      {tr(language, 'Bandeau', 'Banner', 'Banner')}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 

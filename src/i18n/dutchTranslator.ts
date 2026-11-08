@@ -1727,6 +1727,16 @@ export const EXACT_NL_DICTIONARY: Record<string, string> = {
   "Télécharger l'installateur": 'Installatieprogramma downloaden',
   "Les installateurs sont publiés par l'administrateur sur la page des versions du projet.":
     'De installatieprogramma’s worden door de beheerder gepubliceerd op de releasepagina van het project.',
+  'Marquer comme lue': 'Markeren als gelezen',
+  'Tout marquer comme lu': 'Alles markeren als gelezen',
+  'Réinitialiser ma cloche': 'Mijn bel herstellen',
+  "Cela n'affecte que votre cloche": 'Dit heeft alleen invloed op uw eigen bel',
+  'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer':
+    'Geen depot toegewezen: deze gebruiker ontvangt geen bestellingen om te picken',
+  'Notifications lues non synchronisées : exécutez le script SQL 20':
+    'Gelezen meldingen niet gesynchroniseerd: voer SQL-script 20 uit',
+  'Commande annulée': 'Bestelling geannuleerd',
+  'Commande refusée': 'Bestelling geweigerd',
 };
 
 /**
@@ -2178,6 +2188,16 @@ const EXACT_EN_DICTIONARY: Record<string, string> = {
   'Valider': 'Confirm',
   'Annuler': 'Cancel',
   'Fermer': 'Close',
+  'Marquer comme lue': 'Mark as read',
+  'Tout marquer comme lu': 'Mark all as read',
+  'Réinitialiser ma cloche': 'Reset my bell',
+  "Cela n'affecte que votre cloche": 'This only affects your bell',
+  'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer':
+    'No depot assigned: this user will not receive any orders to prepare',
+  'Notifications lues non synchronisées : exécutez le script SQL 20':
+    'Read notifications not synced: run SQL script 20',
+  'Commande annulée': 'Order cancelled',
+  'Commande refusée': 'Order rejected',
 };
 
 const PATTERN_EN_RULES: Array<[RegExp, string]> = [

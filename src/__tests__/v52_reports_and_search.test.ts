@@ -91,13 +91,16 @@ const ORDERED_CLIENT_SCRIPTS = [
   '13_transfer_stock_batch.sql',
   '14_mailing.sql',
   '15_search_orders_movements.sql',
+  '16_audit_trail.sql',
+  '17_transferts_valides.sql',
+  '18_password_reset.sql',
   '07_app_compat.sql',
 ];
 
-describe('Prompt v52 — Versions 5.13.0 / 2.7.0 & Script 15_search_orders_movements.sql', () => {
-  it('aligne APP_VERSION=5.13.0, EXPECTED_SCHEMA_VERSION=2.7.0 et déclare le script 15 dans SQL_STEPS (après 14 et avant 07)', () => {
-    expect(APP_VERSION).toBe('5.13.0');
-    expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
+describe('Prompt v52 — Versions 5.16.0 / 2.10.0 & Script 15_search_orders_movements.sql', () => {
+  it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0 et déclare le script 15 dans SQL_STEPS (après 14 et avant 07)', () => {
+    expect(APP_VERSION).toBe('5.16.0');
+    expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));

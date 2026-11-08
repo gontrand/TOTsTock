@@ -3,6 +3,10 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { PLAN_LABELS, normalizeToCanonicalPlan } from '../types';
 import {
+  computeTargetedBellBadgeCount,
+  getTargetedOrderNotificationsForUser,
+} from '../services/notificationService';
+import {
   Database,
   RefreshCw,
   AlertCircle,
@@ -35,6 +39,10 @@ export const Header: React.FC = () => {
     syncFromSupabase,
     products,
     depots,
+    departments,
+    projects,
+    depotHolders,
+    transfers,
     movements,
     license,
     userHasPermission,
@@ -52,13 +60,27 @@ export const Header: React.FC = () => {
     rejectedSyncOps,
     retryRejectedMovement,
     discardRejectedMovement,
+    roles,
+    users,
+    dismissedNotificationKeys,
   } = useApp();
 
   const canManageConfig = !currentUser || userHasPermission('perm_config_license') || userHasPermission('perm_config_db');
 
-  const lowStockCount = products.filter(
-    (p) => (p.quantity || 0) <= (p.min_stock_alert || 2)
-  ).length;
+  const targetedBellCount = computeTargetedBellBadgeCount({
+    user: currentUser,
+    orders,
+    transfers,
+    products,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    hasReceiveAllPerm: userHasPermission('perm_stock_receive_all'),
+    dismissedKeys: dismissedNotificationKeys,
+  });
 
   // Real-time network connectivity tracking
   const [isOnline, setIsOnline] = useState<boolean>(() => {
@@ -143,12 +165,24 @@ export const Header: React.FC = () => {
   const canCreateOrder = true; // Tout le monde est demandeur par défaut
   const canOrderPrep = isPreparer || userHasPermission('perm_menu_order_prep');
 
-  const pendingPrepCount = orders.filter((o) => o.status === 'PENDING').length;
-  const userHasReadyOrder = orders.some(
-    (o) =>
-      (String(o.requester_id) === String(currentUser?.id) ||
-        (o.requester_name && o.requester_name.toLowerCase() === currentUser?.name?.toLowerCase())) &&
-      o.status === 'READY'
+  const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
+    orders,
+    user: currentUser,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const pendingPrepCount = targetedOrderNotifs.filter(
+    (n) => n.notificationType === 'ORDER_PENDING_PREP'
+  ).length;
+  const userHasReadyOrder = targetedOrderNotifs.some(
+    (n) =>
+      n.notificationType === 'ORDER_READY' ||
+      n.notificationType === 'ORDER_PICKUP_DELEGATED'
   );
 
   return (
@@ -378,9 +412,12 @@ export const Header: React.FC = () => {
             className="relative w-8 h-8 rounded-full flex items-center justify-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 transition active:scale-90 cursor-pointer shadow-2xs shrink-0 z-20"
           >
             <Bell className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300 shrink-0 relative z-20" />
-            {lowStockCount > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 bg-red-500 text-white rounded-full text-[9px] font-black flex items-center justify-center border-2 border-white dark:border-[#1e293b] z-30">
-                {lowStockCount}
+            {targetedBellCount > 0 && (
+              <span
+                data-testid="header-bell-badge"
+                className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 bg-red-500 text-white rounded-full text-[9px] font-black flex items-center justify-center border-2 border-white dark:border-[#1e293b] z-30"
+              >
+                {targetedBellCount}
               </span>
             )}
           </button>

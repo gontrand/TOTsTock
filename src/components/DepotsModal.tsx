@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { Depot, PLAN_TIERS, getPlanName } from '../types';
 import { normalizeSupabaseUrl } from '../services/clientSupabase';
+import { copyToClipboard } from '../services/clipboard';
 import { DepotHoldersSection, DraftDepotHolder } from './DepotHoldersSection';
 
 export const DepotsModal: React.FC = () => {
@@ -693,10 +694,12 @@ BEFORE INSERT ON public.depots
 FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
 `;
 
-  const handleCopySql = () => {
-    navigator.clipboard.writeText(sqlCreationScript);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2500);
+  const handleCopySql = async () => {
+    const ok = await copyToClipboard(sqlCreationScript);
+    if (ok) {
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2000);
+    }
   };
 
   // For transfer destination options

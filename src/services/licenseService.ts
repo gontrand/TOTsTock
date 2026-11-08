@@ -429,18 +429,70 @@ export function normalizePlanType(plan?: string, licenseKey?: string): Canonical
   return normalizeToCanonicalPlan(plan, licenseKey);
 }
 
+export const INVALID_LICENSE_KEY_FORMAT_MESSAGE = "Ceci n'est pas une clé de licence";
+export const SYNC_SERVICE_UNAVAILABLE_MESSAGE =
+  'Service de synchronisation indisponible — vos quotas actuels sont conservés';
+
+export interface LicenseKeyValidationResult {
+  valid: boolean;
+  cleanKey: string;
+  error?: string;
+}
+
+/**
+ * Validation stricte du format de clé de licence avant tout appel réseau :
+ * - trim()
+ * - rejet immédiat si vide ou si ce n'est pas une clé (doit commencer par TOT-,
+ *   une seule ligne sans \r/\n, <= 64 caractères, pas de //, caractères alphanumériques + tirets)
+ */
+export function validateLicenseKeyInput(raw: unknown): LicenseKeyValidationResult {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  const upper = trimmed.toUpperCase();
+
+  if (
+    !trimmed ||
+    /[\r\n]/.test(trimmed) ||
+    trimmed.length > 64 ||
+    trimmed.includes('//') ||
+    !upper.startsWith('TOT-') ||
+    !/^TOT-[A-Z0-9-]{4,60}$/.test(upper)
+  ) {
+    return {
+      valid: false,
+      cleanKey: upper,
+      error: INVALID_LICENSE_KEY_FORMAT_MESSAGE,
+    };
+  }
+
+  return {
+    valid: true,
+    cleanKey: upper,
+  };
+}
+
 /**
  * Verifies a license key against the master server strictly via:
  * 1) Edge Function APP_TOT-Stock_licenses (action: 'validate' with license_key AND client_supabase_url)
  * 2) RPC verify_client_license(p_license_key, p_client_supabase_url)
  * Zero direct access to APP_TOT-Stock-licenses table.
+ * Ne rétrograde jamais en FREE une licence déjà validée avec signed_token présent si le service est injoignable.
  */
 export async function verifyLicenseKey(
   key: string,
   clientSupabaseUrl?: string
 ): Promise<LicenseVerificationResult> {
-  const cleanKey = (key || '').trim().toUpperCase();
   const current = getSavedLicense();
+  const keyCheck = validateLicenseKeyInput(key);
+
+  if (!keyCheck.valid) {
+    return {
+      success: false,
+      license: current,
+      message: keyCheck.error || INVALID_LICENSE_KEY_FORMAT_MESSAGE,
+    };
+  }
+
+  const cleanKey = keyCheck.cleanKey;
   const cleanUrl = (
     clientSupabaseUrl ||
     current.client_supabase_url ||
@@ -448,24 +500,21 @@ export async function verifyLicenseKey(
     ''
   ).trim();
 
-  if (!cleanKey) {
-    return {
-      success: false,
-      message: 'Veuillez saisir une clé de licence valide (ex: TOT-STOCK-XXXXXXXX).',
-    };
-  }
-
   if (!cleanUrl) {
     return {
       success: false,
-      message: 'L\'adresse du projet Supabase client est obligatoire pour vérifier ou lier une licence.',
+      license: current,
+      message: "L'adresse du projet Supabase client est obligatoire pour vérifier ou lier une licence.",
     };
   }
+
+  let edgeUnreachable = false;
+  let rpcUnreachable = false;
 
   // 1. Validation et liaison contrôlée via l'Edge Function Maître (action: 'validate')
   const masterFnName = getResolvedMasterEdgeFunctionName('licenses');
   try {
-    const { data: edgeData, error: edgeErr } = await masterSupabase.functions.invoke(
+    let { data: edgeData, error: edgeErr } = await masterSupabase.functions.invoke(
       masterFnName,
       {
         body: {
@@ -476,15 +525,61 @@ export async function verifyLicenseKey(
       }
     );
 
-    if (!edgeErr && edgeData) {
-      if (edgeData.success === false) {
+    if (!edgeData && edgeErr && typeof (edgeErr as any)?.context?.json === 'function') {
+      try {
+        const cloned =
+          typeof (edgeErr as any).context.clone === 'function'
+            ? (edgeErr as any).context.clone()
+            : (edgeErr as any).context;
+        edgeData = await cloned.json();
+      } catch {
+        // ignore JSON parse errors
+      }
+    }
+
+    const edgeStatus = Number(
+      (edgeErr as any)?.context?.status || (edgeErr as any)?.status || edgeData?.status || 0
+    );
+
+    if (edgeErr && !edgeData) {
+      if (
+        edgeStatus === 404 ||
+        edgeStatus >= 500 ||
+        edgeStatus === 0 ||
+        String((edgeErr as any)?.name || '') === 'FunctionsFetchError'
+      ) {
+        edgeUnreachable = true;
+      } else if (edgeStatus === 403 || edgeStatus === 401) {
         return {
           success: false,
-          message: edgeData.message || edgeData.error || 'Validation de licence refusée par le serveur maître.',
+          license: current,
+          message:
+            (edgeErr as any)?.message ||
+            'Licence refusée (403) : licence révoquée ou projet Supabase non autorisé.',
         };
       }
+    }
 
-      if (edgeData.success && edgeData.license) {
+    if (edgeData) {
+      if (edgeData.success === false) {
+        const code = String(edgeData.code || '').toUpperCase();
+        if (edgeStatus === 404 && code === 'NOT_FOUND') {
+          edgeUnreachable = true;
+        } else if (edgeStatus >= 500) {
+          edgeUnreachable = true;
+        } else {
+          return {
+            success: false,
+            license: current,
+            message:
+              edgeData.message ||
+              edgeData.error ||
+              (edgeStatus === 403
+                ? 'Licence refusée (403) : licence révoquée ou projet non autorisé.'
+                : 'Validation de licence refusée par le serveur maître.'),
+          };
+        }
+      } else if (edgeData.success && edgeData.license) {
         const licRow = edgeData.license;
         let signedToken = edgeData.signed_token
           ? convertLegacyLicenseToken(edgeData.signed_token)
@@ -495,6 +590,7 @@ export async function verifyLicenseKey(
           if (!tokenCheck.valid || !tokenCheck.token) {
             return {
               success: false,
+              license: current,
               message:
                 tokenCheck.reason ||
                 'Jeton de licence signé invalide ou émis pour un autre projet Supabase.',
@@ -551,6 +647,7 @@ export async function verifyLicenseKey(
       }
     }
   } catch (edgeException) {
+    edgeUnreachable = true;
     console.warn('Notice appel Edge Function validate:', edgeException);
   }
 
@@ -561,18 +658,24 @@ export async function verifyLicenseKey(
       p_client_supabase_url: cleanUrl,
     });
 
+    if (rpcErr) {
+      rpcUnreachable = true;
+    }
+
     const rpcRow = !rpcErr && rpcData ? (Array.isArray(rpcData) ? rpcData[0] : rpcData) : null;
 
     if (rpcRow && rpcRow.license_key) {
       if (rpcRow.is_active === false) {
         return {
           success: false,
-          message: 'Cette licence a été révoquée par l\'administrateur éditeur sur le serveur maître.',
+          license: current,
+          message: "Cette licence a été révoquée par l'administrateur éditeur sur le serveur maître.",
         };
       }
       if (rpcRow.expires_at && new Date(rpcRow.expires_at).getTime() < Date.now()) {
         return {
           success: false,
+          license: current,
           message: `Cette licence a expiré sur le serveur maître le ${new Date(rpcRow.expires_at).toLocaleDateString('fr-FR')}.`,
         };
       }
@@ -631,10 +734,11 @@ export async function verifyLicenseKey(
       };
     }
   } catch (rpcErr) {
+    rpcUnreachable = true;
     console.warn('Erreur appel RPC verify_client_license:', rpcErr);
   }
 
-  // 3. Fallback hors-ligne : vérification cryptographique du jeton signé en cache (avec contrôle de kid et retrait de clé)
+  // 3. Fallback hors-ligne : vérification cryptographique du jeton signé en cache (ne jamais rétrograder en FREE si signed_token présent)
   if (current.license_key && current.license_key.toUpperCase() === cleanKey) {
     if (current.signed_token) {
       const verification = await verifySignedLicenseToken(current.signed_token, cleanUrl);
@@ -670,8 +774,21 @@ export async function verifyLicenseKey(
     }
   }
 
+  // Si le service de synchronisation / validation est injoignable (404, 500, erreur réseau), conserver les quotas actuels sans jamais rétrograder en FREE
+  if (edgeUnreachable && rpcUnreachable) {
+    if (current.signed_token) {
+      saveLicenseLocally(current);
+    }
+    return {
+      success: false,
+      license: current,
+      message: SYNC_SERVICE_UNAVAILABLE_MESSAGE,
+    };
+  }
+
   return {
     success: false,
+    license: current,
     message: `Validation refusée pour "${cleanKey}" sur le projet "${cleanUrl}". Vérifiez que la clé est exacte et que la liaison au projet a été autorisée par l'éditeur.`,
   };
 }
@@ -1865,12 +1982,25 @@ export async function syncLicenseToClientDatabase(
       const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
 
       if (!edgeRes.success) {
+        // Ne jamais rétrograder en FREE une licence déjà validée avec signed_token présent
+        saveLicenseLocally(license);
+
+        const isUnavailable =
+          edgeRes.isNotFound ||
+          !edgeRes.status ||
+          edgeRes.status === 404 ||
+          edgeRes.status >= 500;
+
+        const finalMessage = isUnavailable
+          ? `${SYNC_SERVICE_UNAVAILABLE_MESSAGE} (${edgeRes.message})`
+          : edgeRes.message;
+
         return {
           success: false,
           status: edgeRes.status,
           code: edgeRes.code,
           isNotFound: edgeRes.isNotFound,
-          message: edgeRes.message,
+          message: finalMessage,
           dbStatus,
           dbLicenseStatus: dbStatus,
         };
@@ -1908,11 +2038,14 @@ export async function syncLicenseToClientDatabase(
       dbLicenseStatus: dbStatus,
     };
   } catch (err: any) {
+    if (license.signed_token) {
+      saveLicenseLocally(license);
+    }
     const dbStatus = await readClientDatabaseLicenseStatus(client, canonicalPlan);
     return {
       success: false,
       status: 500,
-      message: err?.message || 'Erreur lors de la synchronisation de licence client',
+      message: `${SYNC_SERVICE_UNAVAILABLE_MESSAGE} (${err?.message || 'Erreur lors de la synchronisation de licence client'})`,
       dbStatus,
       dbLicenseStatus: dbStatus,
     };

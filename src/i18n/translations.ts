@@ -906,6 +906,16 @@ export const translations = {
     desktop_new_movement: 'Nouveau mouvement',
     desktop_new_order: 'Nouvelle commande',
     desktop_new_order_material: 'Nouvelle commande matériel',
+    // v58 — Notifications lues par utilisateur, commandes annulées & préparateurs par dépôt
+    notif_mark_as_read: 'Marquer comme lue',
+    notif_mark_all_as_read: 'Tout marquer comme lu',
+    notif_reset_my_bell: 'Réinitialiser ma cloche',
+    notif_reset_my_bell_confirm: "Cela n'affecte que votre cloche",
+    notif_order_cancelled_title: 'Commande annulée',
+    notif_order_rejected_title: 'Commande refusée',
+    notif_sql_20_missing_warning: 'Notifications lues non synchronisées : exécutez le script SQL 20',
+    preparer_no_depot_warning:
+      'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer',
   },
   en: {
     // Navigation
@@ -1801,6 +1811,16 @@ export const translations = {
     desktop_new_movement: 'New movement',
     desktop_new_order: 'New order',
     desktop_new_order_material: 'New material order',
+    // v58 — Per-user read notifications, cancelled orders & preparer depots
+    notif_mark_as_read: 'Mark as read',
+    notif_mark_all_as_read: 'Mark all as read',
+    notif_reset_my_bell: 'Reset my bell',
+    notif_reset_my_bell_confirm: 'This only affects your bell',
+    notif_order_cancelled_title: 'Order cancelled',
+    notif_order_rejected_title: 'Order rejected',
+    notif_sql_20_missing_warning: 'Read notifications not synced: run SQL script 20',
+    preparer_no_depot_warning:
+      'No depot assigned: this user will not receive any orders to prepare',
   },
   nl: {
     // Navigation
@@ -2696,6 +2716,16 @@ export const translations = {
     desktop_new_movement: 'Nieuwe beweging',
     desktop_new_order: 'Nieuwe bestelling',
     desktop_new_order_material: 'Nieuwe materiaalbestelling',
+    // v58 — Gelezen meldingen per gebruiker, geannuleerde bestellingen & orderpickers per depot
+    notif_mark_as_read: 'Markeren als gelezen',
+    notif_mark_all_as_read: 'Alles markeren als gelezen',
+    notif_reset_my_bell: 'Mijn bel herstellen',
+    notif_reset_my_bell_confirm: 'Dit heeft alleen invloed op uw eigen bel',
+    notif_order_cancelled_title: 'Bestelling geannuleerd',
+    notif_order_rejected_title: 'Bestelling geweigerd',
+    notif_sql_20_missing_warning: 'Gelezen meldingen niet gesynchroniseerd: voer SQL-script 20 uit',
+    preparer_no_depot_warning:
+      'Geen depot toegewezen: deze gebruiker ontvangt geen bestellingen om te picken',
   },
 } as const;
 

@@ -103,6 +103,8 @@ const MainLayout: React.FC = () => {
     stockTransferModal,
     transfersModalOpen,
     setTransfersModalOpen,
+    inactivityWarning,
+    stayConnectedFromInactivity,
   } = useApp();
 
   useDutchDomTranslator(language);
@@ -172,6 +174,30 @@ const MainLayout: React.FC = () => {
   if (layoutMode === 'desktop' && currentUser && !isBlockedByCompat) {
     return (
       <>
+        {inactivityWarning?.active && (
+          <div
+            role="alert"
+            data-testid="inactivity-warning-banner"
+            className="fixed top-3 left-1/2 -translate-x-1/2 z-[90] max-w-lg w-[92vw] px-4 py-3 rounded-2xl bg-amber-600 text-white shadow-2xl border border-amber-400 flex items-center justify-between gap-3 text-xs font-bold animate-fadeIn"
+          >
+            <span>
+              {tr(
+                language,
+                `Vous allez être déconnecté pour inactivité dans ${inactivityWarning.remainingSeconds} s.`,
+                `You will be signed out due to inactivity in ${inactivityWarning.remainingSeconds} s.`,
+                `U wordt over ${inactivityWarning.remainingSeconds} s afgemeld wegens inactiviteit.`
+              )}
+            </span>
+            <button
+              type="button"
+              data-testid="stay-connected-btn"
+              onClick={stayConnectedFromInactivity}
+              className="px-3 py-1.5 rounded-xl bg-white text-amber-800 hover:bg-amber-50 font-black text-xs shrink-0 cursor-pointer shadow-xs"
+            >
+              {tr(language, 'Rester connecté', 'Stay signed in', 'Aangemeld blijven')}
+            </button>
+          </div>
+        )}
         <DesktopWorkspace />
         {batchCartModalOpen && <BatchCartModal />}
         {diagnosticModalOpen && <DiagnosticModal />}
@@ -200,6 +226,32 @@ const MainLayout: React.FC = () => {
       >
         {/* Top Header Bar */}
         <Header />
+
+        {/* Point 3.6 : Avertissement non intrusif avant déconnexion pour inactivité */}
+        {inactivityWarning?.active && (
+          <div
+            role="alert"
+            data-testid="inactivity-warning-banner"
+            className="mx-3 mt-2 p-2.5 bg-amber-600 text-white text-xs font-bold rounded-xl shadow-md flex items-center justify-between gap-2 animate-fadeIn"
+          >
+            <span className="flex-1">
+              {tr(
+                language,
+                `Vous allez être déconnecté (${inactivityWarning.remainingSeconds} s)`,
+                `You will be signed out (${inactivityWarning.remainingSeconds} s)`,
+                `U wordt afgemeld (${inactivityWarning.remainingSeconds} s)`
+              )}
+            </span>
+            <button
+              type="button"
+              data-testid="stay-connected-btn"
+              onClick={stayConnectedFromInactivity}
+              className="px-2.5 py-1 rounded-lg bg-white text-amber-800 font-black text-[11px] shrink-0 cursor-pointer"
+            >
+              {tr(language, 'Rester connecté', 'Stay signed in', 'Aangemeld blijven')}
+            </button>
+          </div>
+        )}
 
         {/* Point 4 : Avertissement non bloquant si la table app_compat est absente */}
         {appCompat.tableMissing && (

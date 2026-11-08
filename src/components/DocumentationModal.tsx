@@ -3,6 +3,7 @@ import { tr } from '../i18n/dutchTranslator';
 import DOMPurify from 'dompurify';
 import { useApp } from '../context/AppContext';
 import { EXPECTED_SCHEMA_VERSION } from '../appVersion';
+import { copyToClipboard } from '../services/clipboard';
 import {
   X,
   BookOpen,
@@ -866,22 +867,28 @@ CREATE INDEX IF NOT EXISTS idx_material_orders_created ON public.material_orders
 
 CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_id, created_at DESC);`;
 
-  const handleCopyMarketingCode = () => {
-    navigator.clipboard.writeText(MARKETING_HTML_CODE);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2500);
+  const handleCopyMarketingCode = async () => {
+    const ok = await copyToClipboard(MARKETING_HTML_CODE);
+    if (ok) {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    }
   };
 
-  const handleCopyCli = () => {
-    navigator.clipboard.writeText(CLI_COMMANDS_TEXT);
-    setCopiedCli(true);
-    setTimeout(() => setCopiedCli(false), 2500);
+  const handleCopyCli = async () => {
+    const ok = await copyToClipboard(CLI_COMMANDS_TEXT);
+    if (ok) {
+      setCopiedCli(true);
+      setTimeout(() => setCopiedCli(false), 2000);
+    }
   };
 
-  const handleCopySql = () => {
-    navigator.clipboard.writeText(SQL_MIGRATION_TEXT);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 2500);
+  const handleCopySql = async () => {
+    const ok = await copyToClipboard(SQL_MIGRATION_TEXT);
+    if (ok) {
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2000);
+    }
   };
 
   const handleDownloadSqlFile = () => {
@@ -1801,10 +1808,31 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                         'alle keuzelijsten in de applicatie (depots, werven, afdelingen, gebruikers, categorieën, statussen, enz.) bevatten directe hoofdletter- en accentongevoelige zoekfunctie, toetsenbordnavigatie (↑/↓, Enter, Escape) en onthouden recente depots.'
                       )}
                     </li>
+                    <li>
+                      <strong>Clé Supabase anon / publishable :</strong> la clé <code>anon</code> est publique par conception, protégée par les règles RLS, mais elle n&apos;est affichée qu&apos;à la saisie. Une fois la base connectée, le champ affiche uniquement un masque (<code>••••••••••••</code> + 4 derniers caractères), le bouton œil disparaît et le remplacement de la clé nécessite une confirmation par code PIN ou mot de passe (rôles 0 et 1). Toute clé secrète <code>service_role</code> / <code>sb_secret_</code> est refusée.
+                    </li>
+                    <li>
+                      <strong>Déconnexion automatique par inactivité (obligatoire) :</strong> active par défaut (10 min, plafonnée par la politique d&apos;entreprise <code>security_max_idle_minutes</code>) et basée sur l&apos;horodatage réel (<code>Date.now()</code>), elle fonctionne même lorsque le mode Scanner / Picking est ouvert avec flux caméra actif ou l&apos;onglet en arrière-plan, coupe tous les flux caméra à l&apos;expiration et affiche un avertissement « Rester connecté » 60 s avant (15 s pour le délai de 1 min).
+                    </li>
+                    <li>
+                      <strong>Notifications ciblées &amp; Traçabilité des commandes :</strong> chaque notification et le compteur de la cloche sont filtrés strictement par identifiant destinataire (jamais par nom, sans polluer les administrateurs non concernés), et chaque commande affiche un bloc <em>Traçabilité</em> complet (Demandeur, Préparateur, Enleveur et mention « Retrait transféré : Oui (de X à Y, le …) / Non »).
+                    </li>
+                    <li>
+                      <strong>Quand une notification disparaît (v58 — table <code>core_notification_dismissals</code>) :</strong>
+                      <ul className="list-circle pl-5 mt-1 space-y-1">
+                        <li>Chaque notification possède une clé stable <code>&lt;TYPE&gt;:&lt;id&gt;:&lt;statut&gt;</code> (ex. <code>ORDER_READY:ord_123:READY</code>, <code>ORDER_MODIFIED_OR_CANCELLED:ord_123:CANCELLED</code>, <code>STOCK_LOW_ALERT:&lt;id produit&gt;:&lt;LOW|OUT&gt;</code>). Si la commande change de statut, la clé change et la nouvelle étape réapparaît automatiquement.</li>
+                        <li><strong>Disparition au clic sur la carte :</strong> commandes annulées/refusées/modifiées, commandes retirées, transferts inter-dépôts et alertes stock bas/rupture sont marqués comme lus dès que l&apos;utilisateur ouvre la carte. En revanche, les commandes <em>à valider</em>, <em>à préparer</em>, <em>assignées</em> et <em>prêtes à retirer</em> restent affichées tant que l&apos;action n&apos;est pas faite (sauf clic explicite sur <code>✕ Marquer comme lue</code>).</li>
+                        <li><strong>Commandes annulées ou refusées :</strong> affichées avec une carte dédiée (icône <code>XCircle</code>, couleur rose/ambre, motif et auteur), envoyées uniquement au demandeur et au préparateur assigné, retirables en 1 clic et expirées automatiquement au-delà de 7 jours.</li>
+                        <li><strong>Synchronisation par utilisateur :</strong> les notifications marquées comme lues via <code>✕</code> ou <em>« Tout marquer comme lu »</em> sont synchronisées en base via la RPC <code>dismiss_notifications(text[])</code> (avec repli hors-ligne local par utilisateur) ; le bouton <em>« Réinitialiser ma cloche »</em> (<code>clear_my_dismissals()</code>) ne réinitialise que la cloche de l&apos;utilisateur connecté.</li>
+                      </ul>
+                    </li>
+                    <li>
+                      <strong>Règle stricte des dépôts d&apos;un préparateur (v58) :</strong> un préparateur non administrateur (<code>is_preparer = true</code> ou <code>perm_prepare_orders</code>, rôle ni 0 ni 1) ne reçoit les notifications et ne voit dans l&apos;écran Préparation / Mode Scanner que les commandes des dépôts qui lui sont attribués via l&apos;union <code>allowed_depots ∪ stk_depot_holders</code> (ou les commandes déjà prises en charge par lui <code>preparer_id = user.id</code>). Si cette union est vide, il ne voit aucun dépôt et une alerte orange <em>« Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer »</em> s&apos;affiche sur sa fiche utilisateur. Seul <code>[&apos;*&apos;]</code> explicite ou un rôle Administrateur (0 ou 1) donne accès à tous les dépôts.
+                    </li>
                   </ul>
                 </div>
 
-                {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.7.0 / App 5.13.0) */}
+                {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.10.0 / App 5.16.0) */}
                 <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
                   <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400 flex items-center gap-2">
                     <Database className="w-4 h-4 shrink-0" />
@@ -1812,13 +1840,13 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                   </h4>
                   <ol className="list-decimal pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
                     <li>
-                      <strong>Étape 1 — Scripts SQL (<code>00</code> à <code>17</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code>, <code>15_search_orders_movements.sql</code>, <code>16_audit_trail.sql</code>, <code>17_transferts_valides.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL</em>). Le script 14 migre automatiquement votre ancienne configuration Brevo éventuelle.
+                      <strong>Étape 1 — Scripts SQL (<code>00</code> à <code>20</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code>, <code>15_search_orders_movements.sql</code>, <code>16_audit_trail.sql</code>, <code>17_transferts_valides.sql</code>, <code>18_password_reset.sql</code>, <code>19_order_trace.sql</code>, <code>20_notification_reads.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL</em>). Le script 20 crée la table <code>core_notification_dismissals</code> et les RPC <code>dismiss_notifications(text[])</code> et <code>clear_my_dismissals()</code>.
                     </li>
                     <li>
-                      <strong>Étape 2 — Fonctions Edge (onglet <em>4. Fonctions Edge</em>) :</strong> mettez à jour dans Supabase Dashboard les 3 fonctions autonomes (<code>APP_TOT-Stock_admin-users</code>, <code>APP_TOT-Stock_licenses_sync-license</code>, <code>APP_TOT-Stock_send-report-email</code>) générées dans <code>supabase-client/generated/edge-functions/</code>.
+                      <strong>Étape 2 — Fonctions Edge (onglet <em>4. Fonctions Edge</em>) :</strong> mettez à jour dans Supabase Dashboard les 4 fonctions autonomes (<code>APP_TOT-Stock_admin-users</code>, <code>APP_TOT-Stock_licenses_sync-license</code>, <code>APP_TOT-Stock_send-report-email</code>, <code>APP_TOT-Stock_password-reset</code>) générées dans <code>supabase-client/generated/edge-functions/</code>.
                     </li>
                     <li>
-                      <strong>Étape 3 — Synchronisation de licence &amp; Vérification :</strong> synchronisez la licence dans l&apos;onglet <em>1. Licence</em>, puis vérifiez dans la page <em>À propos</em> ou <em>Diagnostic d&apos;installation</em> que le schéma est à <strong>{EXPECTED_SCHEMA_VERSION} (À jour)</strong> et que les 3 fonctions Edge répondent <strong>OK</strong>.
+                      <strong>Étape 3 — Synchronisation de licence &amp; Vérification :</strong> synchronisez la licence dans l&apos;onglet <em>1. Licence</em>, puis vérifiez dans la page <em>À propos</em> ou <em>Diagnostic d&apos;installation</em> que le schéma est à <strong>{EXPECTED_SCHEMA_VERSION} (À jour)</strong> et que les 4 fonctions Edge répondent <strong>OK</strong>.
                     </li>
                   </ol>
                 </div>
@@ -1892,10 +1920,12 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(apkSha256);
-                        setCopiedSha(true);
-                        setTimeout(() => setCopiedSha(false), 2000);
+                      onClick={async () => {
+                        const ok = await copyToClipboard(apkSha256);
+                        if (ok) {
+                          setCopiedSha(true);
+                          setTimeout(() => setCopiedSha(false), 2000);
+                        }
                       }}
                       className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] flex items-center gap-1 shrink-0 cursor-pointer"
                     >

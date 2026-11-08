@@ -46,6 +46,7 @@ import {
 import { APP_VERSION } from '../appVersion';
 import { DesktopAuditLogPage } from '../desktop/pages/DesktopAuditLogPage';
 import { canUserAccessScannerMode } from '../services/orderPickingLogic';
+import { getTargetedOrderNotificationsForUser } from '../services/notificationService';
 import { SUPPORTED_CURRENCIES } from '../utils/crypto';
 import { getClientSupabase, checkEmailServiceConfigured } from '../services/clientSupabase';
 import {
@@ -74,8 +75,12 @@ export const PlusMenuView: React.FC = () => {
     setCategoriesModalOpen,
     setDepotsModalOpen,
     depots,
+    depotHolders,
     departments,
     projects,
+    roles,
+    users,
+    dismissedNotificationKeys,
     maxDepots,
     setUsersRolesModal,
     setQrConfigGenModalOpen,
@@ -127,12 +132,24 @@ export const PlusMenuView: React.FC = () => {
     userHasPermission('perm_menu_order_prep')
   );
 
-  const pendingPrepCount = orders.filter((o) => o.status === 'PENDING').length;
-  const myReadyOrdersCount = orders.filter(
-    (o) =>
-      (String(o.requester_id) === String(currentUser?.id) ||
-        (o.requester_name && o.requester_name.toLowerCase() === currentUser?.name?.toLowerCase())) &&
-      o.status === 'READY'
+  const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
+    user: currentUser,
+    orders,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const pendingPrepCount = targetedOrderNotifs.filter(
+    (n) => n.notificationType === 'ORDER_PENDING_PREP'
+  ).length;
+  const myReadyOrdersCount = targetedOrderNotifs.filter(
+    (n) =>
+      n.notificationType === 'ORDER_READY' ||
+      n.notificationType === 'ORDER_PICKUP_DELEGATED'
   ).length;
 
   // Reports

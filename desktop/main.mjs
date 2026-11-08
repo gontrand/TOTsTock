@@ -1,10 +1,12 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   Menu,
   nativeImage,
   Notification,
+  powerMonitor,
   protocol,
   safeStorage,
   session,
@@ -1525,6 +1527,26 @@ function registerIpcHandlers() {
       return { ok: false };
     }
   });
+
+  ipcMain.handle('tot:copy-text', async (event, text) => {
+    if (!assertAuthorizedSender(event)) {
+      return { ok: false, errorMessage: 'Origine IPC non autorisée.' };
+    }
+    if (typeof text !== 'string' || text.length === 0) {
+      return { ok: false, errorMessage: 'Texte vide ou invalide.' };
+    }
+    const byteLength = Buffer.byteLength(text, 'utf8');
+    if (byteLength > 5 * 1024 * 1024) {
+      return { ok: false, errorMessage: 'Texte trop volumineux (> 5 Mo).' };
+    }
+    try {
+      clipboard.writeText(text);
+      return { ok: true };
+    } catch (err) {
+      logError('Échec écriture presse-papiers', err);
+      return { ok: false, errorMessage: 'Impossible de copier le texte.' };
+    }
+  });
 }
 
 app.on('before-quit', () => {
@@ -1550,6 +1572,18 @@ app.whenReady().then(() => {
   createMainWindow();
   setupSystemTray();
   setupOptionalAutoUpdater();
+
+  if (powerMonitor && typeof powerMonitor.on === 'function') {
+    const broadcastPowerResume = (reason) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win && !win.isDestroyed() && win.webContents) {
+          win.webContents.send('tot:power-resume', { reason, ts: Date.now() });
+        }
+      }
+    };
+    powerMonitor.on('resume', () => broadcastPowerResume('resume'));
+    powerMonitor.on('unlock-screen', () => broadcastPowerResume('unlock-screen'));
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

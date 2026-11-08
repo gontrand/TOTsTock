@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { canUserManageMailSettings } from '../../services/mailingService';
+import { copyToClipboard as copyTextToClipboard } from '../../services/clipboard';
+import { shouldWarnPreparerWithoutDepot } from '../../services/notificationService';
 import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   AlertTriangle,
@@ -12,6 +14,7 @@ import {
   Building2,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
   Database,
   Download,
@@ -85,7 +88,25 @@ import {
   runDiagnosticInstallation,
   validateSupabaseAnonKey,
   validateSupabaseServerUrl,
+  maskSupabaseAnonKey,
+  canUserReplaceSupabaseKey,
+  verifyUserPinOrPasswordForKeyReplacement,
 } from '../../services/clientSupabase';
+import { logAuditEventServer } from '../../services/auditService';
+import {
+  USER_IDLE_MINUTE_OPTIONS,
+  COMPANY_POLICY_IDLE_OPTIONS,
+  computeEffectiveIdleMinutes,
+  isUserIdleOptionAllowedByPolicy,
+  normalizeCompanyMaxIdleMinutes,
+} from '../../services/inactivityWatchdog';
+import {
+  ALL_TARGETED_NOTIFICATION_TYPES,
+  TargetedNotificationEventType,
+  getNotificationTypeLabel,
+  getNotificationTypePreferences,
+  setNotificationTypePreference,
+} from '../../services/notificationService';
 import {
   getLocalCryptoMode,
   isLocalEncryptionEnabled,
@@ -104,7 +125,10 @@ import {
   enforceSignedLicenseQuotasSync,
   readClientDatabaseLicenseStatus,
   syncLicenseToClientDatabase,
+  validateLicenseKeyInput,
 } from '../../services/licenseService';
+import { adminResetPassword } from '../../services/adminUsersService';
+import { requestPasswordResetCode } from '../../services/passwordResetService';
 import { tr } from '../../i18n/dutchTranslator';
 import {
   requestGuardedNavigation,
@@ -130,6 +154,7 @@ import {
   SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS,
   SQL_SCRIPT_16_AUDIT_TRAIL,
   SQL_SCRIPT_17_TRANSFERTS_VALIDES,
+  SQL_SCRIPT_18_PASSWORD_RESET,
 } from '../../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from '../../components/EdgeFunctionsSetupPanel';
 import { EmailSettingsPanel } from '../../components/EmailSettingsPanel';
@@ -257,13 +282,21 @@ const SQL_SCRIPTS_CATALOG = [
     filename: '17_transferts_valides.sql',
     title: 'Script 17 — Transferts validés à la réception, responsables de dépôt & droits fins (17_transferts_valides.sql)',
     description:
-      'Crée stk_depot_holders et stk_transfers, les RPC set_depot_holders, send_stock_transfer, receive_stock_transfer, reject_stock_transfer, cancel_stock_transfer, confirm_stock_transfer_adjustment, resolve_transfer_dispute, list_overdue_transfers, get_stock_levels_report et met à jour les permissions fines. À lancer après le script 16 et avant le script 07.',
+      'Crée stk_depot_holders et stk_transfers, les RPC set_depot_holders, send_stock_transfer, receive_stock_transfer, reject_stock_transfer, cancel_stock_transfer, confirm_stock_transfer_adjustment, resolve_transfer_dispute, list_overdue_transfers, get_stock_levels_report et met à jour les permissions fines. À lancer après le script 16 et avant le script 18.',
     sql: SQL_SCRIPT_17_TRANSFERTS_VALIDES,
+  },
+  {
+    id: '18',
+    filename: '18_password_reset.sql',
+    title: 'Script 18 — Réinitialisation du mot de passe par code à 6 chiffres (18_password_reset.sql)',
+    description:
+      'Crée la table public.core_password_resets (RLS activé, service_role uniquement) et la fonction RPC public.purge_expired_password_resets() pour la fonction Edge APP_TOT-Stock_password-reset. À lancer après le script 17 et avant le script 07.',
+    sql: SQL_SCRIPT_18_PASSWORD_RESET,
   },
   {
     id: '07',
     filename: '07_app_compat.sql',
-    title: '07 — Compatibilité Schéma 2.7.0 & Diagnostic SQL',
+    title: '07 — Compatibilité Schéma 2.9.0 & Diagnostic SQL',
     description: 'Table public.core_app_compat et fonction RPC public.diagnostic_installation().',
     sql: SQL_SCRIPT_07_APP_COMPAT,
   },
@@ -340,6 +373,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     saveProject,
     deleteProject,
     wipeDeviceAndSignOut,
+    autoLogoutMinutes,
+    setAutoLogoutMinutes,
+    inactivityRemainingSeconds,
     language,
     t,
   } = useApp();
@@ -486,12 +522,26 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   const [dbUrlInput, setDbUrlInput] = useState(supabaseUrl || '');
   const [dbKeyInput, setDbKeyInput] = useState(supabaseKey || '');
   const [showDbKey, setShowDbKey] = useState(false);
+  const [isDbKeyLocked, setIsDbKeyLocked] = useState<boolean>(() =>
+    Boolean(isSupabaseConnected || (supabaseUrl && supabaseKey))
+  );
+  const [showReplaceDbKeyPinPrompt, setShowReplaceDbKeyPinPrompt] = useState(false);
+  const [replaceDbKeyPinInput, setReplaceDbKeyPinInput] = useState('');
+  const [replaceDbKeyError, setReplaceDbKeyError] = useState<string | null>(null);
+  const [isVerifyingReplaceDbPin, setIsVerifyingReplaceDbPin] = useState(false);
   const [isBusyDb, setIsBusyDb] = useState(false);
   const [dbTestSummary, setDbTestSummary] = useState<{
     ok: boolean;
     message: string;
     details?: string;
   } | null>(null);
+  const [notifPrefs, setNotifPrefs] = useState(() =>
+    getNotificationTypePreferences(currentUser?.id)
+  );
+
+  useEffect(() => {
+    setNotifPrefs(getNotificationTypePreferences(currentUser?.id));
+  }, [currentUser?.id, section]);
 
   const refreshDbLicenseStatus = React.useCallback(
     async (overridePlan?: string) => {
@@ -591,7 +641,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setUserRoleId(Number(u.role_id));
     setUserDepartment(u.department || '');
     setUserIsPreparer(Boolean(u.is_preparer));
-    const isAll = !u.allowed_depots || u.allowed_depots.length === 0 || u.allowed_depots.includes('*');
+    const isAdminUser = Number(u.role_id) === 0 || Number(u.role_id) === 1;
+    const isAll = Boolean(
+      u.allowed_depots?.includes('*') ||
+        (isAdminUser && (!u.allowed_depots || u.allowed_depots.length === 0))
+    );
     setUserAllDepots(isAll);
     setUserAllowedDepots(isAll ? [] : [...(u.allowed_depots || [])]);
     scrollToAndFocusForm(userFormRef.current, userNameInputRef.current);
@@ -1430,13 +1484,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     [depots]
   );
 
-  const copyToClipboard = (text: string, keyId: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch(() => {});
+  const copyToClipboard = async (text: string, keyId: string) => {
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
       setCopiedKey(keyId);
       setTimeout(() => {
         setCopiedKey((prev) => (prev === keyId ? null : prev));
-      }, 2200);
+      }, 2000);
     }
   };
 
@@ -1689,6 +1743,186 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       {currentUser?.department || tr(language, 'Général', 'General', 'Algemeen')}
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Bloc Déconnexion automatique après inactivité (Desktop) */}
+              {(() => {
+                const companyCap = normalizeCompanyMaxIdleMinutes(
+                  settings?.security_max_idle_minutes
+                );
+                const effectiveIdleMinutes = computeEffectiveIdleMinutes(
+                  autoLogoutMinutes,
+                  companyCap
+                );
+                const idleChoices = [
+                  ...USER_IDLE_MINUTE_OPTIONS.map((m) => ({ label: `${m} min`, val: m })),
+                  ...(companyCap === 0
+                    ? [
+                        {
+                          label: tr(language, 'Désactivé', 'Disabled', 'Uitgeschakeld'),
+                          val: 0,
+                        },
+                      ]
+                    : []),
+                ];
+                const remSec = inactivityRemainingSeconds ?? effectiveIdleMinutes * 60;
+                const remMinStr =
+                  effectiveIdleMinutes > 0
+                    ? `${Math.floor(remSec / 60)}m ${String(remSec % 60).padStart(2, '0')}s`
+                    : '—';
+
+                return (
+                  <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                          <Clock className="w-4 h-4 text-orange-600" />
+                          <span>
+                            {tr(
+                              language,
+                              'Déconnexion automatique',
+                              'Automatic logout',
+                              'Automatische afmelding'
+                            )}
+                          </span>
+                        </h3>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {tr(
+                            language,
+                            'Verrouille la session, ferme les modales et arrête les pistes caméra après inactivité.',
+                            'Locks session, closes modals and stops camera streams after inactivity.',
+                            'Vergrendelt de sessie, sluit vensters en stopt camerastreams na inactiviteit.'
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {companyCap > 0 && (
+                          <span className="px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-xs font-bold">
+                            {tr(
+                              language,
+                              `Plafond entreprise : ${companyCap} min`,
+                              `Company ceiling: ${companyCap} min`,
+                              `Bedrijfslimiet: ${companyCap} min`
+                            )}
+                          </span>
+                        )}
+                        <span className="px-2.5 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 text-xs font-bold">
+                          {effectiveIdleMinutes === 0
+                            ? tr(language, 'Désactivé', 'Disabled', 'Uitgeschakeld')
+                            : `${tr(
+                                language,
+                                'Délai effectif :',
+                                'Effective delay:',
+                                'Effectieve vertraging:'
+                              )} ${effectiveIdleMinutes} min`}
+                        </span>
+                        {effectiveIdleMinutes > 0 && (
+                          <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-mono font-bold">
+                            {tr(language, 'Temps restant :', 'Remaining:', 'Resterend:')} {remMinStr}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {idleChoices.map((opt) => {
+                        const allowed = isUserIdleOptionAllowedByPolicy(opt.val, companyCap);
+                        const isSelected = effectiveIdleMinutes === opt.val;
+                        return (
+                          <button
+                            key={opt.val}
+                            type="button"
+                            disabled={!allowed}
+                            onClick={() => {
+                              if (allowed) {
+                                setAutoLogoutMinutes(opt.val);
+                              }
+                            }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
+                              isSelected
+                                ? 'bg-orange-600 text-white border-orange-600 shadow-xs cursor-pointer'
+                                : allowed
+                                ? 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 cursor-pointer'
+                                : 'bg-slate-100 dark:bg-slate-900 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-800 opacity-50 cursor-not-allowed'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Préférences par type de notification (Bip & Bandeau) */}
+              <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-orange-600" />
+                  <span>
+                    {tr(
+                      language,
+                      'Préférences par type de notification (Bip & Bandeau)',
+                      'Preferences by notification type (Beep & Banner)',
+                      'Voorkeuren per meldingstype (Pieptoon & Banner)'
+                    )}
+                  </span>
+                </h3>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {ALL_TARGETED_NOTIFICATION_TYPES.map((nType: TargetedNotificationEventType) => {
+                    const pref = notifPrefs[nType] || { beep: true, banner: true };
+                    return (
+                      <div
+                        key={nType}
+                        className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between gap-2"
+                      >
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          {getNotificationTypeLabel(nType, language)}
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = setNotificationTypePreference(
+                                nType,
+                                'beep',
+                                !pref.beep,
+                                currentUser?.id
+                              );
+                              setNotifPrefs(updated);
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                              pref.beep
+                                ? 'bg-orange-600 text-white border-orange-600'
+                                : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-300 dark:border-slate-700'
+                            }`}
+                          >
+                            {tr(language, 'Bip', 'Beep', 'Piep')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = setNotificationTypePreference(
+                                nType,
+                                'banner',
+                                !pref.banner,
+                                currentUser?.id
+                              );
+                              setNotifPrefs(updated);
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                              pref.banner
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : 'bg-white dark:bg-slate-900 text-slate-500 border-slate-300 dark:border-slate-700'
+                            }`}
+                          >
+                            {tr(language, 'Bandeau', 'Banner', 'Banner')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2201,7 +2435,49 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       </label>
                     </div>
 
-                    <div className="col-span-9">
+                    {shouldWarnPreparerWithoutDepot({
+                      user: {
+                        id: editingUserId ?? 'draft',
+                        role_id: Number(userRoleId),
+                        is_preparer: userIsPreparer,
+                        allowed_depots: userAllDepots ? ['*'] : userAllowedDepots,
+                      },
+                      depotHolders,
+                      depots,
+                      roles,
+                    }) && (
+                      <div
+                        data-testid="desktop-preparer-no-depot-warning"
+                        className="col-span-12 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 text-xs flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2 font-bold">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>
+                            {tr(
+                              language,
+                              'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer',
+                              'No depot assigned: this user will not receive any order to prepare',
+                              'Geen depot toegewezen: deze gebruiker ontvangt geen klaar te zetten bestellingen'
+                            )}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          data-testid="desktop-focus-allowed-depots-btn"
+                          onClick={() => {
+                            const el = document.getElementById('desktop-user-allowed-depots-section');
+                            if (el && typeof el.scrollIntoView === 'function') {
+                              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                        >
+                          {tr(language, 'Dépôts autorisés', 'Authorized depots', 'Toegestane depots')}
+                        </button>
+                      </div>
+                    )}
+
+                    <div id="desktop-user-allowed-depots-section" className="col-span-9">
                       <div className="flex items-center gap-3 flex-wrap">
                         <label className="flex items-center gap-1.5 font-bold cursor-pointer">
                           <input
@@ -2524,6 +2800,71 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                     </button>
                                     {!isSuper && (
                                       <>
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            const client = getClientSupabase(supabaseUrl, supabaseKey);
+                                            if (!client) {
+                                              setErrorMessage('Connexion Supabase non configurée.');
+                                              return;
+                                            }
+                                            const res = await adminResetPassword(client, u.id);
+                                            if (!res.success) {
+                                              setErrorMessage(
+                                                res.error || 'Erreur lors de la réinitialisation du mot de passe.'
+                                              );
+                                              return;
+                                            }
+                                            setSaveMessage(
+                                              `Mot de passe temporaire généré pour ${u.name} : ${res.temporary_password} (renouvellement exigé à la prochaine connexion).`
+                                            );
+                                          }}
+                                          className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-600 cursor-pointer"
+                                          title="Réinitialiser le mot de passe"
+                                        >
+                                          <KeyRound className="w-3.5 h-3.5" />
+                                        </button>
+                                        {(Number(currentUser?.role_id) === 0 ||
+                                          Number(currentUser?.role_id) === 1 ||
+                                          userHasPermission('perm_user_force_pin')) && (
+                                          <button
+                                            type="button"
+                                            onClick={async () => {
+                                              const cleanEmail = (u.email || '').trim().toLowerCase();
+                                              if (!cleanEmail || !cleanEmail.includes('@')) {
+                                                setErrorMessage(
+                                                  `Impossible d'envoyer un code : l'utilisateur ${u.name} n'a pas d'adresse e-mail configurée.`
+                                                );
+                                                return;
+                                              }
+                                              const client = getClientSupabase(supabaseUrl, supabaseKey);
+                                              if (!client) {
+                                                setErrorMessage('Connexion Supabase non configurée.');
+                                                return;
+                                              }
+                                              const res = await requestPasswordResetCode(client, cleanEmail);
+                                              if (!res.success) {
+                                                setErrorMessage(res.message);
+                                              } else {
+                                                setSaveMessage(
+                                                  `Code de réinitialisation envoyé par e-mail à ${cleanEmail}.`
+                                                );
+                                              }
+                                            }}
+                                            className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer ${
+                                              u.email && u.email.includes('@')
+                                                ? 'hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-600'
+                                                : 'text-slate-400 opacity-60'
+                                            }`}
+                                            title={
+                                              u.email && u.email.includes('@')
+                                                ? 'Envoyer un code de réinitialisation par e-mail'
+                                                : 'Envoyer un code de réinitialisation par e-mail (aucune adresse e-mail configurée)'
+                                            }
+                                          >
+                                            <Mail className="w-3.5 h-3.5" />
+                                          </button>
+                                        )}
                                         <button
                                           type="button"
                                           onClick={async () => {
@@ -3934,6 +4275,42 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     />
                   </div>
+                  {canUserReplaceSupabaseKey(currentUser) && (
+                    <div className="min-w-[240px]">
+                      <label className="block font-bold mb-1">
+                        {tr(
+                          language,
+                          'Plafond de déconnexion inactivité (Entreprise)',
+                          'Company max inactivity timeout',
+                          'Maximale inactiviteit bedrijf'
+                        )}
+                      </label>
+                      <SearchableSelect
+                        value={String(
+                          normalizeCompanyMaxIdleMinutes(settings?.security_max_idle_minutes)
+                        )}
+                        onChange={(val) => {
+                          updateSetting(
+                            'security_max_idle_minutes',
+                            String(Number(val))
+                          );
+                        }}
+                        options={COMPANY_POLICY_IDLE_OPTIONS.map((opt) => ({
+                          value: String(opt),
+                          label:
+                            opt === 0
+                              ? tr(
+                                  language,
+                                  'Pas de limite (0 — autorise Désactivé)',
+                                  'No limit (0 — allows Disabled)',
+                                  'Geen limiet (0 — staat Uitgeschakeld toe)'
+                                )
+                              : `${opt} min`,
+                        }))}
+                        clearable={false}
+                      />
+                    </div>
+                  )}
                   <button
                     type="submit"
                     className="px-4 py-2 rounded-lg font-bold bg-orange-600 hover:bg-orange-700 text-white cursor-pointer"
@@ -4390,12 +4767,19 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         <form
                           onSubmit={async (e) => {
                             e.preventDefault();
-                            if (!licenseKeyInput.trim()) return;
+                            const keyValidation = validateLicenseKeyInput(licenseKeyInput);
+                            if (!keyValidation.valid) {
+                              setSaveMessage(null);
+                              setErrorMessage(
+                                keyValidation.error || "Ceci n'est pas une clé de licence"
+                              );
+                              return;
+                            }
                             setIsBusyLicense(true);
                             setSaveMessage(null);
                             setErrorMessage(null);
                             try {
-                              const res = await verifyLicense(licenseKeyInput.trim());
+                              const res = await verifyLicense(keyValidation.cleanKey);
                               await refreshDbLicenseStatus(res.license?.plan_type);
                               if (res.success) {
                                 setSaveMessage(res.message || 'Clé de licence activée avec succès.');
@@ -4686,30 +5070,193 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       />
                     </div>
                     <div className="col-span-7">
-                      <label className="block font-bold mb-1">
-                        Clé API publique Supabase (anon / publishable key)
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={showDbKey ? 'text' : 'password'}
-                          value={dbKeyInput}
-                          onChange={(e) => setDbKeyInput(e.target.value)}
-                          placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                          className="w-full pl-3 pr-9 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowDbKey((v) => !v)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                          title={showDbKey ? 'Masquer la clé' : 'Afficher la clé'}
-                        >
-                          {showDbKey ? (
-                            <EyeOff className="w-4 h-4" />
-                          ) : (
-                            <Eye className="w-4 h-4" />
-                          )}
-                        </button>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block font-bold">
+                          Clé API publique Supabase (anon / publishable key)
+                        </label>
+                        {isDbKeyLocked && (
+                          <button
+                            type="button"
+                            data-testid="desktop-replace-supabase-key-btn"
+                            onClick={() => {
+                              setReplaceDbKeyError(null);
+                              setReplaceDbKeyPinInput('');
+                              if (!canUserReplaceSupabaseKey(currentUser)) {
+                                setReplaceDbKeyError(
+                                  tr(
+                                    language,
+                                    'Action réservée aux administrateurs connectés (rôles 0 ou 1).',
+                                    'Action restricted to logged-in administrators (roles 0 or 1).',
+                                    'Actie voorbehouden aan ingelogde beheerders (rol 0 of 1).'
+                                  )
+                                );
+                                return;
+                              }
+                              setShowReplaceDbKeyPinPrompt(true);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-bold text-orange-600 hover:text-orange-700 cursor-pointer"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>
+                              {tr(language, 'Remplacer la clé', 'Replace key', 'Sleutel vervangen')}
+                            </span>
+                          </button>
+                        )}
                       </div>
+
+                      {isDbKeyLocked ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            readOnly
+                            data-testid="desktop-masked-supabase-key-input"
+                            value={maskSupabaseAnonKey(supabaseKey || dbKeyInput)}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 font-mono text-slate-600 dark:text-slate-300 select-none"
+                          />
+                          {replaceDbKeyError && (
+                            <div className="text-xs font-bold text-rose-600 dark:text-rose-400">
+                              {replaceDbKeyError}
+                            </div>
+                          )}
+                          {showReplaceDbKeyPinPrompt && (
+                            <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-orange-300 dark:border-orange-800 space-y-2">
+                              <div className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                                {tr(
+                                  language,
+                                  'Saisissez votre code PIN ou mot de passe administrateur pour remplacer la clé :',
+                                  'Enter your administrator PIN or password to replace the key:',
+                                  'Voer uw beheerderspincode of wachtwoord in om de sleutel te vervangen:'
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="password"
+                                  value={replaceDbKeyPinInput}
+                                  onChange={(e) => {
+                                    setReplaceDbKeyPinInput(e.target.value);
+                                    setReplaceDbKeyError(null);
+                                  }}
+                                  placeholder={tr(
+                                    language,
+                                    'Code PIN ou mot de passe',
+                                    'PIN or password',
+                                    'Pincode of wachtwoord'
+                                  )}
+                                  className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={isVerifyingReplaceDbPin}
+                                  onClick={async () => {
+                                    setIsVerifyingReplaceDbPin(true);
+                                    setReplaceDbKeyError(null);
+                                    try {
+                                      const client =
+                                        supabaseUrl && supabaseKey
+                                          ? getClientSupabase(supabaseUrl, supabaseKey)
+                                          : null;
+                                      const res = await verifyUserPinOrPasswordForKeyReplacement({
+                                        user: currentUser,
+                                        secretInput: replaceDbKeyPinInput,
+                                        requireAdminRole: true,
+                                        verifyPasswordFn: client
+                                          ? async (email, password) => {
+                                              const { error } =
+                                                await client.auth.signInWithPassword({
+                                                  email,
+                                                  password,
+                                                });
+                                              return !error;
+                                            }
+                                          : undefined,
+                                        onAuditLog: () => {
+                                          logAuditEventServer(
+                                            {
+                                              category: 'SECURITY',
+                                              type: 'SUPABASE_KEY_REPLACED',
+                                              severity: 'WARNING',
+                                              title:
+                                                'Déverrouillage pour remplacement de la clé Supabase (Desktop)',
+                                              meta: {
+                                                actor_id: currentUser?.id,
+                                                host: dbUrlInput || supabaseUrl,
+                                              },
+                                            },
+                                            client
+                                          ).catch(() => {});
+                                        },
+                                      });
+                                      if (!res.allowed) {
+                                        setReplaceDbKeyError(
+                                          res.message ||
+                                            tr(
+                                              language,
+                                              'Code PIN ou mot de passe incorrect.',
+                                              'Incorrect PIN or password.',
+                                              'Onjuiste pincode of wachtwoord.'
+                                            )
+                                        );
+                                        return;
+                                      }
+                                      setDbKeyInput('');
+                                      setShowDbKey(false);
+                                      setIsDbKeyLocked(false);
+                                      setShowReplaceDbKeyPinPrompt(false);
+                                      setReplaceDbKeyPinInput('');
+                                    } finally {
+                                      setIsVerifyingReplaceDbPin(false);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs cursor-pointer disabled:opacity-50"
+                                >
+                                  {tr(language, 'Confirmer', 'Confirm', 'Bevestigen')}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowReplaceDbKeyPinPrompt(false);
+                                    setReplaceDbKeyPinInput('');
+                                    setReplaceDbKeyError(null);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-bold cursor-pointer"
+                                >
+                                  {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <input
+                            type={showDbKey ? 'text' : 'password'}
+                            value={dbKeyInput}
+                            onChange={(e) => {
+                              const nextVal = e.target.value;
+                              const check = validateSupabaseAnonKey(nextVal);
+                              if (check.errorCode === 'FORBIDDEN_SECRET_KEY') {
+                                setErrorMessage(check.errorMessage!);
+                                return;
+                              }
+                              setDbKeyInput(nextVal);
+                            }}
+                            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                            className="w-full pl-3 pr-9 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowDbKey((v) => !v)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                            title={showDbKey ? 'Masquer la clé' : 'Afficher la clé'}
+                          >
+                            {showDbKey ? (
+                              <EyeOff className="w-4 h-4" />
+                            ) : (
+                              <Eye className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="col-span-12 flex flex-wrap items-center justify-between gap-2 pt-2">
@@ -4777,6 +5324,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             setIsBusyDb(true);
                             try {
                               saveSupabaseConfig(validation.normalizedUrl, cleanKey);
+                              setShowDbKey(false);
+                              setIsDbKeyLocked(true);
+                              setShowReplaceDbKeyPinPrompt(false);
                               const ok = await syncFromSupabase(
                                 validation.normalizedUrl,
                                 cleanKey
@@ -4856,6 +5406,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             resetToDemoData();
                             setDbUrlInput('');
                             setDbKeyInput('');
+                            setShowDbKey(false);
+                            setIsDbKeyLocked(false);
+                            setShowReplaceDbKeyPinPrompt(false);
                             setDbTestSummary(null);
                             setSaveMessage(' Stockage local de démonstration rétabli.');
                           }}

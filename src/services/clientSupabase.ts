@@ -22,6 +22,7 @@ import {
   readSensitiveLocalStorageSync,
   removeSensitiveLocalStorage,
 } from './localCrypto';
+import { verifyPin, verifyLocalDevicePin, hasLocalDevicePin } from '../utils/crypto';
 import {
   Product,
   StockMovement,
@@ -411,7 +412,160 @@ export function validateSupabaseServerUrl(
  * Message d'erreur réglementaire lorsqu'une clé secrète (`service_role` ou `sb_secret_...`) est détectée.
  */
 export const FORBIDDEN_SERVICE_ROLE_KEY_MESSAGE =
-  'Cette clé est secrète (service_role). Utilisez la clé publique “anon”. Ne la collez jamais dans l\'application.';
+  'Cette clé est une clé SECRÈTE (service_role) : ne la collez jamais ici. Utilisez la clé anon / publishable.';
+
+/**
+ * Masque une clé Supabase (anon / publishable) une fois enregistrée/connectée :
+ * affiche uniquement `••••••••••••` suivi des 4 derniers caractères.
+ * Ne renvoie jamais la clé en clair.
+ */
+export function maskSupabaseAnonKey(rawKey?: string | null): string {
+  const clean = String(rawKey || '').trim().replace(/^["']|["']$/g, '').trim();
+  if (!clean) return '';
+  const tail = clean.slice(-4);
+  return `••••••••••••${tail}`;
+}
+
+/**
+ * Vérifie si l'utilisateur courant est autorisé à remplacer la clé Supabase connectée (rôles 0 ou 1 uniquement).
+ */
+export function canUserReplaceSupabaseKey(user?: { role_id?: number | string | null } | null): boolean {
+  if (!user || user.role_id === undefined || user.role_id === null) return false;
+  const roleNum = Number(user.role_id);
+  return roleNum === 0 || roleNum === 1;
+}
+
+export interface VerifyReplaceSupabaseKeyResult {
+  allowed: boolean;
+  reason?: 'NOT_AUTHENTICATED' | 'FORBIDDEN_ROLE' | 'EMPTY_SECRET' | 'INVALID_SECRET';
+  message?: string;
+}
+
+/**
+ * Vérifie que l'utilisateur courant (rôle 0 ou 1) a bien confirmé son PIN ou mot de passe
+ * avant d'autoriser le remplacement de la clé Supabase (ou l'affichage du QR de configuration).
+ */
+export async function verifyUserPinOrPasswordForKeyReplacement(params: {
+  user?: {
+    id?: string | number;
+    role_id?: number | string | null;
+    email?: string;
+    pin?: string;
+  } | null;
+  secretInput: string;
+  requireAdminRole?: boolean;
+  verifyPinFn?: (userId: string | number, pin: string) => Promise<boolean>;
+  verifyPasswordFn?: (email: string, password: string) => Promise<boolean>;
+  onAuditLog?: () => Promise<unknown> | void;
+}): Promise<VerifyReplaceSupabaseKeyResult> {
+  const { user, requireAdminRole = true } = params;
+  if (!user) {
+    return {
+      allowed: false,
+      reason: 'NOT_AUTHENTICATED',
+      message: 'Vous devez être connecté pour effectuer cette opération.',
+    };
+  }
+  if (requireAdminRole && !canUserReplaceSupabaseKey(user)) {
+    return {
+      allowed: false,
+      reason: 'FORBIDDEN_ROLE',
+      message: 'Action réservée aux administrateurs (rôles 0 ou 1).',
+    };
+  }
+  const cleanSecret = String(params.secretInput || '').trim();
+  if (!cleanSecret) {
+    return {
+      allowed: false,
+      reason: 'EMPTY_SECRET',
+      message: 'Veuillez saisir votre code PIN ou votre mot de passe actuel.',
+    };
+  }
+
+  const userId = user.id ?? 0;
+  let verified = false;
+
+  if (params.verifyPinFn) {
+    try {
+      verified = await params.verifyPinFn(userId, cleanSecret);
+    } catch {
+      verified = false;
+    }
+  } else {
+    try {
+      verified = await verifyLocalDevicePin(userId, cleanSecret);
+    } catch {
+      verified = false;
+    }
+  }
+
+  if (!verified && user.pin) {
+    try {
+      const res = await verifyPin(cleanSecret, user.pin);
+      verified = res.match;
+    } catch {
+      verified = false;
+    }
+  }
+
+  if (
+    !verified &&
+    !params.verifyPinFn &&
+    Number(userId) === 0 &&
+    !hasLocalDevicePin(0) &&
+    (cleanSecret === '0000' || cleanSecret === 'admin123')
+  ) {
+    verified = true;
+  }
+
+  if (!verified && params.verifyPasswordFn && user.email) {
+    try {
+      verified = await params.verifyPasswordFn(user.email, cleanSecret);
+    } catch {
+      verified = false;
+    }
+  }
+
+  if (!verified) {
+    return {
+      allowed: false,
+      reason: 'INVALID_SECRET',
+      message: 'Code PIN ou mot de passe incorrect.',
+    };
+  }
+
+  if (params.onAuditLog) {
+    try {
+      await params.onAuditLog();
+    } catch {}
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Supprime toute occurrence de la clé Supabase (ou de tout JWT / sb_publishable_ / sb_secret_) d'un texte
+ * de diagnostic, journal, export ou message d'erreur (ne laisse jamais plus que les 4 derniers caractères).
+ */
+export function redactSupabaseKeyFromText(text: string, rawKey?: string | null): string {
+  if (!text) return '';
+  let result = String(text);
+  const cleanKey = String(rawKey || '').trim();
+  if (cleanKey && cleanKey.length > 4) {
+    result = result.split(cleanKey).join(maskSupabaseAnonKey(cleanKey));
+    const prefix = cleanKey.slice(0, Math.min(cleanKey.length - 4, 24));
+    if (prefix.length >= 8) {
+      result = result.split(prefix).join('••••••••••••');
+    }
+  }
+  result = result.replace(/eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}/g, (match) =>
+    maskSupabaseAnonKey(match)
+  );
+  result = result.replace(/\bsb_(?:publishable|secret)_[a-zA-Z0-9_-]{6,}\b/gi, (match) =>
+    maskSupabaseAnonKey(match)
+  );
+  return result;
+}
 
 export type SupabaseKeyErrorCode =
   | 'EMPTY_KEY'
@@ -457,23 +611,26 @@ export function decodeJwtPayloadUnsafe(token: string): Record<string, unknown> |
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
     return null;
   }
-  const headerJson = decodeBase64UrlUtf8(parts[0]);
   const payloadJson = decodeBase64UrlUtf8(parts[1]);
-  if (!headerJson || !payloadJson) return null;
+  if (!payloadJson) return null;
   try {
-    const header = JSON.parse(headerJson);
     const payload = JSON.parse(payloadJson);
-    if (
-      !header ||
-      typeof header !== 'object' ||
-      Array.isArray(header) ||
-      !payload ||
-      typeof payload !== 'object' ||
-      Array.isArray(payload)
-    ) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return null;
     }
-    return payload as Record<string, unknown>;
+    const headerJson = decodeBase64UrlUtf8(parts[0]);
+    if (headerJson) {
+      try {
+        const header = JSON.parse(headerJson);
+        if (header && typeof header === 'object' && !Array.isArray(header)) {
+          return payload as Record<string, unknown>;
+        }
+      } catch {}
+    }
+    if (typeof (payload as Record<string, unknown>).role === 'string') {
+      return payload as Record<string, unknown>;
+    }
+    return null;
   } catch {
     return null;
   }

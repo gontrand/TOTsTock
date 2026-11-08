@@ -2,6 +2,19 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getClientSupabase } from './clientSupabase';
 import type { Language } from '../i18n/translations';
 import { tr } from '../i18n/dutchTranslator';
+import {
+  ORDER_AUDIT_EVENT_TYPES,
+  OrderAuditEventType,
+  isOrderAuditEventType,
+  getOrderAuditEventLabel,
+} from './orderTraceabilityService';
+
+export {
+  ORDER_AUDIT_EVENT_TYPES,
+  isOrderAuditEventType,
+  getOrderAuditEventLabel,
+};
+export type { OrderAuditEventType };
 
 export type AuditLogCategory =
   | 'USERS'
@@ -154,12 +167,17 @@ const FORBIDDEN_EXPORT_CONTENT_KEYS = new Set([
 export function isSensitiveAuditKey(key: string): boolean {
   const k = String(key || '').trim().toLowerCase();
   if (!k) return false;
-  if (SENSITIVE_KEY_EXACT.has(k)) return true;
+  if (SENSITIVE_KEY_EXACT.has(k) || k === 'supabase_key' || k === 'anon_key' || k === 'company_key') {
+    return true;
+  }
   if (
     k.includes('password') ||
     k.includes('secret') ||
     k.includes('api_key') ||
     k.includes('apikey') ||
+    k.includes('supabase_key') ||
+    k.includes('anon_key') ||
+    k.includes('company_key') ||
     k.includes('token') ||
     k.includes('pin')
   ) {
@@ -168,9 +186,21 @@ export function isSensitiveAuditKey(key: string): boolean {
   return false;
 }
 
+function isKeyLikeStringValue(val: unknown): boolean {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (/^eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}$/.test(trimmed)) {
+    return true;
+  }
+  if (/^sb_(?:publishable|secret)_[a-zA-Z0-9_-]{6,}$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Nettoie récursivement un objet meta avant envoi au serveur :
- * - Remplace tout champ sensible (mot de passe, PIN, clé API, jeton) par '***'
+ * - Remplace tout champ sensible (mot de passe, PIN, clé API, clé Supabase, jeton) par '***'
  * - Supprime tout contenu métier volumineux d'export (rows_data, csv_content, etc.)
  */
 export function sanitizeAuditMeta(
@@ -185,7 +215,7 @@ export function sanitizeAuditMeta(
     if (FORBIDDEN_EXPORT_CONTENT_KEYS.has(lowerKey)) {
       continue;
     }
-    if (isSensitiveAuditKey(key)) {
+    if (isSensitiveAuditKey(key) || isKeyLikeStringValue(val)) {
       out[key] = '***';
     } else if (val && typeof val === 'object' && !Array.isArray(val)) {
       out[key] = sanitizeAuditMeta(val);
@@ -193,6 +223,8 @@ export function sanitizeAuditMeta(
       out[key] = val.slice(0, 50).map((item) =>
         item && typeof item === 'object' && !Array.isArray(item)
           ? sanitizeAuditMeta(item)
+          : isKeyLikeStringValue(item)
+          ? '***'
           : item
       );
     } else {
@@ -493,30 +525,143 @@ export function generateLoginLogsCsv(
 }
 
 /**
+ * Retourne un libellé lisible (FR/EN/NL) pour un type d'événement d'audit (notamment Commandes et Sécurité).
+ */
+export function getAuditEventDisplayLabel(
+  type: string,
+  language: Language = 'fr'
+): string {
+  const upper = String(type || '').trim().toUpperCase();
+  if (isOrderAuditEventType(upper)) {
+    return getOrderAuditEventLabel(upper, language);
+  }
+  if (upper === 'AUTO_LOGOUT_INACTIVITY') {
+    return tr(
+      language,
+      'Déconnexion automatique (inactivité)',
+      'Automatic logout (inactivity)',
+      'Automatisch afmelden (inactiviteit)'
+    );
+  }
+  if (upper === 'SUPABASE_KEY_REPLACED') {
+    return tr(
+      language,
+      'Remplacement de la clé Supabase',
+      'Supabase key replaced',
+      'Supabase-sleutel vervangen'
+    );
+  }
+  return type || '—';
+}
+
+/**
+ * Extrait l'identifiant ou le numéro de commande associé à une ligne du journal d'audit
+ * afin de permettre un lien cliquable vers la commande.
+ */
+export function extractOrderTargetFromAuditRow(
+  row?: Partial<ServerAuditLogRow> | null
+): { orderId?: string; orderNumber?: string } | null {
+  if (!row) return null;
+  const isOrderRow =
+    String(row.category || '').toUpperCase() === 'ORDERS' ||
+    isOrderAuditEventType(row.type || row.action) ||
+    row.table_name === 'stk_material_orders' ||
+    row.table_name === 'material_orders';
+
+  if (!isOrderRow) return null;
+
+  const meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
+  const snapshot = meta.snapshot && typeof meta.snapshot === 'object' ? meta.snapshot : {};
+  const orderId =
+    (row.record_id && String(row.record_id).trim()) ||
+    (meta.order_id && String(meta.order_id).trim()) ||
+    (meta.record_id && String(meta.record_id).trim()) ||
+    (snapshot.id && String(snapshot.id).trim()) ||
+    undefined;
+  const orderNumber =
+    (meta.order_number && String(meta.order_number).trim()) ||
+    (snapshot.order_number && String(snapshot.order_number).trim()) ||
+    undefined;
+
+  if (!orderId && !orderNumber) return null;
+  return { orderId, orderNumber };
+}
+
+/**
  * Appel fire-and-forget de `log_audit_event` côté serveur.
  * Ne bloque jamais l'interface et masque systématiquement tout secret.
  */
 export async function logAuditEventServer(
-  params: {
-    category: AuditLogCategory;
-    type: string;
-    title: string;
-    description?: string;
-    severity?: AuditLogSeverity;
-    meta?: Record<string, any>;
-  },
-  explicitClient?: SupabaseClient | null
+  paramsOrClient:
+    | {
+        category: AuditLogCategory;
+        type: string;
+        title: string;
+        description?: string;
+        severity?: AuditLogSeverity | 'WARN';
+        meta?: Record<string, any>;
+        details?: Record<string, any>;
+      }
+    | SupabaseClient
+    | null,
+  explicitClientOrParams?:
+    | SupabaseClient
+    | null
+    | {
+        category: AuditLogCategory;
+        type: string;
+        title: string;
+        description?: string;
+        severity?: AuditLogSeverity | 'WARN';
+        meta?: Record<string, any>;
+        details?: Record<string, any>;
+      }
 ): Promise<void> {
   try {
+    const isFirstArgParams =
+      paramsOrClient &&
+      typeof paramsOrClient === 'object' &&
+      'category' in paramsOrClient &&
+      'type' in paramsOrClient;
+
+    const params = isFirstArgParams
+      ? (paramsOrClient as {
+          category: AuditLogCategory;
+          type: string;
+          title: string;
+          description?: string;
+          severity?: AuditLogSeverity | 'WARN';
+          meta?: Record<string, any>;
+          details?: Record<string, any>;
+        })
+      : (explicitClientOrParams as {
+          category: AuditLogCategory;
+          type: string;
+          title: string;
+          description?: string;
+          severity?: AuditLogSeverity | 'WARN';
+          meta?: Record<string, any>;
+          details?: Record<string, any>;
+        });
+
+    if (!params || !params.category || !params.type) return;
+
+    const explicitClient = isFirstArgParams
+      ? (explicitClientOrParams as SupabaseClient | null | undefined)
+      : (paramsOrClient as SupabaseClient | null | undefined);
+
     const client = explicitClient ?? getClientSupabase();
     if (!client) return;
-    const safeMeta = sanitizeAuditMeta(params.meta);
+    const rawMeta = params.meta ?? params.details;
+    const safeMeta = sanitizeAuditMeta(rawMeta);
+    const normSeverity =
+      params.severity === 'WARN' ? 'WARNING' : params.severity ?? 'INFO';
     await client.rpc('log_audit_event', {
       p_category: params.category,
       p_type: params.type,
       p_title: params.title,
       p_description: params.description ?? null,
-      p_severity: params.severity ?? 'INFO',
+      p_severity: normSeverity,
       p_meta: safeMeta,
     });
   } catch {

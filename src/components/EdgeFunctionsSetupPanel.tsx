@@ -25,6 +25,7 @@ import {
 import {
   EDGE_FN_BUNDLE_ADMIN_USERS,
   EDGE_FN_BUNDLE_MASTER_LICENSES,
+  EDGE_FN_BUNDLE_PASSWORD_RESET,
   EDGE_FN_BUNDLE_SEND_REPORT_EMAIL,
   EDGE_FN_BUNDLE_SYNC_LICENSE,
 } from '../constants/supabaseScripts';
@@ -34,6 +35,7 @@ import {
   normalizeSupabaseUrl,
   validateSupabaseAnonKey,
 } from '../services/clientSupabase';
+import { copyToClipboard, CLIPBOARD_COPY_FAILURE_LABEL } from '../services/clipboard';
 import { tr } from '../i18n/dutchTranslator';
 import { Language } from '../i18n/translations';
 
@@ -100,6 +102,23 @@ export const CLIENT_EDGE_FUNCTION_ITEMS: ClientFunctionCardItem[] = [
     secretsNoteEn: 'Required secrets: BREVO_API_KEY (and optionally REPORT_FROM_EMAIL, REPORT_FROM_NAME)',
     secretsNoteNl: 'Vereiste secrets: BREVO_API_KEY (en optioneel REPORT_FROM_EMAIL, REPORT_FROM_NAME)',
   },
+  {
+    key: 'passwordReset',
+    exactName: EDGE_FUNCTIONS.passwordReset,
+    code: EDGE_FN_BUNDLE_PASSWORD_RESET,
+    roleFr:
+      'Envoie un code de réinitialisation à 6 chiffres à usage unique (15 min) par e-mail et applique le nouveau mot de passe sans lien externe (compatible Web, APK et Desktop).',
+    roleEn:
+      'Sends a one-time 6-digit password reset code (15 min) by email and applies the new password without external redirect links (Web, APK, and Desktop compatible).',
+    roleNl:
+      'Verzendt een eenmalige 6-cijferige herstelcode (15 min) per e-mail en past het nieuwe wachtwoord toe zonder externe link (compatibel met Web, APK en Desktop).',
+    secretsNoteFr:
+      'Secrets requis : aucun secret tiers supplémentaire (utilise l’expéditeur configuré dans Paramètres > E-mails et SUPABASE_SERVICE_ROLE_KEY ; laisser « Verify JWT » activé)',
+    secretsNoteEn:
+      'Required secrets: no extra third-party secret (uses the sender configured in Settings > Emails and SUPABASE_SERVICE_ROLE_KEY; leave "Verify JWT" enabled)',
+    secretsNoteNl:
+      'Vereiste secrets: geen extra extern secret (gebruikt de afzender uit Instellingen > E-mails en SUPABASE_SERVICE_ROLE_KEY; laat "Verify JWT" ingeschakeld)',
+  },
 ];
 
 export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = ({
@@ -116,14 +135,17 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
   const [pingResults, setPingResults] = useState<Partial<Record<ClientEdgeFunctionKey, EdgeFunctionPingItemResult>>>({});
   const [globalError, setGlobalError] = useState<string | null>(null);
 
-  const handleCopy = (text: string, id: string) => {
-    try {
-      navigator.clipboard.writeText(text);
-    } catch {}
+  const handleCopy = async (text: string, id: string) => {
+    const ok = await copyToClipboard(text);
+    if (!ok) {
+      setGlobalError(CLIPBOARD_COPY_FAILURE_LABEL);
+      return;
+    }
+    setGlobalError(null);
     setCopiedId(id);
     setTimeout(() => {
       setCopiedId((prev) => (prev === id ? null : prev));
-    }, 2200);
+    }, 2000);
   };
 
   const resolveClient = (): { client: ReturnType<typeof getClientSupabase>; keyError?: string } => {
@@ -192,9 +214,9 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
       setGlobalError(
         tr(
           language,
-          'Configurez d’abord l’URL et la clé Supabase pour tester les 3 fonctions Edge.',
-          'Configure the Supabase URL and key first to test all 3 Edge Functions.',
-          'Configureer eerst de Supabase-URL en -sleutel om alle 3 Edge Functions te testen.'
+          'Configurez d’abord l’URL et la clé Supabase pour tester les 4 fonctions Edge.',
+          'Configure the Supabase URL and key first to test all 4 Edge Functions.',
+          'Configureer eerst de Supabase-URL en -sleutel om alle 4 Edge Functions te testen.'
         )
       );
       return;
@@ -208,7 +230,7 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
       }
       setPingResults(next);
     } catch (err: any) {
-      setGlobalError(err?.message || 'Erreur lors du test des 3 fonctions Edge.');
+      setGlobalError(err?.message || 'Erreur lors du test des 4 fonctions Edge.');
     } finally {
       setTestingKey(null);
     }
@@ -292,9 +314,9 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
             <span>
               {tr(
                 language,
-                'Tester les 3 fonctions',
-                'Test all 3 functions',
-                'Test alle 3 functies'
+                'Tester les 4 fonctions',
+                'Test all 4 functions',
+                'Test alle 4 functies'
               )}
             </span>
           </button>

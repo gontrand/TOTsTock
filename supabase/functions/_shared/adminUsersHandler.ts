@@ -764,3 +764,8 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
     return jsonResponse({ success: false, error: err?.message || 'Erreur inattendue serveur' }, 500);
   }
 }
+
+export function createAdminUsersHandler() {
+  return handleAdminUsersRequest;
+}
+

@@ -153,11 +153,12 @@ export function isAllowedExternalUrl(rawUrl) {
 
 /**
  * Vérifie si une demande de permission Chromium est autorisée.
- * Seule la permission `media` (caméra pour le scan de codes-barres / QR) est accordée
+ * Seules les permissions `media` (caméra pour le scan de codes-barres / QR) et
+ * `clipboard-sanitized-write` (écriture presse-papiers uniquement, jamais lecture) sont accordées
  * et uniquement pour l'origine `app://tot`.
  */
 export function isAllowedPermissionRequest(permission, requestingUrl) {
-  if (permission !== 'media') {
+  if (permission !== 'media' && permission !== 'clipboard-sanitized-write') {
     return false;
   }
   return isAllowedNavigationUrl(requestingUrl);

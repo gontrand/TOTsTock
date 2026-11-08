@@ -2,6 +2,7 @@ import React from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { getUserVehicles } from '../utils/crypto';
+import { getTargetedOrderNotificationsForUser } from '../services/notificationService';
 import {
   X,
   ArrowDownCircle,
@@ -28,7 +29,12 @@ export const ActionSheet: React.FC = () => {
     isPreparer,
     currentUser,
     depots,
+    depotHolders,
     departments,
+    projects,
+    roles,
+    users,
+    dismissedNotificationKeys,
     canTransferBetweenDepots,
     openStockTransferModal,
     language,
@@ -61,12 +67,24 @@ export const ActionSheet: React.FC = () => {
   const canCreate = userHasPermission('perm_action_create_prod') || userHasPermission('perm_prod_edit');
   const canOrderPrep = isPreparer || userHasPermission('perm_menu_order_prep');
 
-  const pendingPrepCount = orders.filter((o) => o.status === 'PENDING').length;
-  const userHasReadyOrder = orders.some(
-    (o) =>
-      (String(o.requester_id) === String(currentUser?.id) ||
-        (o.requester_name && o.requester_name.toLowerCase() === currentUser?.name?.toLowerCase())) &&
-      o.status === 'READY'
+  const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
+    user: currentUser,
+    orders,
+    users,
+    departments,
+    projects,
+    depots,
+    depotHolders,
+    roles,
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const pendingPrepCount = targetedOrderNotifs.filter(
+    (n) => n.notificationType === 'ORDER_PENDING_PREP'
+  ).length;
+  const userHasReadyOrder = targetedOrderNotifs.some(
+    (n) =>
+      n.notificationType === 'ORDER_READY' ||
+      n.notificationType === 'ORDER_PICKUP_DELEGATED'
   );
 
   const handleOpenScan = (mode: 'OUT' | 'IN') => {

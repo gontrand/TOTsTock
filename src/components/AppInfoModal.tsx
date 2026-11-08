@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import { APP_VERSION } from '../appVersion';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { buildApkDownloadUrl, fetchApkSha256 } from '../utils/apkDownload';
+import { copyToClipboard } from '../services/clipboard';
 import { AboutAppPanel } from './AboutAppPanel';
 import {
   X,
@@ -184,10 +185,12 @@ export const AppInfoModal: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  navigator.clipboard?.writeText(apkSha256);
-                  setCopiedSha(true);
-                  setTimeout(() => setCopiedSha(false), 2000);
+                onClick={async () => {
+                  const ok = await copyToClipboard(apkSha256);
+                  if (ok) {
+                    setCopiedSha(true);
+                    setTimeout(() => setCopiedSha(false), 2000);
+                  }
                 }}
                 className="px-2 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 font-bold text-[10px] flex items-center gap-1 shrink-0 cursor-pointer"
               >

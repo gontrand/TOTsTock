@@ -368,7 +368,7 @@ describe('Tâche 4 — Versions Android, absence d’APK embarqué et empreinte 
     const versionCodeJson = JSON.parse(
       fs.readFileSync(path.join(rootDir, 'android/version-code.json'), 'utf-8')
     );
-    expect(versionCodeJson.versionCode).toBe(9);
+    expect(versionCodeJson.versionCode).toBe(12);
     expect(gradle).toContain(`versionName "${APP_VERSION}"`);
     expect(gradle).toContain(`versionCode ${versionCodeJson.versionCode}`);
   });

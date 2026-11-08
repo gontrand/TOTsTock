@@ -17,6 +17,12 @@ import {
   Send,
 } from 'lucide-react';
 import { hasLocalDevicePin } from '../utils/crypto';
+import {
+  sanitizeSixDigitCodeInput,
+  computePasswordStrength,
+  validateResetPassword,
+  RESET_RESEND_COOLDOWN_SECONDS,
+} from '../services/passwordResetService';
 
 export const LoginModal: React.FC = () => {
   const {
@@ -47,21 +53,37 @@ export const LoginModal: React.FC = () => {
   });
   const [password, setPassword] = useState<string>('');
   const [authMode, setAuthMode] = useState<'password' | 'pin'>('password');
+  const isLocalPinMode = authMode === 'pin';
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Forgot password view states
+  // Forgot password view states (2-step 6-digit code flow)
   const [forgotPasswordMode, setForgotPasswordMode] = useState<boolean>(false);
   const [resetEmailSent, setResetEmailSent] = useState<boolean>(false);
+  const [resendCooldown, setResendCooldown] = useState<number>(0);
   const [recoveryCode, setRecoveryCode] = useState<string>('');
   const [recoveryNewPassword, setRecoveryNewPassword] = useState<string>('');
   const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState<string>('');
 
-  // Forced password reset state when user.must_change_pin is true or when returning from email recovery link
+  // Forced password reset state when user.must_change_pin is true
   const [mustResetPinUser, setMustResetPinUser] = useState<any | null>(null);
   const [newPassword, setNewPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
+
+  // 60s countdown timer for "Renvoyer le code"
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
+  const recoveryPasswordStrength = useMemo(
+    () => computePasswordStrength(recoveryNewPassword),
+    [recoveryNewPassword]
+  );
 
   // Auto-sync company settings & license when LoginModal opens and DB is connected
   useEffect(() => {
@@ -142,8 +164,10 @@ export const LoginModal: React.FC = () => {
     }
   };
 
-  const handleRequestForgotPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleRequestForgotPassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (resendCooldown > 0) return;
+
     const targetEmail = email.trim().toLowerCase();
     if (!targetEmail || !targetEmail.includes('@')) {
       setErrorMsg(
@@ -161,30 +185,33 @@ export const LoginModal: React.FC = () => {
     if (!res.success) {
       setErrorMsg(res.message);
     } else {
-      setSuccessMsg(res.message);
+      setSuccessMsg(res.message || 'Si ce compte existe, un code a été envoyé.');
       setResetEmailSent(true);
+      setResendCooldown(RESET_RESEND_COOLDOWN_SECONDS);
     }
   };
 
   const handleVerifyRecoveryCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const targetEmail = email.trim().toLowerCase();
-    if (recoveryNewPassword.length < 6) {
+    const cleanCode = sanitizeSixDigitCodeInput(recoveryCode);
+    if (cleanCode.length !== 6) {
       setErrorMsg(
-        tr(language, 'Le nouveau mot de passe doit comporter au moins 6 caractères.', 'New password must be at least 6 characters.')
+        tr(language, 'Veuillez saisir le code à 6 chiffres reçu par e-mail.', 'Please enter the 6-digit code received by email.')
       );
       return;
     }
-    if (recoveryNewPassword !== recoveryConfirmPassword) {
-      setErrorMsg(
-        tr(language, 'Les deux mots de passe ne correspondent pas.', 'Passwords do not match.')
-      );
+
+    const pwdCheck = validateResetPassword(recoveryNewPassword, recoveryConfirmPassword);
+    if (!pwdCheck.valid) {
+      setErrorMsg(pwdCheck.error || 'Mot de passe invalide.');
       return;
     }
 
     setLoading(true);
     setErrorMsg('');
-    const res = await verifyPasswordResetOtp(targetEmail, recoveryCode, recoveryNewPassword);
+    setSuccessMsg('');
+    const res = await verifyPasswordResetOtp(targetEmail, cleanCode, recoveryNewPassword);
     setLoading(false);
 
     if (!res.success) {
@@ -192,10 +219,19 @@ export const LoginModal: React.FC = () => {
     } else {
       setForgotPasswordMode(false);
       setResetEmailSent(false);
+      setResendCooldown(0);
       setRecoveryCode('');
       setRecoveryNewPassword('');
       setRecoveryConfirmPassword('');
       setPassword('');
+      setSuccessMsg(
+        res.message ||
+          tr(
+            language,
+            'Mot de passe modifié. Vous pouvez maintenant vous connecter.',
+            'Password updated. You can now sign in.'
+          )
+      );
     }
   };
 
@@ -421,7 +457,11 @@ export const LoginModal: React.FC = () => {
         ) : forgotPasswordMode ? (
           <div className="space-y-4 animate-fadeIn">
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {tr(language, 'Saisissez votre adresse e-mail professionnelle pour recevoir un lien ou code de réinitialisation de votre mot de passe.', 'Enter your work email address to receive a password reset link or recovery code.')}
+              {tr(
+                language,
+                'Saisissez votre adresse e-mail professionnelle pour recevoir un code à 6 chiffres à usage unique (valable 15 minutes).',
+                'Enter your work email address to receive a one-time 6-digit code (valid for 15 minutes).'
+              )}
             </p>
 
             <form onSubmit={handleRequestForgotPassword} className="space-y-3">
@@ -437,7 +477,7 @@ export const LoginModal: React.FC = () => {
                   placeholder="nom@entreprise.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  autoFocus
+                  autoFocus={!resetEmailSent}
                   required
                   className="w-full px-3 py-2.5 text-sm font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none transition"
                 />
@@ -445,18 +485,37 @@ export const LoginModal: React.FC = () => {
 
               <button
                 type="submit"
-                disabled={loading || !email.trim()}
+                disabled={loading || !email.trim() || resendCooldown > 0}
                 className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-bold text-xs shadow-md shadow-orange-500/25 flex items-center justify-center gap-2 active:scale-[0.98] transition disabled:opacity-50 cursor-pointer"
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>
                   {loading
                     ? t('common_loading')
-                    : resetEmailSent
-                      ? tr(language, "Renvoyer l'e-mail de réinitialisation", 'Resend reset email')
-                      : tr(language, 'Envoyer le lien de réinitialisation', 'Send reset link')}
+                    : resendCooldown > 0
+                      ? tr(
+                          language,
+                          `Renvoyer le code (${resendCooldown}s)`,
+                          `Resend code (${resendCooldown}s)`
+                        )
+                      : resetEmailSent
+                        ? tr(language, 'Renvoyer le code', 'Resend code')
+                        : tr(language, 'Envoyer un code à 6 chiffres', 'Send 6-digit code')}
                 </span>
               </button>
+
+              {!resetEmailSent && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetEmailSent(true);
+                    setErrorMsg('');
+                  }}
+                  className="w-full text-[11px] font-semibold text-orange-600 dark:text-orange-400 hover:underline text-center cursor-pointer"
+                >
+                  {tr(language, "J'ai déjà reçu un code à 6 chiffres", 'I already have a 6-digit code')}
+                </button>
+              )}
             </form>
 
             {resetEmailSent && (
@@ -465,36 +524,91 @@ export const LoginModal: React.FC = () => {
                 className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-3 animate-fadeIn"
               >
                 <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
-                  {tr(language, "Si votre e-mail contient un code de récupération (6 chiffres / jeton), vous pouvez également le saisir directement ci-dessous :", 'If your email includes a recovery code, you can also enter it directly below:')}
+                  {tr(
+                    language,
+                    'Étape 2 : Saisissez le code à 6 chiffres reçu par e-mail et définissez votre nouveau mot de passe (6 à 72 caractères) :',
+                    'Step 2: Enter the 6-digit code received by email and set your new password (6 to 72 characters):'
+                  )}
                 </p>
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {tr(language, 'Code de récupération reçu', 'Recovery Code')}
+                    {tr(language, 'Code à 6 chiffres', '6-Digit Code')}
                   </label>
                   <input
                     type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    autoComplete="one-time-code"
+                    maxLength={6}
                     placeholder="123456"
                     value={recoveryCode}
-                    onChange={(e) => setRecoveryCode(e.target.value)}
+                    onChange={(e) => setRecoveryCode(sanitizeSixDigitCodeInput(e.target.value))}
+                    onPaste={(e) => {
+                      const pasted = e.clipboardData?.getData('text') || '';
+                      const clean = sanitizeSixDigitCodeInput(pasted);
+                      if (clean) {
+                        e.preventDefault();
+                        setRecoveryCode(clean);
+                      }
+                    }}
+                    autoFocus
                     required
-                    className="w-full px-3 py-2 text-center tracking-widest text-sm font-bold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none transition"
+                    className="w-full px-3 py-2.5 text-center tracking-[0.5em] text-lg font-black font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none transition"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {tr(language, 'Nouveau mot de passe (min. 6 caractères)', 'New Password (min. 6 chars)')}
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                      {tr(
+                        language,
+                        'Nouveau mot de passe (6–72 caractères)',
+                        'New Password (6–72 chars)'
+                      )}
+                    </label>
+                    {recoveryNewPassword.length > 0 && (
+                      <span
+                        className={`text-[10px] font-bold ${
+                          recoveryPasswordStrength.score >= 3
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : recoveryPasswordStrength.score === 2
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                        }`}
+                      >
+                        {recoveryPasswordStrength.label}
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="password"
                     minLength={6}
+                    maxLength={72}
                     placeholder="••••••••"
                     value={recoveryNewPassword}
                     onChange={(e) => setRecoveryNewPassword(e.target.value)}
                     required
                     className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none transition"
                   />
+                  {recoveryNewPassword.length > 0 && (
+                    <div className="mt-1.5 grid grid-cols-4 gap-1">
+                      {[1, 2, 3, 4].map((step) => (
+                        <div
+                          key={step}
+                          className={`h-1 rounded-full transition-colors ${
+                            recoveryPasswordStrength.score >= step
+                              ? recoveryPasswordStrength.score >= 3
+                                ? 'bg-emerald-500'
+                                : recoveryPasswordStrength.score === 2
+                                  ? 'bg-amber-500'
+                                  : 'bg-rose-500'
+                              : 'bg-slate-200 dark:bg-slate-700'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -504,6 +618,7 @@ export const LoginModal: React.FC = () => {
                   <input
                     type="password"
                     minLength={6}
+                    maxLength={72}
                     placeholder="••••••••"
                     value={recoveryConfirmPassword}
                     onChange={(e) => setRecoveryConfirmPassword(e.target.value)}
@@ -516,8 +631,9 @@ export const LoginModal: React.FC = () => {
                   type="submit"
                   disabled={
                     loading ||
-                    !recoveryCode.trim() ||
+                    sanitizeSixDigitCodeInput(recoveryCode).length !== 6 ||
                     recoveryNewPassword.length < 6 ||
+                    recoveryNewPassword.length > 72 ||
                     recoveryConfirmPassword.length < 6
                   }
                   className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-50 cursor-pointer"
@@ -537,6 +653,7 @@ export const LoginModal: React.FC = () => {
               onClick={() => {
                 setForgotPasswordMode(false);
                 setResetEmailSent(false);
+                setResendCooldown(0);
                 setErrorMsg('');
                 setSuccessMsg('');
               }}
@@ -619,18 +736,6 @@ export const LoginModal: React.FC = () => {
                         : tr(language, 'Mot de passe', 'Password')}
                     </span>
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setForgotPasswordMode(true);
-                      setResetEmailSent(false);
-                      setErrorMsg('');
-                      setSuccessMsg('');
-                    }}
-                    className="text-[11px] font-semibold text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 hover:underline transition cursor-pointer"
-                  >
-                    {tr(language, 'Mot de passe oublié ?', 'Forgot password?')}
-                  </button>
                 </div>
 
                 {authMode === 'pin' ? (
@@ -659,6 +764,24 @@ export const LoginModal: React.FC = () => {
                     required
                     className="w-full px-3 py-2.5 text-base bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none transition"
                   />
+                )}
+
+                {!isLocalPinMode && !mustResetPinUser && !passwordRecoveryMode && !forgotPasswordMode && (
+                  <div className="flex justify-end mt-1">
+                    <button
+                      type="button"
+                      data-testid="forgot-password-link"
+                      onClick={() => {
+                        setForgotPasswordMode(true);
+                        setResetEmailSent(false);
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                      }}
+                      className="min-h-[44px] px-2 inline-flex items-center justify-end text-xs font-semibold text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 hover:underline transition cursor-pointer"
+                    >
+                      {tr(language, 'Mot de passe oublié ?', 'Forgot password?')}
+                    </button>
+                  </div>
                 )}
               </div>
 

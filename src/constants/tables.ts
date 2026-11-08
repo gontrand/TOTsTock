@@ -25,6 +25,7 @@ export const TABLES = {
   mailAccounts: 'core_mail_accounts',
   mailSenders: 'core_mail_senders',
   mailLog: 'core_mail_log',
+  passwordResets: 'core_password_resets',
 
   // Tables Stock (stk_)
   products: 'stk_products',

@@ -7,6 +7,7 @@ import {
   runDiagnosticInstallation,
   DiagnosticCheckRow,
 } from '../services/clientSupabase';
+import { copyToClipboard } from '../services/clipboard';
 import {
   X,
   Stethoscope,
@@ -158,19 +159,10 @@ export const DiagnosticModal: React.FC = () => {
 
   const handleCopyReport = async () => {
     const report = buildPlainTextReport();
-    try {
-      await navigator.clipboard.writeText(report);
+    const ok = await copyToClipboard(report);
+    if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = report;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 

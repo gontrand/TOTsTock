@@ -58,6 +58,7 @@ describe('Prompt v42 — Préfixes de tables core_ et stk_ pour la suite TOT (sc
         mailAccounts: 'core_mail_accounts',
         mailSenders: 'core_mail_senders',
         mailLog: 'core_mail_log',
+        passwordResets: 'core_password_resets',
 
         // Tables TOT Stock (stk_)
         products: 'stk_products',
@@ -160,10 +161,10 @@ describe('Prompt v42 — Préfixes de tables core_ et stk_ pour la suite TOT (sc
     });
   });
 
-  describe('3. Version de schéma 2.7.0 et traductions FR / EN / NL du diagnostic', () => {
-    it('définit EXPECTED_SCHEMA_VERSION = 2.7.0 et MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0', () => {
-      expect(APP_VERSION).toBe('5.13.0');
-      expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
+  describe('3. Version de schéma 2.10.0 et traductions FR / EN / NL du diagnostic', () => {
+    it('définit EXPECTED_SCHEMA_VERSION = 2.10.0 et MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0', () => {
+      expect(APP_VERSION).toBe('5.16.0');
+      expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
       expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
     });
 

@@ -521,12 +521,13 @@ export async function runTotInstall(options = {}) {
     }
 
     // =========================================================================
-    // ÉTAPE 3 — Déploiement des 3 Edge Functions (sans secret manuel)
+    // ÉTAPE 3 — Déploiement des 4 Edge Functions (sans secret manuel)
     // =========================================================================
     const edgeFunctions = [
       'APP_TOT-Stock_admin-users',
       'APP_TOT-Stock_licenses_sync-license',
       'APP_TOT-Stock_send-report-email',
+      'APP_TOT-Stock_password-reset',
     ];
     if (flags.noFunctions) {
       logStep(3, 'Edge Functions', 'ATTENTION', 'Déploiement des fonctions ignoré (--no-functions).');
@@ -574,7 +575,7 @@ export async function runTotInstall(options = {}) {
         } catch {}
       }
 
-      logStep(3, 'Edge Functions', 'OK', `3 fonctions déployées (${edgeFunctions.join(', ')}) sans secret manuel.`);
+      logStep(3, 'Edge Functions', 'OK', `4 fonctions déployées (${edgeFunctions.join(', ')}) sans secret manuel.`);
     }
 
     // =========================================================================

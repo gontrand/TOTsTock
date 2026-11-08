@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { generateSecureRandomHex } from '../utils/crypto';
+import { copyToClipboard } from '../services/clipboard';
 import {
   X,
   Database,
@@ -44,7 +45,15 @@ import {
   validateSupabaseServerUrl,
   validateSupabaseAnonKey,
   SupabaseUrlValidationResult,
+  maskSupabaseAnonKey,
+  canUserReplaceSupabaseKey,
+  verifyUserPinOrPasswordForKeyReplacement,
 } from '../services/clientSupabase';
+import { logAuditEventServer } from '../services/auditService';
+import {
+  COMPANY_POLICY_IDLE_OPTIONS,
+  normalizeCompanyMaxIdleMinutes,
+} from '../services/inactivityWatchdog';
 import { PLAN_LABELS, PLAN_TIERS, LicensePlan, LicenseInfo, getMaxDepotsForPlan, normalizeToCanonicalPlan, plan_limits } from '../types';
 import {
   normalizePlanType,
@@ -52,6 +61,7 @@ import {
   syncLicenseToClientDatabase,
   discoverLicenseByProjectUrl,
   readClientDatabaseLicenseStatus,
+  validateLicenseKeyInput,
   ClientDatabaseLicenseStatus,
 } from '../services/licenseService';
 import { masterSupabase } from '../services/masterSupabase';
@@ -73,9 +83,12 @@ import {
   SQL_SCRIPT_14_MAILING,
   SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS,
   SQL_SCRIPT_16_AUDIT_TRAIL,
+  SQL_SCRIPT_17_TRANSFERTS_VALIDES,
+  SQL_SCRIPT_18_PASSWORD_RESET,
   SQL_MASTER_LICENSES_SCHEMA,
 } from '../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from './EdgeFunctionsSetupPanel';
+import { SearchableSelect } from './SearchableSelect';
 
 export const CompanySetupModal: React.FC = () => {
   const {
@@ -105,6 +118,9 @@ export const CompanySetupModal: React.FC = () => {
     setDepotsModalOpen,
     userHasPermission,
     currentUser,
+    settings,
+    updateSetting,
+    isSupabaseConnected,
     language,
     t,
   } = useApp();
@@ -132,6 +148,13 @@ export const CompanySetupModal: React.FC = () => {
   const [url, setUrl] = useState(supabaseConfig?.url || '');
   const [key, setKey] = useState(supabaseConfig?.key || '');
   const [showKey, setShowKey] = useState(false);
+  const [isKeyLocked, setIsKeyLocked] = useState<boolean>(() =>
+    Boolean(isSupabaseConnected || (supabaseConfig?.url && supabaseConfig?.key))
+  );
+  const [showReplaceKeyPinPrompt, setShowReplaceKeyPinPrompt] = useState(false);
+  const [replaceKeyPinInput, setReplaceKeyPinInput] = useState('');
+  const [replaceKeyError, setReplaceKeyError] = useState<string | null>(null);
+  const [isVerifyingReplacePin, setIsVerifyingReplacePin] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
@@ -529,6 +552,9 @@ export const CompanySetupModal: React.FC = () => {
 
     // Mode 'save'
     saveSupabaseConfig(cleanUrl, cleanKey);
+    setShowKey(false);
+    setIsKeyLocked(true);
+    setShowReplaceKeyPinPrompt(false);
     setIsSyncing(true);
     setStatusMsg({
       type: 'info',
@@ -637,6 +663,9 @@ export const CompanySetupModal: React.FC = () => {
       resetToDemoData();
       setUrl('');
       setKey('');
+      setShowKey(false);
+      setIsKeyLocked(false);
+      setShowReplaceKeyPinPrompt(false);
       setTestResult(null);
       setStatusMsg({
         type: 'info',
@@ -652,11 +681,12 @@ export const CompanySetupModal: React.FC = () => {
 
   // License Activate Handler
   const handleVerifyLicense = async (keyToTest?: string) => {
-    const rawKey = keyToTest || licenseInput;
-    if (!rawKey.trim()) {
+    const rawKey = keyToTest ?? licenseInput;
+    const keyValidation = validateLicenseKeyInput(rawKey);
+    if (!keyValidation.valid) {
       setLicenseMsg({
         type: 'error',
-        text: tr(language, 'Veuillez saisir une clé de licence valide.', 'Please enter a valid license key.'),
+        text: keyValidation.error || "Ceci n'est pas une clé de licence",
       });
       return;
     }
@@ -664,7 +694,7 @@ export const CompanySetupModal: React.FC = () => {
     setIsCheckingLicense(true);
     setLicenseMsg(null);
     try {
-      const res = await verifyLicense(rawKey.trim());
+      const res = await verifyLicense(keyValidation.cleanKey);
       await refreshDbLicenseStatus(res.license?.plan_type);
       if (res.success) {
         setLicenseMsg({ type: 'success', text: res.message });
@@ -1765,10 +1795,12 @@ ON public."APP_TOT-Stock-licenses"
 FOR EACH ROW
 EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
 
-  const handleCopySql = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedSql(label);
-    setTimeout(() => setCopiedSql(null), 3000);
+  const handleCopySql = async (text: string, label: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedSql(label);
+      setTimeout(() => setCopiedSql(null), 2000);
+    }
   };
 
   const handleSyncServerNow = async () => {
@@ -2162,6 +2194,37 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
                   )}
                 </div>
 
+                {/* Politique d'entreprise : Plafond d'inactivité (rôles 0/1) */}
+                {canUserReplaceSupabaseKey(currentUser) && (
+                  <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200/60 dark:border-slate-700/60 gap-2">
+                    <span className="text-slate-500 dark:text-slate-400 font-bold flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-orange-500" />
+                      {tr(
+                        language,
+                        'Plafond inactivité entreprise :',
+                        'Company max idle timeout:',
+                        'Maximale inactiviteit bedrijf:'
+                      )}
+                    </span>
+                    <div className="w-40">
+                      <SearchableSelect
+                        value={String(normalizeCompanyMaxIdleMinutes(settings?.security_max_idle_minutes))}
+                        onChange={(val: string) => {
+                          updateSetting('security_max_idle_minutes', String(Number(val)));
+                        }}
+                        options={COMPANY_POLICY_IDLE_OPTIONS.map((opt) => ({
+                          value: String(opt),
+                          label:
+                            opt === 0
+                              ? tr(language, 'Pas de limite (0)', 'No limit (0)', 'Geen limiet (0)')
+                              : `${opt} min`,
+                        }))}
+                        clearable={false}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* Quotas Progress Bars (Références + Dépôts) */}
                 <div className="space-y-2.5 pt-1">
                   {/* Quota Références */}
@@ -2292,10 +2355,12 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
                       {license?.license_key && (
                         <button
                           type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(license.license_key);
-                            setCopiedKey(true);
-                            setTimeout(() => setCopiedKey(false), 2000);
+                          onClick={async () => {
+                            const ok = await copyToClipboard(license.license_key);
+                            if (ok) {
+                              setCopiedKey(true);
+                              setTimeout(() => setCopiedKey(false), 2000);
+                            }
                           }}
                           className="px-2 py-0.5 rounded-md bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 font-bold text-[10px] flex items-center gap-1 cursor-pointer transition"
                           title={tr(language, "Copier la clé de licence", "Copy license key")}
@@ -3403,48 +3468,246 @@ ON CONFLICT (id) DO UPDATE SET
                     <label className="block font-bold text-slate-600 dark:text-slate-300">
                       Supabase Anon / Publishable Key
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setShowKey(!showKey)}
-                      className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 flex items-center gap-1 transition cursor-pointer"
-                      title={showKey ? (tr(language, "Masquer la clé", "Hide key")) : (tr(language, "Afficher la clé", "Show key"))}
-                    >
-                      {showKey ? (
-                        <>
-                          <EyeOff className="w-3.5 h-3.5" />
-                          <span>{tr(language, 'Masquer', 'Hide')}</span>
-                        </>
-                      ) : (
-                        <>
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>{tr(language, 'Afficher la clé', 'Show key')}</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                  <div className="relative">
-                    {showKey ? (
-                      <textarea
-                        rows={3}
-                        value={key}
-                        onChange={(e) => setKey(e.target.value)}
-                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                        className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none font-mono text-[10px] resize-none text-slate-900 dark:text-white"
-                      />
-                    ) : (
-                      <input
-                        type="password"
-                        value={key}
-                        onChange={(e) => setKey(e.target.value)}
-                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                        className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none font-mono text-[11px] text-slate-900 dark:text-white"
-                      />
+                    {!isKeyLocked && (
+                      <button
+                        type="button"
+                        onClick={() => setShowKey(!showKey)}
+                        className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 flex items-center gap-1 transition cursor-pointer"
+                        title={
+                          showKey
+                            ? tr(language, 'Masquer la clé', 'Hide key', 'Sleutel verbergen')
+                            : tr(language, 'Afficher la clé', 'Show key', 'Sleutel tonen')
+                        }
+                      >
+                        {showKey ? (
+                          <>
+                            <EyeOff className="w-3.5 h-3.5" />
+                            <span>{tr(language, 'Masquer', 'Hide', 'Verbergen')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>
+                              {tr(language, 'Afficher la clé', 'Show key', 'Sleutel tonen')}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {isKeyLocked && (
+                      <button
+                        type="button"
+                        data-testid="replace-supabase-key-btn"
+                        onClick={() => {
+                          setReplaceKeyError(null);
+                          setReplaceKeyPinInput('');
+                          if (!canUserReplaceSupabaseKey(currentUser)) {
+                            setReplaceKeyError(
+                              tr(
+                                language,
+                                'Action réservée aux administrateurs connectés (rôles 0 ou 1).',
+                                'Action restricted to logged-in administrators (roles 0 or 1).',
+                                'Actie voorbehouden aan ingelogde beheerders (rol 0 of 1).'
+                              )
+                            );
+                            return;
+                          }
+                          setShowReplaceKeyPinPrompt(true);
+                        }}
+                        className="text-[11px] font-bold text-orange-600 dark:text-orange-400 hover:text-orange-700 flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        <span>
+                          {tr(language, 'Remplacer la clé', 'Replace key', 'Sleutel vervangen')}
+                        </span>
+                      </button>
                     )}
                   </div>
-                  {!showKey && key && (
-                    <p className="text-[10px] text-slate-400 mt-0.5 italic">
-                      {tr(language, '🔒 Clé masquée pour protéger vos accès confidentiels.', '🔒 Key hidden to protect your confidential access.')}
-                    </p>
+
+                  {isKeyLocked ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        readOnly
+                        data-testid="masked-supabase-key-input"
+                        value={maskSupabaseAnonKey(supabaseConfig?.key || key)}
+                        className="w-full p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 outline-none font-mono text-[11px] text-slate-600 dark:text-slate-300 select-none"
+                      />
+                      <p className="text-[10px] text-slate-400 italic">
+                        {tr(
+                          language,
+                          "🔒 Clé verrouillée et masquée après liaison. Elle n'est jamais ré-affichée en clair.",
+                          '🔒 Key locked and masked after linking. It is never displayed in plaintext again.',
+                          '🔒 Sleutel vergrendeld en gemaskeerd na koppeling. Wordt nooit meer in platte tekst getoond.'
+                        )}
+                      </p>
+                      {replaceKeyError && (
+                        <p className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                          {replaceKeyError}
+                        </p>
+                      )}
+                      {showReplaceKeyPinPrompt && (
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-orange-300 dark:border-orange-800 space-y-2">
+                          <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                            {tr(
+                              language,
+                              'Confirmez votre code PIN ou mot de passe administrateur pour remplacer la clé :',
+                              'Confirm your administrator PIN or password to replace the key:',
+                              'Bevestig uw beheerderspincode of wachtwoord om de sleutel te vervangen:'
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="password"
+                              value={replaceKeyPinInput}
+                              onChange={(e) => {
+                                setReplaceKeyPinInput(e.target.value);
+                                setReplaceKeyError(null);
+                              }}
+                              placeholder={tr(
+                                language,
+                                'Code PIN ou mot de passe',
+                                'PIN or password',
+                                'Pincode of wachtwoord'
+                              )}
+                              className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={isVerifyingReplacePin}
+                              onClick={async () => {
+                                setIsVerifyingReplacePin(true);
+                                setReplaceKeyError(null);
+                                try {
+                                  const client =
+                                    supabaseConfig?.url && supabaseConfig?.key
+                                      ? getClientSupabase(supabaseConfig.url, supabaseConfig.key)
+                                      : null;
+                                  const res = await verifyUserPinOrPasswordForKeyReplacement({
+                                    user: currentUser,
+                                    secretInput: replaceKeyPinInput,
+                                    requireAdminRole: true,
+                                    verifyPasswordFn: client
+                                      ? async (email, password) => {
+                                          const { error } =
+                                            await client.auth.signInWithPassword({
+                                              email,
+                                              password,
+                                            });
+                                          return !error;
+                                        }
+                                      : undefined,
+                                    onAuditLog: () => {
+                                      logAuditEventServer(
+                                        {
+                                          category: 'SECURITY',
+                                          type: 'SUPABASE_KEY_REPLACED',
+                                          severity: 'WARNING',
+                                          title:
+                                            'Déverrouillage pour remplacement de la clé Supabase (anon/publishable)',
+                                          meta: {
+                                            actor_id: currentUser?.id,
+                                            host: url,
+                                          },
+                                        },
+                                        client
+                                      ).catch(() => {});
+                                    },
+                                  });
+                                  if (!res.allowed) {
+                                    setReplaceKeyError(
+                                      res.message ||
+                                        tr(
+                                          language,
+                                          'Code PIN ou mot de passe incorrect.',
+                                          'Incorrect PIN or password.',
+                                          'Onjuiste pincode of wachtwoord.'
+                                        )
+                                    );
+                                    return;
+                                  }
+                                  setKey('');
+                                  setShowKey(false);
+                                  setIsKeyLocked(false);
+                                  setShowReplaceKeyPinPrompt(false);
+                                  setReplaceKeyPinInput('');
+                                } finally {
+                                  setIsVerifyingReplacePin(false);
+                                }
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                            >
+                              {tr(language, 'Confirmer', 'Confirm', 'Bevestigen')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowReplaceKeyPinPrompt(false);
+                                setReplaceKeyPinInput('');
+                                setReplaceKeyError(null);
+                              }}
+                              className="px-2 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-bold cursor-pointer"
+                            >
+                              {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="relative">
+                        {showKey ? (
+                          <textarea
+                            rows={3}
+                            value={key}
+                            onChange={(e) => {
+                              const nextVal = e.target.value;
+                              const check = validateSupabaseAnonKey(nextVal);
+                              if (check.errorCode === 'FORBIDDEN_SECRET_KEY') {
+                                setStatusMsg({
+                                  type: 'error',
+                                  text: check.errorMessage!,
+                                });
+                                return;
+                              }
+                              setKey(nextVal);
+                            }}
+                            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                            className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none font-mono text-[10px] resize-none text-slate-900 dark:text-white"
+                          />
+                        ) : (
+                          <input
+                            type="password"
+                            value={key}
+                            onChange={(e) => {
+                              const nextVal = e.target.value;
+                              const check = validateSupabaseAnonKey(nextVal);
+                              if (check.errorCode === 'FORBIDDEN_SECRET_KEY') {
+                                setStatusMsg({
+                                  type: 'error',
+                                  text: check.errorMessage!,
+                                });
+                                return;
+                              }
+                              setKey(nextVal);
+                            }}
+                            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                            className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none font-mono text-[11px] text-slate-900 dark:text-white"
+                          />
+                        )}
+                      </div>
+                      {!showKey && key && (
+                        <p className="text-[10px] text-slate-400 mt-0.5 italic">
+                          {tr(
+                            language,
+                            '🔒 Clé masquée pour protéger vos accès confidentiels.',
+                            '🔒 Key hidden to protect your confidential access.',
+                            '🔒 Sleutel verborgen om uw toegang te beschermen.'
+                          )}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -3931,6 +4194,62 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
                 </div>
 
+                {/* CARTE SCRIPT 17 : TRANSFERTS VALIDÉS À LA RÉCEPTION */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white border border-emerald-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                      <span className="font-black text-xs text-emerald-200">
+                        {tr(language, '🚚 Script 17 : Transferts validés à la réception & responsables de dépôt (17_transferts_valides.sql)', '🚚 Script 17: Validated transfers & depot holders (17_transferts_valides.sql)')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 border border-emerald-600 text-emerald-300 font-bold">
+                      Transferts & Dépôts
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-100/90 leading-relaxed">
+                    {tr(language, 'Crée stk_depot_holders et stk_transfers, les RPC set_depot_holders, send_stock_transfer, receive_stock_transfer, reject_stock_transfer, cancel_stock_transfer, confirm_stock_transfer_adjustment, resolve_transfer_dispute, list_overdue_transfers et get_stock_levels_report.', 'Creates stk_depot_holders and stk_transfers, and all validated transfer RPCs.')}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_17_TRANSFERTS_VALIDES, 'script_17')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_17' ? tr(language, 'Script 17 Copié !', 'Script 17 Copied!') : tr(language, 'Copier le script 17_transferts_valides.sql', 'Copy 17_transferts_valides.sql')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 18 : RÉINITIALISATION DU MOT DE PASSE PAR CODE */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-violet-950 via-slate-900 to-purple-950 text-white border border-violet-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <KeyRound className="w-4 h-4 text-violet-400" />
+                      <span className="font-black text-xs text-violet-200">
+                        {tr(language, '🔐 Script 18 : Réinitialisation du mot de passe par code (18_password_reset.sql)', '🔐 Script 18: 6-digit password reset (18_password_reset.sql)')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-violet-950 border border-violet-600 text-violet-300 font-bold">
+                      Sécurité Auth
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-violet-100/90 leading-relaxed">
+                    {tr(language, 'Table public.core_password_resets (RLS activé, service_role uniquement) et fonction RPC public.purge_expired_password_resets() pour la fonction Edge APP_TOT-Stock_password-reset.', 'Table public.core_password_resets (RLS enabled, service_role only) and RPC public.purge_expired_password_resets() for Edge Function APP_TOT-Stock_password-reset.')}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_18_PASSWORD_RESET, 'script_18')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_18' ? tr(language, 'Script 18 Copié !', 'Script 18 Copied!') : tr(language, 'Copier le script 18_password_reset.sql', 'Copy 18_password_reset.sql')}</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* CARTE SCRIPT 07 : COMPATIBILITÉ APPLICATION & SCHÉMA */}
                 <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-950 via-slate-900 to-blue-950 text-white border border-sky-500/40 space-y-2.5 shadow-lg">
                   <div className="flex items-center justify-between">
@@ -4280,11 +4599,13 @@ ON CONFLICT (id) DO UPDATE SET
                 <div className="flex items-center gap-2 pt-1 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       const sql = generateModelBSqlMigration();
-                      navigator.clipboard.writeText(sql);
-                      setCopiedModelBSql(true);
-                      setTimeout(() => setCopiedModelBSql(false), 2500);
+                      const ok = await copyToClipboard(sql);
+                      if (ok) {
+                        setCopiedModelBSql(true);
+                        setTimeout(() => setCopiedModelBSql(false), 2000);
+                      }
                     }}
                     className="py-2 px-3.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs flex items-center gap-1.5 transition cursor-pointer shadow-sm active:scale-95"
                   >
@@ -4399,10 +4720,12 @@ ON CONFLICT (id) DO UPDATE SET
                         </span>
                         <button
                           type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(subSuccessInfo.key);
-                            setCopiedSubKey(true);
-                            setTimeout(() => setCopiedSubKey(false), 2000);
+                          onClick={async () => {
+                            const ok = await copyToClipboard(subSuccessInfo.key);
+                            if (ok) {
+                              setCopiedSubKey(true);
+                              setTimeout(() => setCopiedSubKey(false), 2000);
+                            }
                           }}
                           className="text-[10px] font-bold text-orange-600 hover:underline flex items-center gap-1 cursor-pointer"
                         >

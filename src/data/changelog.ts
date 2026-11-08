@@ -19,6 +19,96 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.16.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-14',
+    title: {
+      fr: 'Notifications lues par utilisateur, cartes commandes annulées/refusées & préparateurs limités à leurs dépôts',
+      en: 'Per-user read notifications, cancelled/rejected order cards & preparers restricted to their depots',
+      nl: 'Gelezen meldingen per gebruiker, kaarten voor geannuleerde/geweigerde bestellingen & orderpickers beperkt tot hun depots',
+    },
+    highlights: {
+      fr: [
+        'Notifications « lues » synchronisées par utilisateur (table core_notification_dismissals, RPC dismiss_notifications et clear_my_dismissals) avec repli hors-ligne local par compte et réapparition automatique si le statut de la commande évolue.',
+        'Bouton « ✕ Marquer comme lue » sur chaque carte, « Tout marquer comme lu » dans l’en-tête et « Réinitialiser ma cloche » en pied de panneau.',
+        'Cartes distinctes par type de notification (icône XCircle rose/ambre, numéro, motif et auteur pour les commandes annulées ou refusées, avec expiration automatique au-delà de 7 jours).',
+        'Règle stricte des dépôts d’un préparateur (union allowed_depots ∪ stk_depot_holders, aucun dépôt si vide hors rôles 0/1) et alerte orange « Aucun dépôt attribué » sur la fiche utilisateur.',
+      ],
+      en: [
+        'Per-user synchronized read notifications (core_notification_dismissals table, dismiss_notifications and clear_my_dismissals RPCs) with per-user offline fallback and automatic reappearance when order status changes.',
+        '"✕ Mark as read" button on every card, "Mark all as read" in the header, and "Reset my bell" in the footer.',
+        'Distinct cards per notification type (rose/amber XCircle icon, order number, reason, and author for cancelled or rejected orders, with automatic 7-day expiry).',
+        'Strict preparer depot rule (union allowed_depots ∪ stk_depot_holders, no depots when empty for non-admin roles) and orange "No depot assigned" warning on user profiles.',
+      ],
+      nl: [
+        'Per gebruiker gesynchroniseerde gelezen meldingen (tabel core_notification_dismissals, RPC’s dismiss_notifications en clear_my_dismissals) met lokale offline terugval per account en automatische terugkeer bij statuswijziging.',
+        'Knop "✕ Markeren als gelezen" op elke kaart, "Alles markeren als gelezen" in de koptekst en "Mijn bel herstellen" in de voettekst.',
+        'Onderscheidende kaarten per meldingstype (roze/amber XCircle-icoon, bestelnummer, reden en auteur voor geannuleerde of geweigerde bestellingen, met automatische vervaldatum na 7 dagen).',
+        'Strikte depotregel voor orderpickers (vereniging allowed_depots ∪ stk_depot_holders, geen depots indien leeg voor niet-beheerders) en oranje waarschuwing "Geen depot toegewezen" op het gebruikersprofiel.',
+      ],
+    },
+  },
+  {
+    version: '5.15.0',
+    schemaVersion: '2.9.0',
+    date: '2026-11-13',
+    title: {
+      fr: 'Sécurité clé Supabase, déconnexion automatique garantie, notifications ciblées & traçabilité des commandes',
+      en: 'Supabase key security, guaranteed auto-logout, targeted notifications & order traceability',
+      nl: 'Supabase-sleutelbeveiliging, gegarandeerde auto-uitlog, gerichte meldingen & besteltraceerbaarheid',
+    },
+    highlights: {
+      fr: [
+        'Lien « Mot de passe oublié ? » repositionné sous le champ mot de passe (zone tactile ≥ 44 px) et masquage définitif de la clé anon/publishable une fois la base connectée (remplacement protégé par PIN/mot de passe, rôle 0/1 et QR auto-masqué après 60 s).',
+        'Déconnexion automatique obligatoire par horodatage (plafond société security_max_idle_minutes, immunisée contre la mise en veille, la caméra QR et le WakeLock, avec arrêt automatique des flux caméra).',
+        'Notifications ciblées par identifiant utilisateur (préparateurs du dépôt, demandeur, enleveur désigné, destinataires de transfert) et préférences individuelles par type.',
+        'Traçabilité complète du cycle de vie des commandes (création, prise en charge, lignes préparées, retrait, délégation/transfert d’enlèvement, annulation) dans les fiches commandes, le journal d’audit et les rapports.',
+      ],
+      en: [
+        '"Forgot password?" link moved below the password field (≥ 44 px touch target) and permanent masking of the anon/publishable key once connected (replacement gated by PIN/password, role 0/1, and 60s auto-hidden config QR).',
+        'Mandatory timestamp-based inactivity auto-logout (company ceiling security_max_idle_minutes, immune to sleep/background tabs, QR camera, and WakeLock, with automatic camera stream shutdown).',
+        'Targeted notifications by user ID (depot preparers, requester, designated collector, transfer recipients) and per-type user preferences.',
+        'Full order lifecycle traceability (creation, claim, prepared lines, pickup, pickup delegation/transfer, cancellation) across order details, audit log, and reports.',
+      ],
+      nl: [
+        'Link "Wachtwoord vergeten?" verplaatst onder het wachtwoordveld (aanraakzone ≥ 44 px) en permanente maskering van de anon/publishable-sleutel na verbinding (vervanging beveiligd met PIN/wachtwoord, rol 0/1 en QR automatisch verborgen na 60 s).',
+        'Verplichte automatische uitlog op basis van tijdstempel (bedrijfsplafond security_max_idle_minutes, ongevoelig voor slaapstand, QR-camera en WakeLock, met automatische uitschakeling van camerastreams).',
+        'Gerichte meldingen op gebruikers-ID (depotvoorbereiders, aanvrager, aangewezen afhaler, overdrachtontvangers) en individuele voorkeuren per type.',
+        'Volledige traceerbaarheid van de bestelcyclus (aanmaak, toewijzing, gepickte regels, afhaling, overdracht van afhaling, annulering) in bestelfiches, auditlogboek en rapporten.',
+      ],
+    },
+  },
+  {
+    version: '5.14.0',
+    schemaVersion: '2.8.0',
+    date: '2026-11-12',
+    title: {
+      fr: 'Réinitialisation du mot de passe par code à 6 chiffres & correctifs Desktop / Licence',
+      en: '6-digit code password reset & Desktop / License fixes',
+      nl: 'Wachtwoordherstel via 6-cijferige code & Desktop / Licentie-correcties',
+    },
+    highlights: {
+      fr: [
+        'Fonction Edge dédiée APP_TOT-Stock_password-reset avec code à usage unique à 6 chiffres (valable 15 min, anti-bruteforce, révocation des sessions actives et journal d’audit immuable).',
+        'Envoi d’un code de réinitialisation par e-mail depuis l’écran Utilisateurs & Rôles (rôles 0/1 ou perm_manage_users).',
+        'Pont IPC presse-papiers Desktop (clipboard-sanitized-write) et utilitaire unifié copyToClipboard avec repli automatique.',
+        'Validation stricte de la saisie de clé de licence et préservation des quotas signés en cas d’indisponibilité réseau du serveur de synchronisation.',
+      ],
+      en: [
+        'Dedicated APP_TOT-Stock_password-reset Edge Function with 6-digit one-time code (15-min validity, anti-bruteforce, active session revocation, and immutable audit trail).',
+        'Admin-initiated password reset code email from Users & Roles (roles 0/1 or perm_manage_users).',
+        'Desktop clipboard IPC bridge (clipboard-sanitized-write) and unified copyToClipboard helper with automatic fallback.',
+        'Strict license key input validation and preservation of signed license quotas when synchronization is temporarily unreachable.',
+      ],
+      nl: [
+        'Speciale APP_TOT-Stock_password-reset Edge-functie met 6-cijferige eenmalige code (15 min geldig, anti-bruteforce, intrekken van actieve sessies en onveranderlijk auditlogboek).',
+        'Verzenden van een herstelcode per e-mail door beheerders vanuit Gebruikers & Rollen (rollen 0/1 of perm_manage_users).',
+        'Desktop klembord IPC-brug (clipboard-sanitized-write) en uniforme copyToClipboard-hulpfunctie met automatische terugval.',
+        'Strikte validatie van licentiesleutelinvoer en behoud van ondertekende licentiequota bij tijdelijke onbereikbaarheid van de synchronisatieserver.',
+      ],
+    },
+  },
+  {
     version: '5.13.0',
     schemaVersion: '2.7.0',
     date: '2026-11-11',

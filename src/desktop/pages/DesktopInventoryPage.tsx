@@ -27,6 +27,7 @@ import { DesktopProductDetailPanel } from '../components/DesktopProductDetailPan
 import { DesktopProductFormDrawer } from '../components/DesktopProductFormDrawer';
 import { SearchableSelect } from '../../components/SearchableSelect';
 import { requestGuardedNavigation } from '../../services/unsavedChangesGuard';
+import { copyToClipboard } from '../../services/clipboard';
 import { logAuditEventServer } from '../../services/auditService';
 import {
   readLocalPreferenceValue,
@@ -1320,9 +1321,9 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
           )}
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               const prod = products.find((p) => p.id === contextMenu.productId);
-              if (prod) navigator.clipboard?.writeText(prod.reference);
+              if (prod) await copyToClipboard(prod.reference);
               setContextMenu(null);
             }}
             className="w-full px-3 py-2 rounded-lg text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer"

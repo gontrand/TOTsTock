@@ -88,6 +88,9 @@ async function createBootstrappedTransferDb(): Promise<{
     '13_transfer_stock_batch.sql',
     '14_mailing.sql',
     '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
+    '18_password_reset.sql',
     '07_app_compat.sql',
   ];
   for (const s of scripts) {
@@ -158,9 +161,9 @@ async function createBootstrappedTransferDb(): Promise<{
 }
 
 describe('Prompt v49 — LOT 1 : SQL 13_transfer_stock_batch.sql, Schéma 2.4.1 & App 5.9.1', () => {
-  it('déclare le script 13 dans SQL_STEPS (après 12 et avant 07), exporte SQL_SCRIPT_13_TRANSFER_STOCK_BATCH et aligne APP_VERSION=5.13.0 / EXPECTED_SCHEMA_VERSION=2.7.0', () => {
-    expect(APP_VERSION).toBe('5.13.0');
-    expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
+  it('déclare le script 13 dans SQL_STEPS (après 12 et avant 07), exporte SQL_SCRIPT_13_TRANSFER_STOCK_BATCH et aligne APP_VERSION=5.16.0 / EXPECTED_SCHEMA_VERSION=2.10.0', () => {
+    expect(APP_VERSION).toBe('5.16.0');
+    expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
@@ -178,11 +181,11 @@ describe('Prompt v49 — LOT 1 : SQL 13_transfer_stock_batch.sql, Schéma 2.4.1 
   });
 
   it(
-    'SQL PGlite : lot de 2 articles OK, idempotence sur batch_id, tout-ou-rien sur manque de stock, permissions (perm_stock_transfer OK, sans droit refusé, non connecté refusé, anon refusé), même dépôt refusé, quantité 0 refusée, diagnostic_installation() 2.7.0',
+    'SQL PGlite : lot de 2 articles OK, idempotence sur batch_id, tout-ou-rien sur manque de stock, permissions (perm_stock_transfer OK, sans droit refusé, non connecté refusé, anon refusé), même dépôt refusé, quantité 0 refusée, diagnostic_installation() 2.9.0',
     async () => {
       const { db, UUID_TRANSFER_USER, UUID_NO_PERM_USER } = await createBootstrappedTransferDb();
 
-      // 1. Vérifier diagnostic_installation() -> 2.7.0 + transfer_stock_batch_rpc = 'OK'
+      // 1. Vérifier diagnostic_installation() -> 2.9.0 + transfer_stock_batch_rpc = 'OK'
       const diagRes = await db.query<{
         check_key: string;
         check_label: string;
@@ -192,7 +195,7 @@ describe('Prompt v49 — LOT 1 : SQL 13_transfer_stock_batch.sql, Schéma 2.4.1 
       const schemaRow = diagRes.rows.find((r) => r.check_key === 'app_compat');
       const transferRow = diagRes.rows.find((r) => r.check_key === 'transfer_stock_batch_rpc');
       expect(schemaRow?.status).toBe('OK');
-      expect(schemaRow?.details).toContain('2.7.0');
+      expect(schemaRow?.details).toContain('2.10.0');
       expect(transferRow?.status).toBe('OK');
 
       // 2. Lot de 2 articles par un utilisateur ayant uniquement perm_stock_transfer (rôle 90)

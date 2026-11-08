@@ -54,6 +54,8 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
     orders,
     products,
     depots,
+    depotHolders,
+    roles,
     currentUser,
     userHasPermission,
     assignOrderToMe,
@@ -109,8 +111,11 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
     return filterOrdersForPreparer(orders, currentUser, {
       depotFilter: effectiveDepotFilter,
       searchQuery,
+      depots,
+      depotHolders,
+      roles,
     });
-  }, [orders, currentUser, effectiveDepotFilter, searchQuery]);
+  }, [orders, currentUser, effectiveDepotFilter, searchQuery, depots, depotHolders, roles]);
 
   const activeOrder: MaterialOrder | null = useMemo(() => {
     if (selectedOrderId) {

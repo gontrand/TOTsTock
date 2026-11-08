@@ -4,7 +4,9 @@ import { SearchableSelect } from './SearchableSelect';
 import { User, Role } from '../types';
 import { generateTrigram } from '../utils/crypto';
 import { adminResetPassword } from '../services/adminUsersService';
+import { requestPasswordResetCode } from '../services/passwordResetService';
 import { getClientSupabase } from '../services/clientSupabase';
+import { shouldWarnPreparerWithoutDepot } from '../services/notificationService';
 import {
   X,
   Users,
@@ -29,6 +31,7 @@ import {
   Eye,
   EyeOff,
   RotateCcw,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   MENU_PERMISSION_GROUPS,
@@ -53,6 +56,7 @@ export const UsersRolesModal: React.FC = () => {
     roles,
     departments,
     depots,
+    depotHolders,
     saveUser,
     deleteUser,
     toggleBlockUser,
@@ -348,6 +352,10 @@ export const UsersRolesModal: React.FC = () => {
   if (!usersRolesModal.open) return null;
 
   const canManageUsers = userHasPermission('perm_manage_users');
+  const canForcePinReset =
+    Number(currentUser?.role_id) === 0 ||
+    Number(currentUser?.role_id) === 1 ||
+    userHasPermission('perm_user_force_pin');
   const canDeleteUser = userHasPermission('perm_user_delete') && !isDeptManager;
   const canManageRoles = userHasPermission('perm_manage_roles') && !isDeptManager;
 
@@ -378,7 +386,8 @@ export const UsersRolesModal: React.FC = () => {
     setUserIsPreparer(Boolean(u.is_preparer));
     setUserBinomeId(u.binome_id !== undefined && u.binome_id !== null ? u.binome_id : '');
     const allowed = u.allowed_depots || [];
-    setAllDepotsAllowed(allowed.length === 0 || allowed.includes('*'));
+    const isAdminUser = Number(u.role_id) === 0 || Number(u.role_id) === 1;
+    setAllDepotsAllowed(allowed.includes('*') || (isAdminUser && allowed.length === 0));
     setUserAllowedDepots(allowed.filter((d) => d !== '*'));
     setUserFormMsg('');
 
@@ -413,6 +422,45 @@ export const UsersRolesModal: React.FC = () => {
     }
     alert(
       `Mot de passe réinitialisé avec succès !\n\nNouveau mot de passe temporaire pour ${u.name} :\n${res.temporary_password}\n\nL'utilisateur devra obligatoirement le renouveler lors de sa prochaine connexion.`
+    );
+  };
+
+  const handleSendResetCodeByEmail = async (u: User) => {
+    if (!canForcePinReset) {
+      alert(
+        tr(
+          language,
+          'Permission insuffisante (perm_user_force_pin ou rôle Administrateur requis).',
+          'Insufficient permission (perm_user_force_pin or Admin role required).'
+        )
+      );
+      return;
+    }
+    const cleanEmail = (u.email || '').trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      alert(
+        tr(
+          language,
+          `Impossible d'envoyer un code : l'utilisateur ${u.name} n'a pas d'adresse e-mail configurée.`,
+          `Cannot send code: user ${u.name} has no email address configured.`
+        )
+      );
+      return;
+    }
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    if (!client) {
+      alert('Connexion Supabase non configurée.');
+      return;
+    }
+    const res = await requestPasswordResetCode(client, cleanEmail);
+    alert(
+      res.success
+        ? tr(
+            language,
+            `Code de réinitialisation envoyé par e-mail à ${cleanEmail}.`,
+            `Password reset code sent by email to ${cleanEmail}.`
+          )
+        : res.message
     );
   };
 
@@ -779,15 +827,54 @@ export const UsersRolesModal: React.FC = () => {
                           </label>
                           {(() => {
                             const editingUser = users.find((u) => String(u.id) === String(editingUserId));
+                            const hasEmail = Boolean(editingUser?.email && editingUser.email.includes('@'));
                             return (
-                              <button
-                                type="button"
-                                onClick={() => editingUser && handleResetPassword(editingUser)}
-                                className="w-full p-2 rounded-xl bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-                              >
-                                <Key className="w-3.5 h-3.5 text-amber-600" />
-                                <span>{tr(language, 'Réinitialiser mot de passe', 'Reset password')}</span>
-                              </button>
+                              <div className="space-y-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => editingUser && handleResetPassword(editingUser)}
+                                  className="w-full p-2 rounded-xl bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-200 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                                >
+                                  <Key className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>{tr(language, 'Réinitialiser le mot de passe', 'Reset password')}</span>
+                                </button>
+                                {canForcePinReset && editingUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSendResetCodeByEmail(editingUser)}
+                                    disabled={!hasEmail}
+                                    className="w-full p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200 font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                                    title={
+                                      hasEmail
+                                        ? tr(
+                                            language,
+                                            'Envoyer un code de réinitialisation par e-mail',
+                                            'Send password reset code by email'
+                                          )
+                                        : tr(
+                                            language,
+                                            "Aucune adresse e-mail renseignée pour cet utilisateur",
+                                            'No email address configured for this user'
+                                          )
+                                    }
+                                  >
+                                    <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>
+                                      {hasEmail
+                                        ? tr(
+                                            language,
+                                            'Envoyer un code de réinitialisation par e-mail',
+                                            'Send reset code by email'
+                                          )
+                                        : tr(
+                                            language,
+                                            'Aucune adresse e-mail (code impossible)',
+                                            'No email address (cannot send code)'
+                                          )}
+                                    </span>
+                                  </button>
+                                )}
+                              </div>
                             );
                           })()}
                         </div>
@@ -927,8 +1014,59 @@ export const UsersRolesModal: React.FC = () => {
                     </p>
                   </div>
 
+                  {/* Avertissement orange si préparateur non-admin sans dépôt attribué (v58) */}
+                  {shouldWarnPreparerWithoutDepot({
+                    user: {
+                      id: editingUserId ?? 'draft',
+                      role_id: Number(userRoleId),
+                      is_preparer: userIsPreparer,
+                      allowed_depots: allDepotsAllowed ? ['*'] : userAllowedDepots,
+                    },
+                    depotHolders,
+                    depots,
+                    roles,
+                  }) && (
+                    <div
+                      data-testid="preparer-no-depot-warning"
+                      className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <span className="font-bold">
+                          {tr(
+                            language,
+                            'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer',
+                            'No depot assigned: this user will not receive any order to prepare',
+                            'Geen depot toegewezen: deze gebruiker ontvangt geen klaar te zetten bestellingen'
+                          )}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="focus-allowed-depots-btn"
+                        onClick={() => {
+                          const el = document.getElementById('user-allowed-depots-section');
+                          if (el && typeof el.scrollIntoView === 'function') {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          }
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                      >
+                        {tr(
+                          language,
+                          'Dépôts autorisés',
+                          'Authorized depots',
+                          'Toegestane depots'
+                        )}
+                      </button>
+                    </div>
+                  )}
+
                   {/* Option Dépôts autorisés (Accès à 1, 2, 3 dépôts ou tous) */}
-                  <div className="p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2">
+                  <div
+                    id="user-allowed-depots-section"
+                    className="p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2"
+                  >
                     <div className="flex items-center justify-between">
                       <label className="text-[11px] font-extrabold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                         <Building className="w-3.5 h-3.5 text-orange-500" />
@@ -1123,13 +1261,34 @@ export const UsersRolesModal: React.FC = () => {
                               </span>
                             )}
 
-                            {!u.allowed_depots || u.allowed_depots.length === 0 || u.allowed_depots.includes('*') ? (
+                            {u.allowed_depots?.includes('*') ||
+                            ((Number(u.role_id) === 0 || Number(u.role_id) === 1) &&
+                              (!u.allowed_depots || u.allowed_depots.length === 0)) ? (
                               <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-medium">
                                 🏢 {tr(language, 'Tous les dépôts', 'All depots')}
                               </span>
-                            ) : (
+                            ) : u.allowed_depots && u.allowed_depots.length > 0 ? (
                               <span className="text-[10px] px-2 py-0.5 rounded-md bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-medium">
                                 📍 {u.allowed_depots.length} {tr(language, 'dépôt(s) autorisé(s)', 'allowed depot(s)')} : {u.allowed_depots.join(', ')}
+                              </span>
+                            ) : shouldWarnPreparerWithoutDepot({
+                                user: u,
+                                depotHolders,
+                                depots,
+                                roles,
+                              }) ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-bold border border-amber-300 dark:border-amber-700">
+                                ⚠️{' '}
+                                {tr(
+                                  language,
+                                  'Aucun dépôt attribué : cet utilisateur ne recevra aucune commande à préparer',
+                                  'No depot assigned: this user will not receive any order to prepare',
+                                  'Geen depot toegewezen: deze gebruiker ontvangt geen klaar te zetten bestellingen'
+                                )}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                                {tr(language, 'Aucun dépôt spécifique', 'No specific depot')}
                               </span>
                             )}
 
@@ -1178,6 +1337,32 @@ export const UsersRolesModal: React.FC = () => {
                                   >
                                     <Key className="w-3.5 h-3.5 shrink-0" />
                                   </button>
+                                  {canForcePinReset && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSendResetCodeByEmail(u)}
+                                      className={`p-1.5 rounded-lg transition cursor-pointer shrink-0 ${
+                                        u.email && u.email.includes('@')
+                                          ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300'
+                                          : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500 opacity-60'
+                                      }`}
+                                      title={
+                                        u.email && u.email.includes('@')
+                                          ? tr(
+                                              language,
+                                              'Envoyer un code de réinitialisation par e-mail',
+                                              'Send password reset code by email'
+                                            )
+                                          : tr(
+                                              language,
+                                              "Envoyer un code de réinitialisation par e-mail (aucune adresse e-mail configurée)",
+                                              'Send reset code by email (no email configured)'
+                                            )
+                                      }
+                                    >
+                                      <Mail className="w-3.5 h-3.5 shrink-0" />
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => toggleBlockUser(u.id)}

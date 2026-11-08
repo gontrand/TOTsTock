@@ -533,6 +533,20 @@ export const INITIAL_MOVEMENTS: StockMovement[] = [
 
 export const INITIAL_RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: '5.15.0',
+    date: '2026-11-13',
+    title: 'Connexion, Masquage Clé Supabase, Déconnexion Auto par Horodatage, Notifications Ciblées & Traçabilité Commandes (Schéma 2.9.0)',
+    description:
+      'Lien « Mot de passe oublié ? » repositionné sous le champ mot de passe, masquage irréversible de la clé Supabase anon après connexion (remplacement protégé par PIN/mot de passe et refus service_role), déconnexion automatique obligatoire basée sur horodatage réel (active même en mode Scanner caméra), notifications filtrées par identifiant destinataire et bloc Traçabilité complet des commandes.',
+  },
+  {
+    version: '5.14.0',
+    date: '2026-11-12',
+    title: 'Réinitialisation du mot de passe par code à 6 chiffres & Correctifs Desktop / Licence (Schéma 2.8.0)',
+    description:
+      'Fonction Edge dédiée APP_TOT-Stock_password-reset avec code à 6 chiffres (15 min, anti-bruteforce, révocation des sessions et journal d’audit), envoi d’un code par les administrateurs, pont IPC presse-papiers Desktop (clipboard-sanitized-write) et protection contre la rétrogradation involontaire de licence en FREE.',
+  },
+  {
     version: '5.13.0',
     date: '2026-11-11',
     title: 'Listes déroulantes avec recherche instantanée (SearchableSelect) & Correctifs v54b (Schéma 2.7.0)',

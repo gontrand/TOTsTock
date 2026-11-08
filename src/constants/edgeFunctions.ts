@@ -7,7 +7,15 @@ export const EDGE_FUNCTIONS = {
   adminUsers: 'APP_TOT-Stock_admin-users',
   syncLicense: 'APP_TOT-Stock_licenses_sync-license',
   sendReportEmail: 'APP_TOT-Stock_send-report-email',
+  passwordReset: 'APP_TOT-Stock_password-reset',
 } as const;
+
+export const EDGE_FUNCTION_NAMES = [
+  EDGE_FUNCTIONS.adminUsers,
+  EDGE_FUNCTIONS.syncLicense,
+  EDGE_FUNCTIONS.sendReportEmail,
+  EDGE_FUNCTIONS.passwordReset,
+] as const;
 
 /**
  * Nomenclature officielle des Edge Functions déployées sur la base maître Éditeur.
@@ -30,6 +38,7 @@ export const EDGE_FUNCTION_OVERRIDE_SETTING_KEYS: Record<ClientEdgeFunctionKey, 
   adminUsers: 'edge_fn_admin_users',
   syncLicense: 'edge_fn_sync_license',
   sendReportEmail: 'edge_fn_send_report_email',
+  passwordReset: 'edge_fn_password_reset',
 } as const;
 
 export const MASTER_EDGE_FUNCTION_OVERRIDE_SETTING_KEYS: Record<MasterEdgeFunctionKey, string> = {
@@ -43,16 +52,19 @@ export const LEGACY_CLIENT_EDGE_FUNCTION_NAMES: Record<ClientEdgeFunctionKey, st
   adminUsers: 'admin-users',
   syncLicense: 'sync-license',
   sendReportEmail: 'send-report-email',
+  passwordReset: 'password-reset',
 } as const;
 
 export const ALL_EDGE_FUNCTION_LITERALS = [
   EDGE_FUNCTIONS.adminUsers,
   EDGE_FUNCTIONS.syncLicense,
   EDGE_FUNCTIONS.sendReportEmail,
+  EDGE_FUNCTIONS.passwordReset,
   MASTER_EDGE_FUNCTIONS.licenses,
   LEGACY_CLIENT_EDGE_FUNCTION_NAMES.adminUsers,
   LEGACY_CLIENT_EDGE_FUNCTION_NAMES.syncLicense,
   LEGACY_CLIENT_EDGE_FUNCTION_NAMES.sendReportEmail,
+  LEGACY_CLIENT_EDGE_FUNCTION_NAMES.passwordReset,
 ] as const;
 
 // Cache mémoire des éventuelles surcharges lues depuis core_app_settings
@@ -130,6 +142,7 @@ export async function loadEdgeFunctionOverridesFromClientDb(
       EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.adminUsers,
       EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.syncLicense,
       EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.sendReportEmail,
+      EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.passwordReset,
       MASTER_EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.licenses,
       'edge_fn_master_licenses',
     ];
@@ -150,6 +163,8 @@ export async function loadEdgeFunctionOverridesFromClientDb(
           runtimeEdgeFunctionOverrides.syncLicense = v;
         } else if (k === EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.sendReportEmail) {
           runtimeEdgeFunctionOverrides.sendReportEmail = v;
+        } else if (k === EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.passwordReset) {
+          runtimeEdgeFunctionOverrides.passwordReset = v;
         } else if (
           k === MASTER_EDGE_FUNCTION_OVERRIDE_SETTING_KEYS.licenses ||
           k === 'edge_fn_master_licenses'
@@ -325,14 +340,14 @@ export async function pingSingleClientEdgeFunction(
 }
 
 /**
- * Appelle chacune des 3 fonctions Edge clientes avec `{ action: 'ping' }` pour le Diagnostic.
+ * Appelle chacune des 4 fonctions Edge clientes avec `{ action: 'ping' }` pour le Diagnostic.
  */
 export async function pingClientEdgeFunctions(
   client: any
 ): Promise<EdgeFunctionsPingSummary> {
   await loadEdgeFunctionOverridesFromClientDb(client);
 
-  const keys: ClientEdgeFunctionKey[] = ['adminUsers', 'syncLicense', 'sendReportEmail'];
+  const keys: ClientEdgeFunctionKey[] = ['adminUsers', 'syncLicense', 'sendReportEmail', 'passwordReset'];
   const items: EdgeFunctionPingItemResult[] = [];
 
   for (const key of keys) {

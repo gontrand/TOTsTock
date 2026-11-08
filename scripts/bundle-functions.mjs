@@ -22,6 +22,11 @@ export const EDGE_FUNCTIONS = [
     handlerFile: 'sendReportEmailHandler.ts',
     entryCall: 'serve(handleSendReportEmailRequest);',
   },
+  {
+    name: 'APP_TOT-Stock_password-reset',
+    handlerFile: 'passwordResetHandler.ts',
+    entryCall: 'serve(handlePasswordResetRequest);',
+  },
 ];
 
 function stripLocalImports(code) {
@@ -43,7 +48,7 @@ export function generateSingleFunctionBundle(fnDef, rootDir = ROOT_DIR) {
   const configRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, 'config.ts'), 'utf8'));
   const authRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, 'auth.ts'), 'utf8'));
   const mailProvidersRaw =
-    fnDef.handlerFile === 'sendReportEmailHandler.ts'
+    fnDef.handlerFile === 'sendReportEmailHandler.ts' || fnDef.handlerFile === 'passwordResetHandler.ts'
       ? stripLocalImports(fs.readFileSync(path.join(sharedDir, 'mailProviders.ts'), 'utf8'))
       : '';
   const handlerRaw = stripLocalImports(fs.readFileSync(path.join(sharedDir, fnDef.handlerFile), 'utf8'));

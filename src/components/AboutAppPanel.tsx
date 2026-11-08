@@ -17,6 +17,7 @@ import {
 } from '../services/licenseService';
 import { getLocalCryptoMode, CryptoProviderMode } from '../services/localCrypto';
 import { isDesktopApp, openExternalUrl } from '../services/desktopBridge';
+import { copyToClipboard } from '../services/clipboard';
 import { getClientSupabase } from '../services/clientSupabase';
 import {
   EDGE_FUNCTIONS,
@@ -31,6 +32,10 @@ import {
   getConfiguredBinaryInstallerUrl,
 } from '../utils/desktopInstallerDownload';
 import { buildApkDownloadUrl } from '../utils/apkDownload';
+import {
+  isNotificationReadsSqlMissing,
+  NOTIFICATION_READS_SQL_WARNING,
+} from '../services/notificationReadService';
 import {
   BadgeCheck,
   AlertTriangle,
@@ -153,6 +158,7 @@ export interface DiagnosticSupportSummaryInput {
   usersUsed?: number;
   signedTokenPresent?: boolean;
   supabaseUrl?: string | null;
+  supabaseKey?: string | null;
   edgeResults?: Array<{ functionName: string; ok: boolean; state?: string }>;
   appSenderName?: string;
   appSenderEmail?: string;
@@ -225,12 +231,23 @@ export function formatDiagnosticSupportSummary(
     `Opérations hors-ligne en attente : ${input.pendingOfflineCount ?? 0}`,
   ];
 
-  // Filet de sécurité anti-fuite : supprimer tout motif ressemblant à un JWT ou clé secrète
-  return lines
+  // Filet de sécurité anti-fuite : supprimer tout motif ressemblant à un JWT, clé publishable ou clé secrète
+  let output = lines
     .join('\n')
     .replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[JETON_MASQUÉ]')
     .replace(/xkeysib-[a-zA-Z0-9_-]+/gi, '[SECRET_MASQUÉ]')
-    .replace(/sb_secret_[a-zA-Z0-9_-]+/gi, '[SECRET_MASQUÉ]');
+    .replace(/\bsb_(?:publishable|secret)_[a-zA-Z0-9_-]+/gi, '[CLÉ_MASQUÉE]');
+
+  const rawKey = (input as any)?.supabaseKey;
+  if (typeof rawKey === 'string' && rawKey.trim().length > 4) {
+    const clean = rawKey.trim();
+    output = output.split(clean).join('[CLÉ_MASQUÉE]');
+    const prefix = clean.slice(0, Math.min(clean.length - 4, 16));
+    if (prefix.length >= 6) {
+      output = output.split(prefix).join('[CLÉ_MASQUÉE]');
+    }
+  }
+  return output;
 }
 
 export interface AboutAppPanelProps {
@@ -350,7 +367,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
     setCompanySetupModalOpen(true);
   };
 
-  const handleCopyDiagnostic = () => {
+  const handleCopyDiagnostic = async () => {
     const text = formatDiagnosticSupportSummary({
       appVersion: APP_VERSION,
       expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
@@ -372,9 +389,11 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
       encryptionMode,
       pendingOfflineCount,
     });
-    navigator.clipboard?.writeText(text);
-    setCopiedDiag(true);
-    setTimeout(() => setCopiedDiag(false), 2500);
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedDiag(true);
+      setTimeout(() => setCopiedDiag(false), 2000);
+    }
   };
 
   const apkDownloadUrl = buildApkDownloadUrl(appCompat.updateUrl, APP_VERSION);
@@ -513,14 +532,24 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
             </div>
           </div>
 
+          {isNotificationReadsSqlMissing() && (
+            <div
+              data-testid="notification-reads-sql-warning"
+              className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-[11px] font-bold flex items-center gap-2"
+            >
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{NOTIFICATION_READS_SQL_WARNING}</span>
+            </div>
+          )}
+
           {(schemaStatus === 'tolerated' || schemaStatus === 'outdated') && (
             <div className="flex items-center justify-between gap-2 pt-1">
               <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">
                 {tr(
                   language,
-                  'Exécutez les scripts SQL (jusqu’au script 17 puis 07) pour mettre la base à niveau.',
-                  'Run the SQL scripts (up to script 17 then 07) to upgrade the database.',
-                  'Voer de SQL-scripts uit (tot script 17 en daarna 07) om de database bij te werken.'
+                  'Exécutez les scripts SQL (jusqu’au script 20 puis 07) pour mettre la base à niveau.',
+                  'Run the SQL scripts (up to script 20 then 07) to upgrade the database.',
+                  'Voer de SQL-scripts uit (tot script 20 en daarna 07) om de database bij te werken.'
                 )}
               </span>
               <button

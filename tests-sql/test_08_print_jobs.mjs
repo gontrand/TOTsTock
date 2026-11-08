@@ -87,6 +87,7 @@ export async function runPrintJobsSqlTests() {
     '15_search_orders_movements.sql',
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
+    '18_password_reset.sql',
     '07_app_compat.sql',
   ];
 
@@ -103,7 +104,7 @@ export async function runPrintJobsSqlTests() {
     `SELECT schema_version, min_schema_version FROM public.core_app_compat WHERE id = 1;`
   );
   if (
-    compatRes.rows[0]?.schema_version !== '2.7.0' ||
+    compatRes.rows[0]?.schema_version !== '2.10.0' ||
     compatRes.rows[0]?.min_schema_version !== '1.0.0'
   ) {
     throw new Error(
@@ -163,6 +164,7 @@ export async function runPrintJobsSqlTests() {
     '15_search_orders_movements.sql',
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
+    '18_password_reset.sql',
     '07_app_compat.sql',
   ];
   for (const s of v100Scripts) {
@@ -943,6 +945,7 @@ export async function runPrintJobsSqlTests() {
     '15_search_orders_movements.sql',
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
+    '18_password_reset.sql',
     '07_app_compat.sql',
   ];
 
@@ -1694,6 +1697,7 @@ export async function runLegacySchemaSqlTests() {
     '15_search_orders_movements.sql',
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
+    '18_password_reset.sql',
     '07_app_compat.sql',
   ];
 

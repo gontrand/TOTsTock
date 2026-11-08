@@ -543,7 +543,7 @@ ALTER TABLE IF EXISTS public.stk_inventory_audit_items ADD COLUMN IF NOT EXISTS 
 ALTER TABLE IF EXISTS public.stk_inventory_audit_items ADD COLUMN IF NOT EXISTS diff_cost NUMERIC(12,2) DEFAULT 0;
 ALTER TABLE IF EXISTS public.stk_inventory_audit_items ADD COLUMN IF NOT EXISTS scanned_barcode TEXT;
 ALTER TABLE IF EXISTS public.stk_inventory_audit_items ADD COLUMN IF NOT EXISTS scanned_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE IF EXISTS public.core_app_compat ADD COLUMN IF NOT EXISTS schema_version TEXT DEFAULT '2.7.0';
+ALTER TABLE IF EXISTS public.core_app_compat ADD COLUMN IF NOT EXISTS schema_version TEXT DEFAULT '2.10.0';
 ALTER TABLE IF EXISTS public.core_app_compat ADD COLUMN IF NOT EXISTS min_schema_version TEXT DEFAULT '1.0.0';
 ALTER TABLE IF EXISTS public.core_app_compat ADD COLUMN IF NOT EXISTS min_app_version TEXT DEFAULT '1.0.0';
 ALTER TABLE IF EXISTS public.core_app_compat ADD COLUMN IF NOT EXISTS latest_version TEXT;
@@ -695,6 +695,17 @@ ALTER TABLE IF EXISTS public.stk_transfers ADD COLUMN IF NOT EXISTS resolution_n
 ALTER TABLE IF EXISTS public.stk_transfers ADD COLUMN IF NOT EXISTS comments_history JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE IF EXISTS public.stk_transfers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE IF EXISTS public.stk_transfers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS code_hash TEXT;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS code_salt TEXT DEFAULT '';
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 5;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS request_ip TEXT;
+ALTER TABLE IF EXISTS public.core_password_resets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 -- [END AUTO_GENERATED_ADD_COLUMNS]
 
 DO $$

@@ -1,6 +1,7 @@
-import { MaterialOrder, MaterialOrderItem, Product, User } from '../types';
-import { isUserAllowedForDepot, playScanBeep } from '../utils/crypto';
+import { Depot, MaterialOrder, MaterialOrderItem, Product, Role, User } from '../types';
+import { playScanBeep } from '../utils/crypto';
 import { getUnlockedAudioContext, hapticFeedback } from '../utils/haptics';
+import { isUserAuthorizedPreparerForOrder } from './notificationService';
 import {
   readLocalPreferenceValue,
   setUserPreference,
@@ -533,28 +534,55 @@ export function canUserAccessScannerMode(
 }
 
 /**
- * Filtre et trie les commandes à préparer pour le Mode Scanner :
+ * Filtre et trie les commandes à préparer pour le Mode Scanner / Préparation :
  * - Statuts `PENDING` ou `PREPARING` uniquement
- * - Uniquement les dépôts dans `currentUser.allowed_depots`
+ * - Filtrage strict par `isUserAuthorizedPreparerForOrder` (union `allowed_depots` ∪ `depotHolders`,
+ *   vide = aucun pour un non-admin, tout en conservant celles où `preparer_id == currentUser.id`).
  * - Tri : En cours par moi d'abord, puis À préparer, puis Prise par un autre, et par date de création croissante (les plus anciennes d'abord).
  */
 export function filterOrdersForPreparer(
   orders: MaterialOrder[],
   currentUser: User | null | undefined,
-  options?: { depotFilter?: string; searchQuery?: string }
+  optionsOrDepots?:
+    | {
+        depotFilter?: string;
+        searchQuery?: string;
+        depots?: Depot[];
+        depotHolders?: Array<{ depot_id: string | number; user_id: string | number }>;
+        roles?: Role[];
+      }
+    | Depot[],
+  depotHoldersArg?: Array<{ depot_id: string | number; user_id: string | number }>,
+  rolesArg?: Role[]
 ): MaterialOrder[] {
   if (!currentUser || !Array.isArray(orders)) return [];
 
+  const isArrayArg = Array.isArray(optionsOrDepots);
+  const options = isArrayArg ? undefined : optionsOrDepots;
   const depotFilter = (options?.depotFilter || 'ALL').trim();
   const q = (options?.searchQuery || '').trim().toLowerCase();
+  const depots = isArrayArg ? optionsOrDepots : options?.depots || [];
+  const depotHolders = isArrayArg ? depotHoldersArg || [] : options?.depotHolders || [];
+  const roles = isArrayArg ? rolesArg || [] : options?.roles || [];
+
+  const preparerCandidate: User = {
+    ...currentUser,
+    is_preparer: currentUser.is_preparer ?? true,
+  };
 
   const filtered = orders.filter((order) => {
     if (order.status !== 'PENDING' && order.status !== 'PREPARING') {
       return false;
     }
 
-    // Restriction aux dépôts autorisés de l'utilisateur
-    if (order.depot_name && !isUserAllowedForDepot(currentUser, order.depot_name)) {
+    const isAuthorized = isUserAuthorizedPreparerForOrder({
+      user: preparerCandidate,
+      order,
+      depots,
+      depotHolders,
+      roles,
+    });
+    if (!isAuthorized) {
       return false;
     }
 

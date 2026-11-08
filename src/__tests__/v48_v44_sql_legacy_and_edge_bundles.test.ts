@@ -167,6 +167,7 @@ describe('v44 — LOT 2 : Edge Functions livrées comme scripts autonomes et ong
       EDGE_FUNCTIONS.syncLicense,
       EDGE_FUNCTIONS.adminUsers,
       EDGE_FUNCTIONS.sendReportEmail,
+      EDGE_FUNCTIONS.passwordReset,
     ]);
 
     const panelContent = fs.readFileSync(
@@ -176,7 +177,7 @@ describe('v44 — LOT 2 : Edge Functions livrées comme scripts autonomes et ong
     expect(panelContent).toContain('Copier le nom');
     expect(panelContent).toContain('Copier le code TypeScript complet');
     expect(panelContent).toContain('Tester cette fonction');
-    expect(panelContent).toContain('Tester les 3 fonctions');
+    expect(panelContent).toContain('Tester les 4 fonctions');
     expect(panelContent).toContain('introuvable : créez-la avec le nom exact ci-dessus');
     expect(panelContent).toContain('déployée mais en erreur');
     expect(panelContent).toContain('TOT_LICENSE_PUBLIC_KEYS_JSON');

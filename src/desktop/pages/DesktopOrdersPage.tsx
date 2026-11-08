@@ -39,6 +39,11 @@ import {
   ReportPeriodPreset,
 } from '../../services/reportsService';
 import { getClientSupabase, normalizeOrderRecord } from '../../services/clientSupabase';
+import {
+  buildOrderTraceabilityDetails,
+  formatOrderPickupTransferSummary,
+  isOrderPickupTransferred,
+} from '../../services/orderTraceabilityService';
 import { tr } from '../../i18n/dutchTranslator';
 import { Language } from '../../i18n/translations';
 import { SearchableSelect } from '../../components/SearchableSelect';
@@ -727,6 +732,37 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
             className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
           />
 
+          <input
+            type="text"
+            data-testid="orders-filter-collector"
+            value={filters.collector || ''}
+            onChange={(e) => setFilters((prev) => ({ ...prev, collector: e.target.value }))}
+            placeholder={tr(language, 'Enleveur', 'Collector', 'Afhaler')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          />
+
+          <SearchableSelect
+            data-testid="orders-filter-pickup-transferred"
+            value={filters.pickupTransferred || 'ALL'}
+            onChange={(val) =>
+              setFilters((prev) => ({
+                ...prev,
+                pickupTransferred: val as 'ALL' | 'YES' | 'NO',
+              }))
+            }
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          >
+            <option value="ALL">
+              {tr(language, 'Retrait transféré : Tous', 'Pickup transferred: All', 'Afhaling overgedragen: Alle')}
+            </option>
+            <option value="YES">
+              {tr(language, 'Retrait transféré : Oui', 'Pickup transferred: Yes', 'Afhaling overgedragen: Ja')}
+            </option>
+            <option value="NO">
+              {tr(language, 'Retrait transféré : Non', 'Pickup transferred: No', 'Afhaling overgedragen: Nee')}
+            </option>
+          </SearchableSelect>
+
           <SearchableSelect
             data-testid="orders-filter-department"
             value={filters.department}
@@ -852,6 +888,24 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                       <span className="font-mono">
                         {new Date(order.created_at).toLocaleDateString(locale)}
                       </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-500 dark:text-slate-400 pt-0.5">
+                      {order.preparer_name && (
+                        <span>
+                          {tr(language, 'Prép.:', 'Prep:', 'Pick:')} <strong>{order.preparer_name}</strong>
+                        </span>
+                      )}
+                      {order.collected_by && (
+                        <span>
+                          {tr(language, 'Enlev.:', 'Coll.:', 'Afh.:')} <strong>{order.collected_by}</strong>
+                        </span>
+                      )}
+                      {isOrderPickupTransferred(order) && (
+                        <span className="px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold">
+                          {formatOrderPickupTransferSummary(order, language)}
+                        </span>
+                      )}
                     </div>
                   </button>
                 );
@@ -1026,8 +1080,84 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                 </div>
               </div>
 
-              {/* Order Items Table */}
-              <div className="flex-1 overflow-auto p-6">
+              {/* Order Items Table + Traceability Block */}
+              <div className="flex-1 overflow-auto p-6 space-y-4">
+                {(() => {
+                  const trace = buildOrderTraceabilityDetails(activeOrder, language);
+                  return (
+                    <div
+                      data-testid="desktop-order-traceability-block"
+                      className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5 text-xs"
+                    >
+                      <div className="font-black text-[11px] uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                        {tr(language, 'Traçabilité de la commande', 'Order Traceability', 'Traceerbaarheid van de bestelling')}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.requesterName}
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-500 block">
+                            {trace.createdAtFormatted}
+                          </span>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.preparerName}
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-500 block">
+                            {trace.readyAtFormatted !== '—'
+                              ? `${tr(language, 'Prête :', 'Ready:', 'Klaar:')} ${trace.readyAtFormatted}`
+                              : trace.assignedAtFormatted !== '—'
+                              ? `${tr(language, 'Prise :', 'Assigned:', 'Toegewezen:')} ${trace.assignedAtFormatted}`
+                              : '—'}
+                          </span>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Enleveur', 'Collector', 'Afhaler')}
+                          </span>
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {trace.collectorName}
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-500 block">
+                            {trace.collectedAtFormatted}
+                          </span>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/70">
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen')}
+                          </span>
+                          <span
+                            data-testid="desktop-order-traceability-transferred"
+                            className={`font-bold ${
+                              trace.pickupTransferred
+                                ? 'text-purple-700 dark:text-purple-300'
+                                : 'text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            {trace.pickupTransferSummary}
+                          </span>
+                          {trace.pickupDelegateNotes && (
+                            <span className="text-[11px] text-slate-500 block italic">
+                              « {trace.pickupDelegateNotes} »
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead className="bg-slate-100 dark:bg-slate-800/80 text-[11px] font-bold uppercase text-slate-500">

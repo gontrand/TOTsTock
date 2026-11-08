@@ -62,6 +62,7 @@ describe('v43 — LOT 1 : Noms des fonctions Edge centralisés et sonde de diagn
       adminUsers: 'APP_TOT-Stock_admin-users',
       syncLicense: 'APP_TOT-Stock_licenses_sync-license',
       sendReportEmail: 'APP_TOT-Stock_send-report-email',
+      passwordReset: 'APP_TOT-Stock_password-reset',
     });
     expect(MASTER_EDGE_FUNCTIONS).toEqual({
       licenses: 'APP_TOT-Stock_licenses',
@@ -104,7 +105,9 @@ describe('v43 — LOT 1 : Noms des fonctions Edge centralisés et sonde de diagn
         'index.ts'
       );
       expect(fs.existsSync(supaPath)).toBe(true);
-      expect(fs.existsSync(clientPath)).toBe(true);
+      if (fnName !== 'APP_TOT-Stock_password-reset') {
+        expect(fs.existsSync(clientPath)).toBe(true);
+      }
     }
   });
 

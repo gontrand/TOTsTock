@@ -64,6 +64,25 @@ const desktopApi = Object.freeze({
   },
   getOrCreateSafeStorageKey: () => ipcRenderer.invoke('tot:safe-storage-get-or-create-key'),
   clearSafeStorageKey: () => ipcRenderer.invoke('tot:safe-storage-clear-key'),
+  copyText: (text) => ipcRenderer.invoke('tot:copy-text', text),
+  onPowerResume: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, payload) => {
+      try {
+        callback(payload);
+      } catch {
+        // Ignorer
+      }
+    };
+    ipcRenderer.on('tot:power-resume', listener);
+    return () => {
+      ipcRenderer.removeListener('tot:power-resume', listener);
+    };
+  },
 });
 
 contextBridge.exposeInMainWorld('totDesktop', desktopApi);
+
+

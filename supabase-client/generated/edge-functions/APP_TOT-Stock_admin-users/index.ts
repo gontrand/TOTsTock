@@ -60,6 +60,7 @@ export const TABLES = {
   mailAccounts: 'core_mail_accounts',
   mailSenders: 'core_mail_senders',
   mailLog: 'core_mail_log',
+  passwordResets: 'core_password_resets',
   products: 'stk_products',
   categories: 'stk_categories',
   subCategories: 'stk_sub_categories',
@@ -110,6 +111,7 @@ export const CLIENT_EDGE_FUNCTIONS = {
   adminUsers: 'APP_TOT-Stock_admin-users',
   syncLicense: 'APP_TOT-Stock_licenses_sync-license',
   sendReportEmail: 'APP_TOT-Stock_send-report-email',
+  passwordReset: 'APP_TOT-Stock_password-reset',
 } as const;
 
 export const MASTER_EDGE_FUNCTIONS = {
@@ -1136,6 +1138,10 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
   } catch (err: any) {
     return jsonResponse({ success: false, error: err?.message || 'Erreur inattendue serveur' }, 500);
   }
+}
+
+export function createAdminUsersHandler() {
+  return handleAdminUsersRequest;
 }
 
 // -------------------------------------------------------------------------
