@@ -38,6 +38,7 @@ import {
 import { copyToClipboard, CLIPBOARD_COPY_FAILURE_LABEL } from '../services/clipboard';
 import { tr } from '../i18n/dutchTranslator';
 import { Language } from '../i18n/translations';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export interface EdgeFunctionsSetupPanelProps {
   language: Language;
@@ -150,10 +151,10 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
 
   const resolveClient = (): { client: ReturnType<typeof getClientSupabase>; keyError?: string } => {
     const cleanUrl = normalizeSupabaseUrl(
-      supabaseUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_url') || '' : '')
+      supabaseUrl || (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_url') || '' : '')
     );
     const rawKey =
-      supabaseKey || (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_key') || '' : '');
+      supabaseKey || (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_key') || '' : '');
     if (rawKey.trim()) {
       const keyCheck = validateSupabaseAnonKey(rawKey);
       if (!keyCheck.valid) {

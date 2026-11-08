@@ -24,6 +24,7 @@ import {
   getResolvedMasterEdgeFunctionName,
   loadEdgeFunctionOverridesFromClientDb,
 } from '../constants/edgeFunctions';
+import { safeGetSensitiveItem } from './localCrypto';
 
 export { plan_limits, normalizeToCanonicalPlan };
 
@@ -496,7 +497,7 @@ export async function verifyLicenseKey(
   const cleanUrl = (
     clientSupabaseUrl ||
     current.client_supabase_url ||
-    (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_url') : '') ||
+    (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_url') : '') ||
     ''
   ).trim();
 
@@ -1452,7 +1453,7 @@ export async function recoverCompanyLicenseFromServerAndClientDb(
       const { data: sessionData } = await client.auth.getSession();
       const session = sessionData?.session;
       const anonKey =
-        (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_key') : '') ||
+        (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_key') : '') ||
         (client as any)?.supabaseKey ||
         '';
       const accessToken = session?.access_token || '';

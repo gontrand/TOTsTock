@@ -42,6 +42,7 @@ import { Depot, PLAN_TIERS, getPlanName } from '../types';
 import { normalizeSupabaseUrl } from '../services/clientSupabase';
 import { copyToClipboard } from '../services/clipboard';
 import { DepotHoldersSection, DraftDepotHolder } from './DepotHoldersSection';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export const DepotsModal: React.FC = () => {
   const {
@@ -447,7 +448,7 @@ export const DepotsModal: React.FC = () => {
     if (!supabaseUrl) return;
     const fixed = normalizeSupabaseUrl(supabaseUrl);
     if (fixed && fixed !== supabaseUrl) {
-      saveSupabaseConfig(fixed, localStorage.getItem('tqt_company_key') || '');
+      saveSupabaseConfig(fixed, safeGetSensitiveItem('tqt_company_key') || '');
       setSuccessMessage(
         tr(language, `URL Supabase corrigée automatiquement en : ${fixed}`, `Supabase URL automatically fixed to: ${fixed}`)
       );

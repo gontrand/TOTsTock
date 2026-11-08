@@ -915,6 +915,25 @@ export function readSensitiveLocalStorageSync(
 }
 
 /**
+ * Lecture synchrone sûre d'une clé sensible (URL / clé anon Supabase).
+ * Retourne la valeur en clair, ou '' si la valeur est encore chiffrée et non déverrouillée.
+ * Ne retourne JAMAIS l'enveloppe chiffrée {"v":1,"iv":...,"ct":...}.
+ */
+export function safeGetSensitiveItem(storageKey: string, storage?: Storage): string {
+  try {
+    const st = storage || (typeof localStorage !== 'undefined' ? localStorage : undefined);
+    if (!st) return '';
+    const v = readSensitiveLocalStorageSync(storageKey, st);
+    if (v) return v;
+    const raw = st.getItem(storageKey);
+    if (!raw || isEncryptedEnvelopeString(raw)) return '';
+    return raw;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Lit et déchiffre de manière asynchrone une clé sensible depuis `localStorage`.
  */
 export async function readSensitiveLocalStorageAsync(

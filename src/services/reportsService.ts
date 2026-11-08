@@ -26,6 +26,7 @@ import {
   formatOrderPickupTransferSummary,
   isOrderPickupTransferred,
 } from './orderTraceabilityService';
+import { safeGetSensitiveItem } from './localCrypto';
 
 export const DEFAULT_LOCAL_WINDOW_DAYS = 7;
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
@@ -1987,13 +1988,13 @@ export async function sendReportEmailViaEdgeFunction(params: {
   const supabaseUrl = (
     params.supabaseUrl ||
     localStorage.getItem('tot_inv_supabase_url') ||
-    localStorage.getItem('tqt_company_url') ||
+    safeGetSensitiveItem('tqt_company_url') ||
     ''
   ).trim();
   const supabaseKey = (
     params.supabaseKey ||
     localStorage.getItem('tot_inv_supabase_key') ||
-    localStorage.getItem('tqt_company_key') ||
+    safeGetSensitiveItem('tqt_company_key') ||
     ''
   ).trim();
   const client = params.client || getClientSupabase(supabaseUrl, supabaseKey);

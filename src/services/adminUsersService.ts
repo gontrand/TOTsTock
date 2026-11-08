@@ -14,6 +14,7 @@ import {
   normalizeSupabaseKey,
   notifyRealtimeDataMutated,
 } from './clientSupabase';
+import { safeGetSensitiveItem } from './localCrypto';
 
 export interface AdminCreateUserPayload {
   email: string;
@@ -159,8 +160,8 @@ export async function adminCreateUser(
 
     let createdAuthUserId: string | undefined;
     try {
-      const rawUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_url') || '' : '';
-      const rawKey = typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_key') || '' : '';
+      const rawUrl = typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_url') || '' : '';
+      const rawKey = typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_key') || '' : '';
       const finalUrl = normalizeSupabaseUrl(rawUrl);
       const finalKey = normalizeSupabaseKey(rawKey);
       if (finalUrl && finalKey) {

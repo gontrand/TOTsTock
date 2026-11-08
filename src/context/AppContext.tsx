@@ -193,8 +193,7 @@ import {
   unlockPinLocalEncryption,
   readSensitiveLocalStorageSync,
   writeSensitiveLocalStorageSync,
-  removeSensitiveLocalStorage,
-} from '../services/localCrypto';
+  removeSensitiveLocalStorage, safeGetSensitiveItem } from '../services/localCrypto';
 import {
   executeSaveDepotWithRollback,
   mergeDepotsPreservingInFlight,
@@ -715,7 +714,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Supabase Config (with startup purge of service_role / sb_secret_ keys)
   const [supabaseUrl, setSupabaseUrl] = useState(() => {
-    const raw = readSensitiveLocalStorageSync('tqt_company_url') || localStorage.getItem('tqt_company_url') || '';
+    const raw = readSensitiveLocalStorageSync('tqt_company_url') || safeGetSensitiveItem('tqt_company_url') || '';
     const clean = normalizeSupabaseUrl(raw);
     if (clean && clean !== raw) {
       writeSensitiveLocalStorageSync('tqt_company_url', clean);
@@ -728,7 +727,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeSensitiveLocalStorage(`${LOCAL_PREFIX}current_user`);
       return '';
     }
-    const raw = readSensitiveLocalStorageSync('tqt_company_key') || localStorage.getItem('tqt_company_key') || '';
+    const raw = readSensitiveLocalStorageSync('tqt_company_key') || safeGetSensitiveItem('tqt_company_key') || '';
     const clean = normalizeSupabaseKey(raw);
     if (clean && clean !== raw) {
       writeSensitiveLocalStorageSync('tqt_company_key', clean);
@@ -742,10 +741,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     initNativeLocalCryptoIfAvailable()
       .then(() => {
         const refreshedUrl = normalizeSupabaseUrl(
-          readSensitiveLocalStorageSync('tqt_company_url') || localStorage.getItem('tqt_company_url') || ''
+          readSensitiveLocalStorageSync('tqt_company_url') || safeGetSensitiveItem('tqt_company_url') || ''
         );
         const refreshedKey = normalizeSupabaseKey(
-          readSensitiveLocalStorageSync('tqt_company_key') || localStorage.getItem('tqt_company_key') || ''
+          readSensitiveLocalStorageSync('tqt_company_key') || safeGetSensitiveItem('tqt_company_key') || ''
         );
         if (refreshedUrl) setSupabaseUrl(refreshedUrl);
         if (refreshedKey) setSupabaseKey(refreshedKey);
@@ -853,8 +852,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const syncLicenseWithServer = useCallback(
     async (force = false, overrideUrl?: string, overrideKey?: string): Promise<LicenseSyncResult> => {
-      const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || localStorage.getItem('tqt_company_url') || '');
-      const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || localStorage.getItem('tqt_company_key') || '');
+      const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || safeGetSensitiveItem('tqt_company_url') || '');
+      const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || safeGetSensitiveItem('tqt_company_key') || '');
       const client = getClientSupabase(effectiveUrl, effectiveKey);
       const currentLic = licenseRef.current;
       const res = await checkAndSync15DaysLicense(currentLic, effectiveUrl, force, client);
@@ -927,8 +926,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const verifyLicense = useCallback(
     async (key: string, overrideUrl?: string, overrideKey?: string): Promise<LicenseVerificationResult> => {
-      const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || localStorage.getItem('tqt_company_url') || '');
-      const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || localStorage.getItem('tqt_company_key') || '');
+      const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || safeGetSensitiveItem('tqt_company_url') || '');
+      const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || safeGetSensitiveItem('tqt_company_key') || '');
       const res = await verifyLicenseKey(key, effectiveUrl);
       if (res.success && res.license) {
         saveLicenseLocally(res.license);
@@ -1954,16 +1953,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const recheckAppCompat = useCallback(async () => {
-    const effectiveUrl = normalizeSupabaseUrl(supabaseUrl || localStorage.getItem('tqt_company_url') || '');
-    const effectiveKey = normalizeSupabaseKey(supabaseKey || localStorage.getItem('tqt_company_key') || '');
+    const effectiveUrl = normalizeSupabaseUrl(supabaseUrl || safeGetSensitiveItem('tqt_company_url') || '');
+    const effectiveKey = normalizeSupabaseKey(supabaseKey || safeGetSensitiveItem('tqt_company_key') || '');
     const client = getClientSupabase(effectiveUrl, effectiveKey);
     const res = await checkAppCompatibility(client, true);
     setAppCompat(res);
   }, [supabaseUrl, supabaseKey]);
 
   const syncFromSupabase = useCallback(async (overrideUrl?: string, overrideKey?: string) => {
-    const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || localStorage.getItem('tqt_company_url') || '');
-    const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || localStorage.getItem('tqt_company_key') || '');
+    const effectiveUrl = normalizeSupabaseUrl(overrideUrl || supabaseUrl || safeGetSensitiveItem('tqt_company_url') || '');
+    const effectiveKey = normalizeSupabaseKey(overrideKey || supabaseKey || safeGetSensitiveItem('tqt_company_key') || '');
     const client = getClientSupabase(effectiveUrl, effectiveKey);
     if (!client) {
       setSupabaseSyncStatus('idle');

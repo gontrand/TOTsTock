@@ -89,6 +89,7 @@ import {
 } from '../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from './EdgeFunctionsSetupPanel';
 import { SearchableSelect } from './SearchableSelect';
+import { safeGetSensitiveItem } from '../services/localCrypto';
 
 export const CompanySetupModal: React.FC = () => {
   const {
@@ -232,10 +233,10 @@ export const CompanySetupModal: React.FC = () => {
     async (overridePlan?: string) => {
       try {
         const cleanUrl = normalizeSupabaseUrl(
-          url || supabaseConfig?.url || localStorage.getItem('tqt_company_url') || ''
+          url || supabaseConfig?.url || safeGetSensitiveItem('tqt_company_url') || ''
         );
         const cleanKey = normalizeSupabaseKey(
-          key || supabaseConfig?.key || localStorage.getItem('tqt_company_key') || ''
+          key || supabaseConfig?.key || safeGetSensitiveItem('tqt_company_key') || ''
         );
         if (!cleanUrl || !cleanKey) {
           setDbLicenseStatus(null);
@@ -728,8 +729,8 @@ export const CompanySetupModal: React.FC = () => {
   };
 
   const handleDiscoverLicenseAutomatically = async () => {
-    const cleanUrl = normalizeSupabaseUrl(url || supabaseConfig?.url || localStorage.getItem('tqt_company_url') || '');
-    const cleanKey = normalizeSupabaseKey(key || supabaseConfig?.key || localStorage.getItem('tqt_company_key') || '');
+    const cleanUrl = normalizeSupabaseUrl(url || supabaseConfig?.url || safeGetSensitiveItem('tqt_company_url') || '');
+    const cleanKey = normalizeSupabaseKey(key || supabaseConfig?.key || safeGetSensitiveItem('tqt_company_key') || '');
 
     if (!cleanUrl || !cleanKey) {
       setLicenseMsg({

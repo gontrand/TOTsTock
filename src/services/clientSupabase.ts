@@ -20,8 +20,7 @@ import {
 import {
   createSupabaseEncryptedAuthStorage,
   readSensitiveLocalStorageSync,
-  removeSensitiveLocalStorage,
-} from './localCrypto';
+  removeSensitiveLocalStorage, safeGetSensitiveItem } from './localCrypto';
 import { verifyPin, verifyLocalDevicePin, hasLocalDevicePin } from '../utils/crypto';
 import {
   Product,
@@ -813,12 +812,12 @@ export function getClientSupabase(url?: string, key?: string): SupabaseClient | 
   const rawUrl =
     url ||
     readSensitiveLocalStorageSync('tqt_company_url') ||
-    (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_url') : '') ||
+    (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_url') : '') ||
     '';
   const rawKey =
     key ||
     readSensitiveLocalStorageSync('tqt_company_key') ||
-    (typeof localStorage !== 'undefined' ? localStorage.getItem('tqt_company_key') : '') ||
+    (typeof localStorage !== 'undefined' ? safeGetSensitiveItem('tqt_company_key') : '') ||
     '';
 
   if (isDangerousSupabaseKey(rawKey)) {
