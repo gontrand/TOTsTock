@@ -167,6 +167,10 @@ export function normalizeSupabaseUrl(rawUrl?: string): string {
   let url = rawUrl.trim().replace(/^["']|["']$/g, '');
   if (!url) return '';
 
+  // 0. Rejet de toute valeur corrompue (enveloppe chiffrée {"v":1,"iv":...,"ct":...} ou JSON) :
+  // une vraie URL ne contient ni accolade, ni guillemet, ni espace.
+  if (/[{}"\s]/.test(url)) return '';
+
   // 1. Détection de l'URL du Dashboard Supabase (erreur très fréquente lors du copier/coller)
   const dashboardMatch = url.match(/supabase\.(?:com|io)\/(?:dashboard\/)?project\/([a-zA-Z0-9_-]+)/);
   if (dashboardMatch && dashboardMatch[1]) {
@@ -782,6 +786,8 @@ export function normalizeSupabaseKey(rawKey?: string): string {
   if (!rawKey) return '';
   const clean = rawKey.trim().replace(/^["']|["']$/g, '').trim();
   if (!clean) return '';
+  // Rejet d'une enveloppe chiffrée / JSON égarée dans le champ clé
+  if (/[{}"\s]/.test(clean)) return '';
   if (isDangerousSupabaseKey(clean)) {
     return '';
   }

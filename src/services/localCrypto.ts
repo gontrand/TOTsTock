@@ -927,6 +927,8 @@ export function safeGetSensitiveItem(storageKey: string, storage?: Storage): str
     if (v) return v;
     const raw = st.getItem(storageKey);
     if (!raw || isEncryptedEnvelopeString(raw)) return '';
+    // Valeur corrompue par une ancienne normalisation (ex. "https://{\"v\":1,\"iv\":...}")
+    if (/[{}]/.test(raw) && raw.includes('"iv"')) return '';
     return raw;
   } catch {
     return '';
