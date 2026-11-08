@@ -19,11 +19,15 @@ import {
 import { useApp } from '../context/AppContext';
 import { tr } from '../i18n/dutchTranslator';
 import {
-  getActiveAllowedDepots,
   getAvailableStockInDepot,
 } from '../services/stockMovementService';
+import {
+  getEligibleSourceDepots,
+  getEligibleDestDepots,
+} from '../services/transferService';
 import { generateOperationId } from '../services/offline/indexedDb';
 import { playScanBeep } from '../utils/crypto';
+import { SearchableSelect } from './SearchableSelect';
 
 export interface StockTransferLineItem {
   productId: string;
@@ -38,6 +42,9 @@ export const StockTransferModal: React.FC = () => {
     canTransferBetweenDepots,
     currentUser,
     depots,
+    depotHolders,
+    users,
+    userHasPermission,
     products,
     stockLevels,
     batchCart,
@@ -46,9 +53,16 @@ export const StockTransferModal: React.FC = () => {
     language,
   } = useApp();
 
-  const activeAllowedDepots = useMemo(
-    () => getActiveAllowedDepots(currentUser, depots),
-    [currentUser, depots]
+  const eligibleSourceDepots = useMemo(
+    () =>
+      getEligibleSourceDepots(
+        currentUser,
+        depots,
+        depotHolders,
+        userHasPermission('perm_stock_transfer'),
+        userHasPermission('perm_stock_transfer_store')
+      ),
+    [currentUser, depots, depotHolders, userHasPermission]
   );
 
   const [sourceDepot, setSourceDepot] = useState<string>('');
@@ -63,23 +77,33 @@ export const StockTransferModal: React.FC = () => {
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'offline' | 'error';
     message: string;
+    transferNumber?: string;
+    transferStatus?: string;
+    receiverNames?: string[];
   } | null>(null);
 
   const scanInputRef = useRef<HTMLInputElement | null>(null);
+
+  const destDepotOptions = useMemo(
+    () => getEligibleDestDepots(sourceDepot, depots, depotHolders, users),
+    [sourceDepot, depots, depotHolders, users]
+  );
 
   // Initialisation à l'ouverture de la modale
   useEffect(() => {
     if (!stockTransferModal.open) return;
 
-    const depotNames = activeAllowedDepots.map((d) => d.name);
+    const srcNames = eligibleSourceDepots.map((d) => d.name);
     let initSrc = stockTransferModal.initialSourceDepot || '';
-    if (!initSrc || !depotNames.includes(initSrc)) {
-      initSrc = depotNames[0] || '';
+    if (!initSrc || !srcNames.includes(initSrc)) {
+      initSrc = srcNames[0] || '';
     }
 
+    const dstOptions = getEligibleDestDepots(initSrc, depots, depotHolders, users);
+    const dstNames = dstOptions.map((o) => o.depot.name);
     let initDst = stockTransferModal.initialDestDepot || '';
-    if (!initDst || !depotNames.includes(initDst) || initDst === initSrc) {
-      initDst = depotNames.find((n) => n !== initSrc) || '';
+    if (!initDst || !dstNames.includes(initDst) || initDst === initSrc) {
+      initDst = dstNames[0] || '';
     }
 
     setSourceDepot(initSrc);
@@ -122,25 +146,20 @@ export const StockTransferModal: React.FC = () => {
     setFeedback(null);
   };
 
-  const destDepotOptions = useMemo(
-    () => activeAllowedDepots.filter((d) => d.name !== sourceDepot),
-    [activeAllowedDepots, sourceDepot]
-  );
-
   useEffect(() => {
-    if (destDepot && destDepot === sourceDepot) {
-      const alt = activeAllowedDepots.find((d) => d.name !== sourceDepot)?.name || '';
-      setDestDepot(alt);
+    const validDstNames = destDepotOptions.map((o) => o.depot.name);
+    if (!destDepot || destDepot === sourceDepot || !validDstNames.includes(destDepot)) {
+      setDestDepot(validDstNames[0] || '');
     }
-  }, [sourceDepot, destDepot, activeAllowedDepots]);
+  }, [sourceDepot, destDepot, destDepotOptions]);
 
   // Plafonner automatiquement les quantités lorsque le dépôt source change
   const handleSourceDepotChange = (nextSource: string) => {
     markDraftMutated();
     setSourceDepot(nextSource);
-    if (destDepot === nextSource) {
-      const alt = activeAllowedDepots.find((d) => d.name !== nextSource)?.name || '';
-      setDestDepot(alt);
+    const nextDestOpts = getEligibleDestDepots(nextSource, depots, depotHolders, users);
+    if (!nextDestOpts.some((o) => o.depot.name === destDepot)) {
+      setDestDepot(nextDestOpts[0]?.depot.name || '');
     }
     setLines((prev) =>
       prev.map((line) => {
@@ -156,6 +175,7 @@ export const StockTransferModal: React.FC = () => {
   // Inversion rapide Source <-> Destination (⇄)
   const handleSwapDepots = () => {
     if (!sourceDepot || !destDepot) return;
+    if (!eligibleSourceDepots.some((d) => d.name === destDepot)) return;
     markDraftMutated();
     const prevSource = sourceDepot;
     const prevDest = destDepot;
@@ -400,12 +420,10 @@ export const StockTransferModal: React.FC = () => {
       if (res.status === 'queued_offline') {
         setFeedback({
           type: 'offline',
-          message: tr(
-            language,
-            'Transfert en attente de synchronisation',
-            'Transfer pending synchronization',
-            'Overdracht in afwachting van synchronisatie'
-          ),
+          message: res.message,
+          transferNumber: res.transferNumber,
+          transferStatus: tr(language, 'En transit', 'In transit', 'Onderweg'),
+          receiverNames: res.receiverNames,
         });
         setLines([]);
         setBatchId(generateOperationId());
@@ -415,6 +433,9 @@ export const StockTransferModal: React.FC = () => {
       setFeedback({
         type: 'success',
         message: res.message,
+        transferNumber: res.transferNumber,
+        transferStatus: tr(language, 'En transit', 'In transit', 'Onderweg'),
+        receiverNames: res.receiverNames,
       });
       setLines([]);
       setBatchId(generateOperationId());
@@ -496,7 +517,29 @@ export const StockTransferModal: React.FC = () => {
               ) : (
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
               )}
-              <span className="flex-1">{feedback.message}</span>
+              <div className="flex-1 space-y-1">
+                <div>{feedback.message}</div>
+                {(feedback.transferNumber || feedback.transferStatus) && (
+                  <div className="flex items-center gap-2 flex-wrap pt-0.5 text-[11px]">
+                    {feedback.transferNumber && (
+                      <span
+                        data-testid="transfer-created-number"
+                        className="px-2 py-0.5 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-emerald-300 dark:border-emerald-700 font-mono font-black"
+                      >
+                        {feedback.transferNumber}
+                      </span>
+                    )}
+                    {feedback.transferStatus && (
+                      <span
+                        data-testid="transfer-created-status"
+                        className="px-2 py-0.5 rounded-lg bg-sky-100 dark:bg-sky-900/70 text-sky-900 dark:text-sky-200 border border-sky-300 dark:border-sky-700 font-black"
+                      >
+                        {feedback.transferStatus}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -512,19 +555,20 @@ export const StockTransferModal: React.FC = () => {
                 </label>
                 <div className="relative">
                   <Building2 className="w-4 h-4 text-orange-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <select
+                  <SearchableSelect
                     id="transfer-source-depot"
                     data-testid="transfer-source-depot"
                     value={sourceDepot}
-                    onChange={(e) => handleSourceDepotChange(e.target.value)}
+                    onChange={(val) => handleSourceDepotChange(val)}
+                    recentKey="depots"
                     className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold text-slate-900 dark:text-white"
                   >
-                    {activeAllowedDepots.map((d) => (
-                      <option key={d.id} value={d.name}>
+                    {eligibleSourceDepots.map((d) => (
+                      <option key={String(d.id)} value={d.name}>
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 
@@ -554,23 +598,32 @@ export const StockTransferModal: React.FC = () => {
                 </label>
                 <div className="relative">
                   <Building2 className="w-4 h-4 text-sky-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <select
+                  <SearchableSelect
                     id="transfer-dest-depot"
                     data-testid="transfer-dest-depot"
                     value={destDepot}
-                    onChange={(e) => {
+                    onChange={(val) => {
                       markDraftMutated();
-                      setDestDepot(e.target.value);
+                      setDestDepot(val);
                     }}
+                    recentKey="depots"
                     className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold text-slate-900 dark:text-white"
                   >
-                    {destDepotOptions.map((d) => (
-                      <option key={d.id} value={d.name}>
-                        {d.name}
+                    {destDepotOptions.map((opt) => (
+                      <option key={String(opt.depot.id)} value={opt.depot.name}>
+                        {opt.depot.name} ({opt.receiverLabel})
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
+                {destDepot && (
+                  <p className="text-[10.5px] text-sky-700 dark:text-sky-300 font-semibold mt-1 truncate">
+                    {tr(language, 'Validation réception par :', 'Reception validated by:', 'Ontvangst gevalideerd door:')}{' '}
+                    <strong>
+                      {destDepotOptions.find((o) => o.depot.name === destDepot)?.receiverLabel || '—'}
+                    </strong>
+                  </p>
+                )}
               </div>
             </div>
           </div>

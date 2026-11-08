@@ -1,5 +1,5 @@
-export const APP_VERSION = '5.9.1';                 // version de cette application
-export const EXPECTED_SCHEMA_VERSION = '2.4.1';     // version de schéma pour laquelle elle a été écrite (v51 : corrections mailing v50 & fournisseur Microsoft 365 Graph)
+export const APP_VERSION = '5.13.0';                // version de cette application
+export const EXPECTED_SCHEMA_VERSION = '2.7.0';     // version de schéma pour laquelle elle a été écrite (v54/v54b : transferts validés à la réception, responsables de dépôt & droits fins)
 export const MIN_SUPPORTED_SCHEMA_VERSION = '1.0.0';// plus ancien schéma encore toléré (fenêtre N, N-1, N-2)
 
 /**

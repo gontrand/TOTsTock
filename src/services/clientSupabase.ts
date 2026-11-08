@@ -36,6 +36,14 @@ import {
   OrderBasket,
   BatchCartItem,
 } from '../types';
+import {
+  buildSearchMaterialOrdersRpcParams,
+  buildSearchStockMovementsRpcParams,
+  filterMovementsDefault7Days,
+  filterOrdersDefault7DaysAndActive,
+  MovementSearchFilters,
+  OrderSearchFilters,
+} from './reportsService';
 
 let cachedClient: SupabaseClient | null = null;
 let cachedUrl = '';
@@ -1329,15 +1337,22 @@ export async function fetchAllClientData(client: SupabaseClient): Promise<Client
     console.warn('Erreur chargement products Supabase:', e);
   }
 
-  // 2. Stock Movements
+  // 2. Stock Movements (Fenêtre 7 jours par défaut)
   try {
-    const { data, error } = await client
-      .from(TABLES.movements)
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(500);
+    const sevenDaysAgoIso = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    let movQuery: any = client.from(TABLES.movements).select('*');
+    if (typeof movQuery.gte === 'function') {
+      movQuery = movQuery.gte('created_at', sevenDaysAgoIso);
+    }
+    if (typeof movQuery.order === 'function') {
+      movQuery = movQuery.order('created_at', { ascending: false });
+    }
+    if (typeof movQuery.limit === 'function') {
+      movQuery = movQuery.limit(500);
+    }
+    const { data, error } = await movQuery;
     if (!error && data && data.length > 0) {
-      result.movements = data.map(normalizeMovementRecord);
+      result.movements = filterMovementsDefault7Days(data.map(normalizeMovementRecord));
     }
   } catch (e) {
     console.warn('Erreur chargement movements Supabase:', e);
@@ -1932,7 +1947,11 @@ export async function pushUserBasketsToSupabase(
   }
 }
 
-export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Promise<MaterialOrder[]> {
+export async function fetchOrdersMergedFromSupabase(
+  client: SupabaseClient,
+  options?: { windowDays?: number }
+): Promise<MaterialOrder[]> {
+  const windowDays = options?.windowDays !== undefined ? options.windowDays : 7;
   let tableOrders: MaterialOrder[] = [];
   let mirrorOrders: MaterialOrder[] = [];
 
@@ -1942,10 +1961,17 @@ export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Pro
   } catch {}
 
   try {
-    const { data, error } = await client
-      .from(TABLES.materialOrders)
-      .select('*')
-      .order('created_at', { ascending: false });
+    const cutoffIso = new Date(Date.now() - Math.max(1, windowDays) * 86_400_000).toISOString();
+    let query: any = client.from(TABLES.materialOrders).select('*');
+    if (windowDays > 0 && typeof query.or === 'function') {
+      query = query.or(
+        `created_at.gte.${cutoffIso},status.in.(WAITING_APPROVAL,PENDING,PREPARING,READY)`
+      );
+    }
+    if (typeof query.order === 'function') {
+      query = query.order('created_at', { ascending: false });
+    }
+    const { data, error } = await query;
     if (!error && Array.isArray(data)) {
       const newlyDeleted: string[] = [];
       tableOrders = (data as MaterialOrder[]).filter((row) => {
@@ -1962,7 +1988,56 @@ export async function fetchOrdersMergedFromSupabase(client: SupabaseClient): Pro
     }
   } catch {}
 
-  return mergeMaterialOrdersLists(tableOrders, mirrorOrders);
+  const merged = mergeMaterialOrdersLists(tableOrders, mirrorOrders);
+  return windowDays > 0 ? filterOrdersDefault7DaysAndActive(merged) : merged;
+}
+
+export async function searchMaterialOrdersOnServer(
+  client: SupabaseClient,
+  filters: OrderSearchFilters,
+  limit = 50,
+  offset = 0
+): Promise<{ rows: MaterialOrder[]; totalCount: number; error?: string }> {
+  const params = buildSearchMaterialOrdersRpcParams(filters, limit, offset);
+  const { data, error } = await client.rpc('search_material_orders', params);
+  if (error) {
+    return {
+      rows: [],
+      totalCount: 0,
+      error: formatPostgresErrorMessage(error),
+    };
+  }
+  const list = Array.isArray(data) ? data : [];
+  const totalCount = list.length > 0 ? Number(list[0]?.total_count ?? list.length) : 0;
+  const rows = list
+    .map((item: any) => item?.row_data ?? item)
+    .filter(Boolean)
+    .map(normalizeOrderRecord);
+  return { rows, totalCount };
+}
+
+export async function searchStockMovementsOnServer(
+  client: SupabaseClient,
+  filters: MovementSearchFilters,
+  limit = 50,
+  offset = 0
+): Promise<{ rows: StockMovement[]; totalCount: number; error?: string }> {
+  const params = buildSearchStockMovementsRpcParams(filters, limit, offset);
+  const { data, error } = await client.rpc('search_stock_movements', params);
+  if (error) {
+    return {
+      rows: [],
+      totalCount: 0,
+      error: formatPostgresErrorMessage(error),
+    };
+  }
+  const list = Array.isArray(data) ? data : [];
+  const totalCount = list.length > 0 ? Number(list[0]?.total_count ?? list.length) : 0;
+  const rows = list
+    .map((item: any) => item?.row_data ?? item)
+    .filter(Boolean)
+    .map(normalizeMovementRecord);
+  return { rows, totalCount };
 }
 
 export async function fetchLiveOperationalData(
@@ -2000,7 +2075,7 @@ export async function fetchLiveOperationalData(
   await Promise.all([
     (async () => {
       try {
-        const orders = await fetchOrdersMergedFromSupabase(client);
+        const orders = await fetchOrdersMergedFromSupabase(client, { windowDays: 7 });
         result.orders = orders;
       } catch {}
     })(),
@@ -2021,13 +2096,20 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const { data, error } = await client
-          .from(TABLES.movements)
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(500);
+        const sevenDaysAgoIso = new Date(Date.now() - 7 * 86_400_000).toISOString();
+        let movQuery: any = client.from(TABLES.movements).select('*');
+        if (typeof movQuery.gte === 'function') {
+          movQuery = movQuery.gte('created_at', sevenDaysAgoIso);
+        }
+        if (typeof movQuery.order === 'function') {
+          movQuery = movQuery.order('created_at', { ascending: false });
+        }
+        if (typeof movQuery.limit === 'function') {
+          movQuery = movQuery.limit(500);
+        }
+        const { data, error } = await movQuery;
         if (!error && Array.isArray(data)) {
-          result.movements = data.map(normalizeMovementRecord);
+          result.movements = filterMovementsDefault7Days(data.map(normalizeMovementRecord));
         }
       } catch {}
     })(),

@@ -51,6 +51,7 @@ import {
 } from '../../services/desktopBridge';
 import { generateProductZplLabel } from '../../services/zplLabel';
 import { tr } from '../../i18n/dutchTranslator';
+import { SearchableSelect } from '../../components/SearchableSelect';
 
 export const DesktopPrintStationPage: React.FC = () => {
   const { depots, products, orders, canViewPrices, language } = useApp();
@@ -388,16 +389,17 @@ export const DesktopPrintStationPage: React.FC = () => {
                 <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
                   {tr(language, 'Dépôt rattaché', 'Linked depot', 'Gekoppeld depot')}
                 </label>
-                <select
+                <SearchableSelect
                   value={depotFilter}
-                  onChange={(e) => {
-                    setDepotFilter(e.target.value);
+                  onChange={(val) => {
+                    setDepotFilter(val);
                     setSavedPrintStationConfig(
                       stationId,
                       stationName,
-                      e.target.value === 'ALL' ? null : e.target.value
+                      val === 'ALL' ? null : val
                     );
                   }}
+                  recentKey="depots"
                   className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
                 >
                   <option value="ALL">
@@ -408,7 +410,7 @@ export const DesktopPrintStationPage: React.FC = () => {
                       {d.name}
                     </option>
                   ))}
-                </select>
+                </SearchableSelect>
               </div>
             </div>
 
@@ -448,10 +450,9 @@ export const DesktopPrintStationPage: React.FC = () => {
               {printers.length > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-slate-500">{tr(language, 'Imprimante système :', 'System printer:', 'Systeemprinter:')}</span>
-                  <select
+                  <SearchableSelect
                     value={defaultPrinterName}
-                    onChange={async (e) => {
-                      const val = e.target.value;
+                    onChange={async (val) => {
                       setDefaultPrinterName(val);
                       await setDesktopPrintSettings({
                         printerName: val,
@@ -468,7 +469,7 @@ export const DesktopPrintStationPage: React.FC = () => {
                         {pr.displayName || pr.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               )}
             </div>
@@ -504,11 +505,11 @@ export const DesktopPrintStationPage: React.FC = () => {
                 <label className="block text-[11px] text-slate-500 mb-1">
                   {tr(language, 'Mode de connexion', 'Connection mode', 'Verbindingsmodus')}
                 </label>
-                <select
+                <SearchableSelect
                   value={zplSettings.transport}
-                  onChange={(e) =>
+                  onChange={(val) =>
                     handleUpdateZpl({
-                      transport: e.target.value as ZplTransportMode,
+                      transport: val as ZplTransportMode,
                     })
                   }
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
@@ -519,7 +520,7 @@ export const DesktopPrintStationPage: React.FC = () => {
                   <option value="raw_queue">
                     {tr(language, 'Spouleur USB RAW', 'USB RAW Spooler', 'USB RAW-spooler')}
                   </option>
-                </select>
+                </SearchableSelect>
               </div>
 
               {zplSettings.transport === 'tcp' ? (
@@ -573,11 +574,11 @@ export const DesktopPrintStationPage: React.FC = () => {
                 <label className="block text-[11px] text-slate-500 mb-1">
                   {tr(language, 'Format rouleau', 'Roll format', 'Rolformaat')}
                 </label>
-                <select
+                <SearchableSelect
                   value={zplSettings.format}
-                  onChange={(e) =>
+                  onChange={(val) =>
                     handleUpdateZpl({
-                      format: e.target.value as DesktopZplSettings['format'],
+                      format: val as DesktopZplSettings['format'],
                     })
                   }
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
@@ -585,25 +586,25 @@ export const DesktopPrintStationPage: React.FC = () => {
                   <option value="50x30">50 × 30 mm</option>
                   <option value="70x37">70 × 37 mm</option>
                   <option value="90x50">90 × 50 mm</option>
-                </select>
+                </SearchableSelect>
               </div>
 
               <div>
                 <label className="block text-[11px] text-slate-500 mb-1">
                   {tr(language, 'Résolution tête', 'Printhead resolution', 'Printkopresolutie')}
                 </label>
-                <select
+                <SearchableSelect
                   value={zplSettings.dpi}
-                  onChange={(e) =>
+                  onChange={(val) =>
                     handleUpdateZpl({
-                      dpi: Number(e.target.value) === 300 ? 300 : 203,
+                      dpi: Number(val) === 300 ? 300 : 203,
                     })
                   }
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
                 >
                   <option value={203}>203 dpi (8 dpmm)</option>
                   <option value={300}>300 dpi (12 dpmm)</option>
-                </select>
+                </SearchableSelect>
               </div>
 
               <div>

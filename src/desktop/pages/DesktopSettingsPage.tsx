@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { canUserManageMailSettings } from '../../services/mailingService';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   AlertTriangle,
   ArrowDownAZ,
@@ -126,10 +127,14 @@ import {
   SQL_SCRIPT_12_USER_PREFERENCES,
   SQL_SCRIPT_13_TRANSFER_STOCK_BATCH,
   SQL_SCRIPT_14_MAILING,
+  SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS,
+  SQL_SCRIPT_16_AUDIT_TRAIL,
+  SQL_SCRIPT_17_TRANSFERTS_VALIDES,
 } from '../../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from '../../components/EdgeFunctionsSetupPanel';
 import { EmailSettingsPanel } from '../../components/EmailSettingsPanel';
 import { AboutAppPanel } from '../../components/AboutAppPanel';
+import { DepotHoldersSection, DraftDepotHolder } from '../../components/DepotHoldersSection';
 
 interface DesktopSettingsPageProps {
   initialSection?: DesktopSettingsSection;
@@ -228,13 +233,37 @@ const SQL_SCRIPTS_CATALOG = [
     filename: '14_mailing.sql',
     title: 'Script 14 — Mailing multi-fournisseurs, Microsoft 365 (Graph) & expéditeurs par application (14_mailing.sql)',
     description:
-      'Crée les tables core_mail_accounts (Brevo, Resend, SendGrid, Mailgun, Postmark, Mailjet, Microsoft 365 Graph, SMTP), core_mail_senders (stk, hab, rpt, tools) et core_mail_log, les RPC Vault sécurisées et migre automatiquement la configuration Brevo existante. À lancer après le script 13 et avant le script 07.',
+      'Crée les tables core_mail_accounts (Brevo, Resend, SendGrid, Mailgun, Postmark, Mailjet, Microsoft 365 Graph, SMTP), core_mail_senders (stk, hab, rpt, tools) et core_mail_log, les RPC Vault sécurisées et migre automatiquement la configuration Brevo existante. À lancer après le script 13 et avant le script 15.',
     sql: SQL_SCRIPT_14_MAILING,
+  },
+  {
+    id: '15',
+    filename: '15_search_orders_movements.sql',
+    title: 'Script 15 — Recherche serveur Commandes & Mouvements (15_search_orders_movements.sql)',
+    description:
+      'Crée les RPC paginées public.search_material_orders et public.search_stock_movements (avec total_count et row_data, respectant les droits utilisateur et les restrictions de dépôt). À lancer après le script 14 et avant le script 16.',
+    sql: SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS,
+  },
+  {
+    id: '16',
+    filename: '16_audit_trail.sql',
+    title: 'Script 16 — Journal d’audit serveur complet & immuable (16_audit_trail.sql)',
+    description:
+      'Harmonise core_audit_logs et core_login_logs, bloque tout UPDATE/DELETE direct (immuabilité), installe les triggers automatiques avec masquage des secrets (***) sur 13 tables sensibles et crée les RPC log_audit_event, log_login_event, log_login_failure, search_audit_logs, search_login_logs et purge_audit_logs (>= 90 j, rôle 0). À lancer après le script 15 et avant le script 17.',
+    sql: SQL_SCRIPT_16_AUDIT_TRAIL,
+  },
+  {
+    id: '17',
+    filename: '17_transferts_valides.sql',
+    title: 'Script 17 — Transferts validés à la réception, responsables de dépôt & droits fins (17_transferts_valides.sql)',
+    description:
+      'Crée stk_depot_holders et stk_transfers, les RPC set_depot_holders, send_stock_transfer, receive_stock_transfer, reject_stock_transfer, cancel_stock_transfer, confirm_stock_transfer_adjustment, resolve_transfer_dispute, list_overdue_transfers, get_stock_levels_report et met à jour les permissions fines. À lancer après le script 16 et avant le script 07.',
+    sql: SQL_SCRIPT_17_TRANSFERTS_VALIDES,
   },
   {
     id: '07',
     filename: '07_app_compat.sql',
-    title: '07 — Compatibilité Schéma 2.4.1 & Diagnostic SQL',
+    title: '07 — Compatibilité Schéma 2.7.0 & Diagnostic SQL',
     description: 'Table public.core_app_compat et fonction RPC public.diagnostic_installation().',
     sql: SQL_SCRIPT_07_APP_COMPAT,
   },
@@ -265,6 +294,8 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     users,
     roles,
     depots,
+    depotHolders,
+    saveDepotHolders,
     products,
     subCategories,
     departments,
@@ -579,6 +610,15 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     scrollToAndFocusForm(roleFormRef.current, roleNameInputRef.current);
   };
 
+  const [draftDepotHolders, setDraftDepotHolders] = useState<DraftDepotHolder[]>([]);
+  const canEditDepotHolders = Boolean(
+    !currentUser ||
+      Number(currentUser.id) === 0 ||
+      Number(currentUser.role_id) === 0 ||
+      Number(currentUser.role_id) === 1 ||
+      userHasPermission('perm_manage_depots')
+  );
+
   const resetDepotForm = () => {
     setEditingDepotId(null);
     setNewDepotName('');
@@ -588,6 +628,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setNewDepotProjectNumber('');
     setNewDepotPickupZones('');
     setNewDepotActive(true);
+    setDraftDepotHolders([]);
   };
 
   const startEditDepot = (d: Depot) => {
@@ -601,6 +642,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setNewDepotProjectNumber(d.project_number || '');
     setNewDepotPickupZones((d.pickup_zones || []).join(', '));
     setNewDepotActive(d.is_active !== false);
+    const existingHolders = depotHolders
+      .filter((h) => String(h.depot_id) === String(d.id))
+      .map((h) => ({
+        user_id: h.user_id,
+        can_send: Boolean(h.can_send),
+        can_receive: Boolean(h.can_receive),
+      }));
+    setDraftDepotHolders(existingHolders);
     scrollToAndFocusForm(depotFormRef.current, depotNameInputRef.current);
   };
 
@@ -755,6 +804,12 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
       pickup_zones: zones,
     });
     if (res.success) {
+      const targetDepotId =
+        editingDepotId ??
+        depots.find((d) => d.name.trim().toLowerCase() === cleanName.toLowerCase())?.id;
+      if (targetDepotId !== undefined && targetDepotId !== null && canEditDepotHolders) {
+        await saveDepotHolders(targetDepotId, draftDepotHolders);
+      }
       setSaveMessage(
         editingDepotId !== null ? 'Dépôt mis à jour.' : 'Dépôt créé.'
       );
@@ -2107,9 +2162,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
 
                     <div className="col-span-4">
                       <label className="block font-bold mb-1">Rôle</label>
-                      <select
+                      <SearchableSelect
                         value={userRoleId}
-                        onChange={(e) => setUserRoleId(Number(e.target.value))}
+                        onChange={(val) => setUserRoleId(Number(val))}
                         className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                       >
                         {roles.map((r) => (
@@ -2117,13 +2172,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             {r.name} (#{r.id})
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                     <div className="col-span-4">
                       <label className="block font-bold mb-1">Département</label>
-                      <select
+                      <SearchableSelect
                         value={userDepartment}
-                        onChange={(e) => setUserDepartment(e.target.value)}
+                        onChange={(val) => setUserDepartment(val)}
                         className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                       >
                         <option value="">— Aucun / Général —</option>
@@ -2132,7 +2187,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             {d.name}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                     <div className="col-span-4 flex items-end pb-1">
                       <label className="flex items-center gap-2 font-bold cursor-pointer">
@@ -2220,10 +2275,10 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
 
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] font-bold text-slate-500">Tri :</span>
-                      <select
+                      <SearchableSelect
                         value={`${userSortCol}:${userSortDir}`}
-                        onChange={(e) => {
-                          const [col, dir] = e.target.value.split(':') as [
+                        onChange={(val) => {
+                          const [col, dir] = val.split(':') as [
                             UserSortColumn,
                             'asc' | 'desc'
                           ];
@@ -2244,7 +2299,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         <option value="role:desc">Rôle (Z → A)</option>
                         <option value="status:asc">Statut (Actifs d'abord)</option>
                         <option value="status:desc">Statut (Bloqués d'abord)</option>
-                      </select>
+                      </SearchableSelect>
 
                       {(userGlobalSearch ||
                         userColFilterTrigram ||
@@ -2371,9 +2426,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             />
                           </th>
                           <th className="py-1.5 px-2">
-                            <select
+                            <SearchableSelect
                               value={userColFilterDept}
-                              onChange={(e) => setUserColFilterDept(e.target.value)}
+                              onChange={(val) => setUserColFilterDept(val)}
                               className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px]"
                             >
                               <option value="ALL">Tous départements</option>
@@ -2383,12 +2438,12 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                   {d.name}
                                 </option>
                               ))}
-                            </select>
+                            </SearchableSelect>
                           </th>
                           <th className="py-1.5 px-2">
-                            <select
+                            <SearchableSelect
                               value={userColFilterRole}
-                              onChange={(e) => setUserColFilterRole(e.target.value)}
+                              onChange={(val) => setUserColFilterRole(val)}
                               className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px]"
                             >
                               <option value="ALL">Tous rôles</option>
@@ -2397,14 +2452,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                   {r.name} (#{r.id})
                                 </option>
                               ))}
-                            </select>
+                            </SearchableSelect>
                           </th>
                           <th className="py-1.5 px-2">
-                            <select
+                            <SearchableSelect
                               value={userColFilterStatus}
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 setUserColFilterStatus(
-                                  e.target.value as 'ALL' | 'ACTIVE' | 'BLOCKED' | 'PREPARER'
+                                  val as 'ALL' | 'ACTIVE' | 'BLOCKED' | 'PREPARER'
                                 )
                               }
                               className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px]"
@@ -2413,7 +2468,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               <option value="ACTIVE">Actif</option>
                               <option value="BLOCKED">Bloqué</option>
                               <option value="PREPARER">Préparateur</option>
-                            </select>
+                            </SearchableSelect>
                           </th>
                           <th className="py-1.5 px-2 text-right text-[10px] text-slate-400">
                             Col. filtrées
@@ -2561,11 +2616,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] font-bold text-slate-500">Tri des rôles :</span>
-                      <select
+                      <SearchableSelect
                         value={roleSortBy}
-                        onChange={(e) =>
+                        onChange={(val) =>
                           setRoleSortBy(
-                            e.target.value as 'name_asc' | 'name_desc' | 'id_asc' | 'perms_desc'
+                            val as 'name_asc' | 'name_desc' | 'id_asc' | 'perms_desc'
                           )
                         }
                         className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
@@ -2574,7 +2629,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         <option value="name_desc">Ordre alphabétique (Z → A)</option>
                         <option value="id_asc">Par identifiant (#0 → #10)</option>
                         <option value="perms_desc">Par nombre de permissions</option>
-                      </select>
+                      </SearchableSelect>
                       <span className="text-[11px] font-bold text-slate-400">
                         {filteredAndSortedRoles.length} / {roles.length}
                       </span>
@@ -2795,17 +2850,17 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                 </div>
                 <div className="col-span-3">
                   <label className="block font-bold mb-1">Type</label>
-                  <select
+                  <SearchableSelect
                     value={newDepotType}
-                    onChange={(e) =>
-                      setNewDepotType(e.target.value as 'FIXED' | 'VEHICLE' | 'CONTAINER')
+                    onChange={(val) =>
+                      setNewDepotType(val as 'FIXED' | 'VEHICLE' | 'CONTAINER')
                     }
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                   >
                     <option value="FIXED">Magasin Fixe (FIXED)</option>
                     <option value="VEHICLE">Véhicule / Camionnette (VEHICLE)</option>
                     <option value="CONTAINER">Conteneur Chantier (CONTAINER)</option>
-                  </select>
+                  </SearchableSelect>
                 </div>
                 <div className="col-span-5">
                   <label className="block font-bold mb-1">Adresse / Immatriculation</label>
@@ -2820,9 +2875,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
 
                 <div className="col-span-4">
                   <label className="block font-bold mb-1">Responsable</label>
-                  <select
+                  <SearchableSelect
                     value={newDepotManagerId}
-                    onChange={(e) => setNewDepotManagerId(e.target.value)}
+                    onChange={(val) => setNewDepotManagerId(val)}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                   >
                     <option value="">— Aucun —</option>
@@ -2831,7 +2886,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         {u.name} ({u.trigram})
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
                 <div className="col-span-5">
                   <label className="block font-bold mb-1">Zones de retrait (séparées par virgule)</label>
@@ -2850,6 +2905,23 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   >
                     {editingDepotId !== null ? 'Enregistrer' : '+ Ajouter'}
                   </button>
+                </div>
+
+                {/* Section Responsables (stk_depot_holders : Envoi can_send & Réception can_receive) */}
+                <div className="col-span-12 pt-2">
+                  <DepotHoldersSection
+                    language={language}
+                    users={users}
+                    holders={draftDepotHolders}
+                    onChange={setDraftDepotHolders}
+                    canEdit={canEditDepotHolders}
+                    depotId={editingDepotId}
+                    onSaveDirect={
+                      editingDepotId !== null
+                        ? (nextHolders) => saveDepotHolders(editingDepotId, nextHolders)
+                        : undefined
+                    }
+                  />
                 </div>
               </form>
 
@@ -2876,11 +2948,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                 </div>
 
                 <div className="col-span-2">
-                  <select
+                  <SearchableSelect
                     value={depotTypeFilter}
-                    onChange={(e) =>
+                    onChange={(val) =>
                       setDepotTypeFilter(
-                        e.target.value as 'ALL' | 'FIXED' | 'VEHICLE' | 'CONTAINER'
+                        val as 'ALL' | 'FIXED' | 'VEHICLE' | 'CONTAINER'
                       )
                     }
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
@@ -2889,13 +2961,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     <option value="FIXED">Magasins fixes</option>
                     <option value="VEHICLE">Véhicules</option>
                     <option value="CONTAINER">Conteneurs</option>
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div className="col-span-2">
-                  <select
+                  <SearchableSelect
                     value={depotManagerFilter}
-                    onChange={(e) => setDepotManagerFilter(e.target.value)}
+                    onChange={(val) => setDepotManagerFilter(val)}
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
                   >
                     <option value="ALL">Tous responsables</option>
@@ -2905,29 +2977,29 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         {u.name} ({u.trigram})
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div className="col-span-2">
-                  <select
+                  <SearchableSelect
                     value={depotStatusFilter}
-                    onChange={(e) =>
-                      setDepotStatusFilter(e.target.value as 'ALL' | 'OPEN' | 'CLOSED')
+                    onChange={(val) =>
+                      setDepotStatusFilter(val as 'ALL' | 'OPEN' | 'CLOSED')
                     }
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
                   >
                     <option value="ALL">Tous statuts</option>
                     <option value="OPEN">Ouverts / Actifs</option>
                     <option value="CLOSED">Fermés</option>
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div className="col-span-2">
-                  <select
+                  <SearchableSelect
                     value={depotSortBy}
-                    onChange={(e) =>
+                    onChange={(val) =>
                       setDepotSortBy(
-                        e.target.value as 'name_asc' | 'name_desc' | 'type_asc' | 'status'
+                        val as 'name_asc' | 'name_desc' | 'type_asc' | 'status'
                       )
                     }
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
@@ -2936,7 +3008,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     <option value="name_desc">Tri : Z → A</option>
                     <option value="type_asc">Tri : Par type</option>
                     <option value="status">Tri : Par statut</option>
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 
@@ -2948,12 +3020,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                 <div className="grid grid-cols-2 gap-3">
                   {filteredAndSortedDepots.map((d) => {
                     const mgr = users.find((u) => String(u.id) === String(d.manager_id));
+                    const dHolders = depotHolders.filter((h) => String(h.depot_id) === String(d.id));
+                    const hasReceiver = dHolders.some((h) => Boolean(h.can_receive));
                     return (
                       <div
                         key={String(d.id)}
                         className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 space-y-1">
                           <div className="font-bold text-slate-900 dark:text-white truncate">
                             {d.name}
                           </div>
@@ -2964,6 +3038,26 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               : d.manager_name
                                 ? ` • Resp: ${d.manager_name}`
                                 : ''}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                            {dHolders.map((h) => {
+                              const hu = users.find((u) => String(u.id) === String(h.user_id));
+                              return (
+                                <span
+                                  key={String(h.user_id)}
+                                  className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-800 font-bold"
+                                >
+                                  {hu?.name || `#${h.user_id}`} ({h.can_send ? 'Env' : ''}
+                                  {h.can_send && h.can_receive ? '/' : ''}
+                                  {h.can_receive ? 'Réc' : ''})
+                                </span>
+                              );
+                            })}
+                            {!hasReceiver && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-200 border border-amber-300 dark:border-amber-800 font-bold">
+                                ⚠ Aucun responsable de réception
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
@@ -3122,11 +3216,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     <span>{categorySortBy === 'name_desc' ? 'Z → A' : 'A → Z'}</span>
                   </button>
 
-                  <select
+                  <SearchableSelect
                     value={categorySortBy}
-                    onChange={(e) =>
+                    onChange={(val) =>
                       setCategorySortBy(
-                        e.target.value as 'name_asc' | 'name_desc' | 'count_desc' | 'id_asc'
+                        val as 'name_asc' | 'name_desc' | 'count_desc' | 'id_asc'
                       )
                     }
                     className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
@@ -3135,7 +3229,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     <option value="name_desc">Ordre alphabétique (Z → A)</option>
                     <option value="count_desc">Par nombre d'articles</option>
                     <option value="id_asc">Par ordre d'ajout</option>
-                  </select>
+                  </SearchableSelect>
 
                   <span className="text-[11px] font-bold text-slate-400">
                     {filteredAndSortedCategories.length} / {subCategories.length}
@@ -3297,9 +3391,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </div>
                   <div className="col-span-4">
                     <label className="block font-bold mb-1">Responsable de département</label>
-                    <select
+                    <SearchableSelect
                       value={deptManagerId}
-                      onChange={(e) => setDeptManagerId(e.target.value)}
+                      onChange={(val) => setDeptManagerId(val)}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     >
                       <option value="">— Aucun —</option>
@@ -3308,7 +3402,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {u.name} ({u.trigram})
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div className="col-span-4 flex items-end pb-1">
                     <label className="flex items-center gap-2 font-bold cursor-pointer">
@@ -3376,9 +3470,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     )}
                   </div>
                   <div className="col-span-4">
-                    <select
+                    <SearchableSelect
                       value={deptManagerFilter}
-                      onChange={(e) => setDeptManagerFilter(e.target.value)}
+                      onChange={(val) => setDeptManagerFilter(val)}
                       className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
                     >
                       <option value="ALL">Tous les responsables de département</option>
@@ -3388,14 +3482,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {u.name} ({u.trigram})
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div className="col-span-3">
-                    <select
+                    <SearchableSelect
                       value={deptSortBy}
-                      onChange={(e) =>
+                      onChange={(val) =>
                         setDeptSortBy(
-                          e.target.value as 'name_asc' | 'name_desc' | 'projects_desc'
+                          val as 'name_asc' | 'name_desc' | 'projects_desc'
                         )
                       }
                       className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
@@ -3403,7 +3497,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       <option value="name_asc">Tri : A → Z</option>
                       <option value="name_desc">Tri : Z → A</option>
                       <option value="projects_desc">Tri : Nb de chantiers</option>
-                    </select>
+                    </SearchableSelect>
                   </div>
                 </div>
 
@@ -3569,9 +3663,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </div>
                   <div className="col-span-3">
                     <label className="block font-bold mb-1">Département</label>
-                    <select
+                    <SearchableSelect
                       value={projDeptId}
-                      onChange={(e) => setProjDeptId(e.target.value)}
+                      onChange={(val) => setProjDeptId(val)}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     >
                       <option value="">— Choisir —</option>
@@ -3580,13 +3674,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {d.name}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div className="col-span-3">
                     <label className="block font-bold mb-1">Chef de chantier</label>
-                    <select
+                    <SearchableSelect
                       value={projManagerId}
-                      onChange={(e) => setProjManagerId(e.target.value)}
+                      onChange={(val) => setProjManagerId(val)}
                       className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
                     >
                       <option value="">— Aucun —</option>
@@ -3595,7 +3689,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {u.name} ({u.trigram})
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div className="col-span-12 flex justify-end">
                     <button
@@ -3635,9 +3729,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </div>
 
                   <div className="col-span-2">
-                    <select
+                    <SearchableSelect
                       value={selectedDeptForProjects}
-                      onChange={(e) => setSelectedDeptForProjects(e.target.value)}
+                      onChange={(val) => setSelectedDeptForProjects(val)}
                       className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
                     >
                       <option value="NONE">— Choisir département —</option>
@@ -3647,14 +3741,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {d.name}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
 
                   <div className="col-span-2">
-                    <select
+                    <SearchableSelect
                       value={projDeptManagerFilter}
-                      onChange={(e) => {
-                        setProjDeptManagerFilter(e.target.value);
+                      onChange={(val) => {
+                        setProjDeptManagerFilter(val);
                         if (selectedDeptForProjects === 'NONE') {
                           setSelectedDeptForProjects('ALL');
                         }
@@ -3667,14 +3761,14 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {u.name} ({u.trigram})
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
 
                   <div className="col-span-2">
-                    <select
+                    <SearchableSelect
                       value={projSiteManagerFilter}
-                      onChange={(e) => {
-                        setProjSiteManagerFilter(e.target.value);
+                      onChange={(val) => {
+                        setProjSiteManagerFilter(val);
                         if (selectedDeptForProjects === 'NONE') {
                           setSelectedDeptForProjects('ALL');
                         }
@@ -3688,15 +3782,15 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           {u.name} ({u.trigram})
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
 
                   <div className="col-span-3">
-                    <select
+                    <SearchableSelect
                       value={projSortBy}
-                      onChange={(e) =>
+                      onChange={(val) =>
                         setProjSortBy(
-                          e.target.value as
+                          val as
                             | 'name_asc'
                             | 'name_desc'
                             | 'number_asc'
@@ -3711,7 +3805,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       <option value="number_asc">Tri : N° Chantier (A → Z)</option>
                       <option value="number_desc">Tri : N° Chantier (Z → A)</option>
                       <option value="dept_asc">Tri : Par département (A → Z)</option>
-                    </select>
+                    </SearchableSelect>
                   </div>
                 </div>
 
@@ -4875,7 +4969,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       <div>
                         <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                           <Terminal className="w-5 h-5 text-orange-600" />
-                          Scripts SQL Officiels Supabase (01 à 12)
+                          Scripts SQL Officiels Supabase (01 à 16)
                         </h3>
                         <p className="text-[11px] text-slate-500">
                           Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base
@@ -4884,7 +4978,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          const orderedIds = ['01', '09', '02', '03', '04', '05', '06', '08', '11', '12', '07'];
+                          const orderedIds = ['01', '09', '02', '03', '04', '05', '06', '08', '11', '12', '13', '14', '15', '16', '07'];
                           const allScripts = orderedIds
                             .map((id) => SQL_SCRIPTS_CATALOG.find((s) => s.id === id))
                             .filter((s): s is NonNullable<typeof s> => Boolean(s))
@@ -4893,22 +4987,22 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                 `-- =====================================================================\n-- ${s.filename} : ${s.title}\n-- =====================================================================\n${s.sql}`
                             )
                             .join('\n\n');
-                          copyToClipboard(allScripts, 'sql_all_01_12');
+                          copyToClipboard(allScripts, 'sql_all_01_16');
                           setSaveMessage(
-                            'Script complet d’installation (01 à 12 assemblés dans l’ordre d’exécution) copié dans le presse-papiers.'
+                            'Script complet d’installation (01 à 16 assemblés dans l’ordre d’exécution) copié dans le presse-papiers.'
                           );
                         }}
                         className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-orange-600 text-white font-bold cursor-pointer transition"
                       >
-                        {copiedKey === 'sql_all_01_12' ? (
+                        {copiedKey === 'sql_all_01_16' ? (
                           <>
                             <Check className="w-4 h-4 text-emerald-400" />
-                            <span>Script complet 01–12 copié !</span>
+                            <span>Script complet 01–16 copié !</span>
                           </>
                         ) : (
                           <>
                             <Copy className="w-4 h-4" />
-                            <span>Copier tout le pack SQL (01 à 12)</span>
+                            <span>Copier tout le pack SQL (01 à 16)</span>
                           </>
                         )}
                       </button>
@@ -5078,6 +5172,24 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </li>
                   <li>
                     <strong>Ce contre quoi le chiffrement local ne protège pas</strong> : le chiffrement au repos protège contre l'inspection du disque ou d'une sauvegarde locale lorsque la session est verrouillée ou fermée ; il <strong>ne protège pas contre un appareil laissé déverrouillé avec une session ouverte</strong> (d'où l'importance du verrouillage automatique d'inactivité). De plus, toute clé secrète <code>service_role</code> ou <code>sb_secret_</code> est systématiquement refusée et purgée au démarrage.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-orange-600" />
+                  Journal d’audit serveur complet &amp; Immuabilité (Schéma 2.6.0)
+                </h3>
+                <ul className="space-y-2 text-slate-600 dark:text-slate-300 list-disc pl-5 leading-relaxed">
+                  <li>
+                    <strong>Ce qui est journalisé côté serveur (<code>core_audit_logs</code> &amp; <code>core_login_logs</code>)</strong> : toutes les créations, modifications (tableau <code>meta.changes</code> « ancienne valeur → nouvelle valeur ») et suppressions sur 13 tables sensibles via triggers PostgreSQL automatiques (<code>core_users</code>, <code>core_roles</code>, <code>core_departments</code>, <code>core_projects</code>, <code>stk_depots</code>, <code>stk_products</code>, <code>stk_categories</code>, <code>stk_sub_categories</code>, <code>core_app_settings</code>, <code>core_company_settings</code>, <code>core_license_config</code>, <code>core_mail_accounts</code>, <code>core_mail_senders</code>), les mouvements de stock, les commandes, les actions d’administration des comptes (Edge <code>admin-users</code>), les connexions/déconnexions/échecs et les exports CSV/PDF/e-mail.
+                  </li>
+                  <li>
+                    <strong>Immuabilité &amp; Rétention (≥ 90 jours)</strong> : tout <code>UPDATE</code> ou <code>DELETE</code> direct sur <code>core_audit_logs</code> et <code>core_login_logs</code> est bloqué par trigger serveur. Seul le Super Administrateur (rôle 0) peut purger les entrées de plus de 90 jours via <code>purge_audit_logs(p_older_than_days &gt;= 90)</code> avec double confirmation, et la purge est elle-même consignée dans le journal.
+                  </li>
+                  <li>
+                    <strong>Confidentialité absolue des secrets</strong> : aucun mot de passe, code PIN, clé API, secret SMTP/Graph, jeton signé ou contenu brut de lignes exportées n’est jamais transmis ni stocké dans le journal ; les champs sensibles sont systématiquement masqués par <code>***</code>.
                   </li>
                 </ul>
               </div>

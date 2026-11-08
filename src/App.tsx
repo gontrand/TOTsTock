@@ -57,6 +57,7 @@ import { useLayoutMode } from './hooks/useLayoutMode';
 import { DesktopWorkspace } from './desktop/DesktopWorkspace';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import { StockTransferModal } from './components/StockTransferModal';
+import { TransfersValidationPanel } from './components/TransfersValidationPanel';
 
 const MainLayout: React.FC = () => {
   const layoutMode = useLayoutMode();
@@ -100,6 +101,8 @@ const MainLayout: React.FC = () => {
     preparerOrdersModalOpen,
     scannerPickingModeOpen,
     stockTransferModal,
+    transfersModalOpen,
+    setTransfersModalOpen,
   } = useApp();
 
   useDutchDomTranslator(language);
@@ -173,6 +176,16 @@ const MainLayout: React.FC = () => {
         {batchCartModalOpen && <BatchCartModal />}
         {diagnosticModalOpen && <DiagnosticModal />}
         {stockTransferModal?.open && <StockTransferModal />}
+        {transfersModalOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-5xl h-[90vh] rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
+              <TransfersValidationPanel
+                isModal
+                onClose={() => setTransfersModalOpen(false)}
+              />
+            </div>
+          </div>
+        )}
         <UnsavedChangesModal />
       </>
     );
@@ -563,6 +576,16 @@ const MainLayout: React.FC = () => {
         {preparerOrdersModalOpen && <OrdersPreparationModal />}
         {scannerPickingModeOpen && <ScannerPickingMode />}
         {stockTransferModal?.open && <StockTransferModal />}
+        {transfersModalOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="w-full max-w-2xl h-[95dvh] sm:h-[90vh] rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
+              <TransfersValidationPanel
+                isModal
+                onClose={() => setTransfersModalOpen(false)}
+              />
+            </div>
+          </div>
+        )}
         <UnsavedChangesModal />
       </div>
     </div>

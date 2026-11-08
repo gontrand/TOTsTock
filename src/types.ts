@@ -483,4 +483,110 @@ export interface LicenseVerificationResult {
   message: string;
 }
 
+export interface DepotHolder {
+  depot_id: string | number;
+  user_id: string | number;
+  can_send: boolean;
+  can_receive: boolean;
+  created_at?: string;
+  updated_at?: string;
+  updated_by?: string | null;
+}
+
+export type StockTransferStatus =
+  | 'IN_TRANSIT'
+  | 'RECEIVED'
+  | 'AWAITING_SENDER'
+  | 'PARTIALLY_RECEIVED'
+  | 'DISPUTED'
+  | 'REJECTED'
+  | 'CANCELLED';
+
+export interface StockTransferLine {
+  product_id: string;
+  product_ref: string;
+  product_name?: string;
+  unit_price?: number;
+  quantity?: number;
+  quantity_sent: number;
+  quantity_received?: number | null;
+  quantity_accepted?: number | null;
+  quantity_pending?: number;
+  dest_rack?: string | null;
+  line_status?: string;
+  accepted?: boolean | null;
+  receiver_reason?: string | null;
+  receiver_comment?: string | null;
+  sender_confirmed?: boolean | null;
+  sender_comment?: string | null;
+  dispute_resolution?: 'RETURN_TO_SOURCE' | 'WRITE_OFF' | string | null;
+  dispute_comment?: string | null;
+  movement_id?: string | null;
+}
+
+export interface StockTransferCommentEntry {
+  at: string;
+  role: 'SENDER' | 'RECEIVER' | 'LOGISTICS' | string;
+  user_id?: string;
+  user_name?: string;
+  action: string;
+  comment: string;
+}
+
+export interface StockTransferRecord {
+  id: string;
+  transfer_number: string;
+  batch_id: string;
+  source_depot_id?: string | null;
+  source_depot: string;
+  dest_depot_id?: string | null;
+  dest_depot: string;
+  status: StockTransferStatus;
+  items: StockTransferLine[];
+  reason?: string | null;
+  total_pieces?: number;
+  total_cost?: number;
+  total_items?: number;
+  total_quantity_sent?: number;
+  total_quantity_received?: number;
+  sender_id: string | number | null;
+  sender_name?: string | null;
+  sender_trigram?: string | null;
+  receiver_id?: string | number | null;
+  receiver_name?: string | null;
+  receiver_note?: string | null;
+  sender_confirmed_by?: string | null;
+  sender_confirmed_by_name?: string | null;
+  sender_confirmed_at?: string | null;
+  sender_comment?: string | null;
+  resolved_by?: string | null;
+  resolved_by_name?: string | null;
+  resolved_at?: string | null;
+  resolution_action?: 'RETURN_TO_SOURCE' | 'WRITE_OFF' | string | null;
+  resolution_note?: string | null;
+  comments?: StockTransferCommentEntry[];
+  comments_history?: StockTransferCommentEntry[];
+  created_at: string;
+  received_at?: string | null;
+  updated_at?: string;
+}
+
+export interface StockLevelsReportRow {
+  product_id: string;
+  reference: string;
+  brand: string;
+  model: string;
+  sub_category_id?: number | null;
+  depot_name: string;
+  rack_location: string;
+  quantity: number;
+  min_stock_alert: number;
+  unit_price: number;
+  total_value: number;
+  in_transit_qty: number;
+  is_low_stock: boolean;
+  is_out_of_stock: boolean;
+}
+
 export type { ActivityCategory, ActivityType, ActivityItem } from './services/activityService';
+

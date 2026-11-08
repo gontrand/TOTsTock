@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import { User, Role } from '../types';
 import { generateTrigram } from '../utils/crypto';
 import { adminResetPassword } from '../services/adminUsersService';
@@ -665,11 +666,10 @@ export const UsersRolesModal: React.FC = () => {
                       <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
                         {t('user_dep_label')}
                       </label>
-                      <select
+                      <SearchableSelect
                         value={userDepartment}
                         disabled={isDeptManager && editingUserId !== null}
-                        onChange={(e) => {
-                          const newDept = e.target.value;
+                        onChange={(newDept) => {
                           setUserDepartment(newDept);
                           if (userBinomeId) {
                             const bUser = users.find((u) => String(u.id) === String(userBinomeId));
@@ -686,7 +686,7 @@ export const UsersRolesModal: React.FC = () => {
                             {deptName}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
 
@@ -698,9 +698,9 @@ export const UsersRolesModal: React.FC = () => {
                           <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-0.5">
                             {t('user_role_label')}
                           </label>
-                          <select
+                          <SearchableSelect
                             value={userRoleId}
-                            onChange={(e) => setUserRoleId(e.target.value)}
+                            onChange={(val) => setUserRoleId(val)}
                             className="w-full p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none font-bold"
                           >
                             {availableRolesToAssign.map((r) => (
@@ -708,7 +708,7 @@ export const UsersRolesModal: React.FC = () => {
                                 {r.name}
                               </option>
                             ))}
-                          </select>
+                          </SearchableSelect>
                         </div>
 
                         <div>
@@ -759,11 +759,10 @@ export const UsersRolesModal: React.FC = () => {
                           <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
                             {t('user_role_label')}
                           </label>
-                          <select
+                          <SearchableSelect
                             value={userRoleId}
                             disabled={isDeptManager}
-                            onChange={(e) => setUserRoleId(e.target.value)}
-                            title={isDeptManager ? (tr(language, 'Un Responsable de département ne peut pas modifier le rôle d\'un utilisateur', 'Department Manager cannot change role')) : undefined}
+                            onChange={(val) => setUserRoleId(val)}
                             className={`w-full p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none font-bold ${isDeptManager ? 'opacity-60 cursor-not-allowed' : ''}`}
                           >
                             {availableRolesToAssign.map((r) => (
@@ -771,7 +770,7 @@ export const UsersRolesModal: React.FC = () => {
                                 {r.name}
                               </option>
                             ))}
-                          </select>
+                          </SearchableSelect>
                         </div>
 
                         <div>
@@ -904,9 +903,9 @@ export const UsersRolesModal: React.FC = () => {
                     <p className="text-[10.5px] text-slate-500 dark:text-slate-400">
                       {tr(language, 'Associe cet équipier comme binôme : il aura accès aux camionnettes et matériels partagés de son partenaire.', 'Pairs this teammate: they gain access to their partner\'s assigned vehicle and shared equipment.')}
                     </p>
-                    <select
+                    <SearchableSelect
                       value={userBinomeId}
-                      onChange={(e) => setUserBinomeId(e.target.value)}
+                      onChange={(val) => setUserBinomeId(val)}
                       className="w-full p-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none font-bold"
                     >
                       <option value="">{tr(language, '— Aucun binôme attitré —', '— No paired binôme —')}</option>
@@ -922,7 +921,7 @@ export const UsersRolesModal: React.FC = () => {
                             {u.name} ({u.trigram}) {u.department ? `• ${u.department}` : ''}
                           </option>
                         ))}
-                    </select>
+                    </SearchableSelect>
                     <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold">
                       {tr(language, `⚠️ Règle stricte : Le binôme doit obligatoirement appartenir au même département (« ${userDepartment} »).`, `⚠️ Strict rule: Binôme must belong to the same department ("${userDepartment}").`)}
                     </p>

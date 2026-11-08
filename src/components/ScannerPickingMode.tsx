@@ -32,6 +32,7 @@ import {
   Printer,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import { MaterialOrder, MaterialOrderItem, Product } from '../types';
 import { PrintLabelFormat } from '../services/labelRendering';
 import {
@@ -1307,11 +1308,11 @@ export const ScannerPickingMode: React.FC = () => {
                         : t('print_station_offline_badge')
                     }
                   />
-                  <select
+                  <SearchableSelect
                     value={selectedStationId}
-                    onChange={(e) => {
-                      setSelectedStationIdState(e.target.value);
-                      setScannerSelectedStationId(e.target.value);
+                    onChange={(val) => {
+                      setSelectedStationIdState(val);
+                      setScannerSelectedStationId(val);
                     }}
                     className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-white outline-none focus:border-emerald-500 max-w-[220px] truncate cursor-pointer"
                   >
@@ -1322,7 +1323,7 @@ export const ScannerPickingMode: React.FC = () => {
                         {st.depot_name ? ` (${st.depot_name})` : ''}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               )}
             </div>
@@ -2671,11 +2672,11 @@ export const ScannerPickingMode: React.FC = () => {
               <label className="block text-xs font-bold text-slate-300">
                 {t('scanner_print_format_label')}
               </label>
-              <select
+              <SearchableSelect
                 value={productPrintPrompt.format}
-                onChange={(e) =>
+                onChange={(val) =>
                   setProductPrintPrompt((prev) =>
-                    prev ? { ...prev, format: e.target.value as PrintLabelFormat } : null
+                    prev ? { ...prev, format: val as PrintLabelFormat } : null
                   )
                 }
                 className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs font-bold text-white outline-none focus:border-sky-500 cursor-pointer"
@@ -2684,7 +2685,7 @@ export const ScannerPickingMode: React.FC = () => {
                 <option value="avery_105x42">{t('scanner_print_format_avery_105x42')}</option>
                 <option value="thermal_50x30">{t('scanner_print_format_thermal_50x30')}</option>
                 <option value="bin_90x50">{t('scanner_print_format_bin_90x50')}</option>
-              </select>
+              </SearchableSelect>
             </div>
 
             <div className="flex gap-2 pt-1">

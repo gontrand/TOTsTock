@@ -19,6 +19,7 @@ import {
   Info,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import { getClientSupabase } from '../services/clientSupabase';
 import {
   DesktopPrinterInfo,
@@ -617,9 +618,10 @@ export const PrintStationPanel: React.FC = () => {
                   <Building2 className="w-3.5 h-3.5 text-slate-400" />
                   {t('print_station_depot_label')}
                 </label>
-                <select
+                <SearchableSelect
                   value={stationDepot}
-                  onChange={(e) => setStationDepot(e.target.value)}
+                  onChange={(val) => setStationDepot(val)}
+                  recentKey="depots"
                   className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white outline-none focus:border-orange-500"
                 >
                   <option value="">{t('print_station_depot_all')}</option>
@@ -628,7 +630,7 @@ export const PrintStationPanel: React.FC = () => {
                       {d.name}
                     </option>
                   ))}
-                </select>
+                </SearchableSelect>
               </div>
 
               <button
@@ -700,10 +702,9 @@ export const PrintStationPanel: React.FC = () => {
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Imprimante cible', 'Target printer', 'Doelprinter')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={selectedPrinter}
-                    onChange={async (e) => {
-                      const nextPrinter = e.target.value;
+                    onChange={async (nextPrinter) => {
                       setSelectedPrinter(nextPrinter);
                       await setDesktopPrintSettings({
                         printerName: nextPrinter,
@@ -729,7 +730,7 @@ export const PrintStationPanel: React.FC = () => {
                         </option>
                       ))
                     )}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <label className="flex items-start gap-2.5 cursor-pointer select-none pt-1">

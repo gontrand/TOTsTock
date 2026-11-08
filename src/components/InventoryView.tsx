@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { formatCurrency, isUserAllowedForDepot } from '../utils/crypto';
+import { SearchableSelect } from './SearchableSelect';
 import {
   buildClosedDepotNamesSet,
   filterInventoryProducts,
@@ -420,9 +421,9 @@ export const InventoryView: React.FC = () => {
               <label className="block text-[11px] font-bold text-slate-500 mb-1">
                 {t('inv_category')}
               </label>
-              <select
+              <SearchableSelect
                 value={selectedSubCat}
-                onChange={(e) => setSelectedSubCat(e.target.value)}
+                onChange={(val) => setSelectedSubCat(val)}
                 className="w-full text-xs p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none"
               >
                 <option value="">{t('search_subcat_all')}</option>
@@ -431,16 +432,17 @@ export const InventoryView: React.FC = () => {
                     {c.name}
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
             </div>
 
             <div>
               <label className="block text-[11px] font-bold text-slate-500 mb-1">
                 {t('inv_warehouse')}
               </label>
-              <select
+              <SearchableSelect
                 value={selectedStore}
-                onChange={(e) => setSelectedStore(e.target.value)}
+                onChange={(val) => setSelectedStore(val)}
+                recentKey="depots"
                 className="w-full text-xs p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none"
               >
                 <option value="">{t('search_store_all')}</option>
@@ -452,7 +454,7 @@ export const InventoryView: React.FC = () => {
                     </option>
                   );
                 })}
-              </select>
+              </SearchableSelect>
             </div>
           </div>
 
@@ -461,9 +463,9 @@ export const InventoryView: React.FC = () => {
               <label className="block text-[11px] font-bold text-slate-500 mb-1">
                 {t('inv_supplier')}
               </label>
-              <select
+              <SearchableSelect
                 value={selectedSupplier}
-                onChange={(e) => setSelectedSupplier(e.target.value)}
+                onChange={(val) => setSelectedSupplier(val)}
                 className="w-full text-xs p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none"
               >
                 <option value="">{t('search_supplier_all')}</option>
@@ -472,7 +474,7 @@ export const InventoryView: React.FC = () => {
                     {sup}
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
             </div>
 
             <div>

@@ -321,8 +321,8 @@ describe('Prompt v41 — Menu « Ajouter à un autre dépôt » + mise à jour d
       expect(script08).toContain("'stock_consistency'");
     });
 
-    it('B.3 EXPECTED_SCHEMA_VERSION vaut 2.4.1 (MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0), INSTALL.md documente les bases anciennes et la mention FR/EN/NL est présente', () => {
-      expect(EXPECTED_SCHEMA_VERSION).toBe('2.4.1');
+    it('B.3 EXPECTED_SCHEMA_VERSION vaut 2.7.0 (MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0), INSTALL.md documente les bases anciennes et la mention FR/EN/NL est présente', () => {
+      expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
       expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
       expect(translations.fr.sql_legacy_db_auto_fix_notice).toContain(
@@ -339,7 +339,7 @@ describe('Prompt v41 — Menu « Ajouter à un autre dépôt » + mise à jour d
       expect(installMd).toContain('## Base ancienne : que fait l\'installation automatiquement');
       expect(installMd).toContain('dist/install.sql');
       expect(installMd).toContain('diagnostic_installation()');
-      expect(installMd).toContain('2.4.1');
+      expect(installMd).toContain('2.7.0');
     });
   });
 });

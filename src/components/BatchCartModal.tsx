@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import {
   formatCurrency,
   isUserAllowedForDepot,
@@ -223,9 +224,9 @@ export const BatchCartModal: React.FC = () => {
               <Building2 className="w-3.5 h-3.5 text-orange-500" />
               {t('cart_project_label')}
             </label>
-            <select
+            <SearchableSelect
               value={selectedSiteNumber}
-              onChange={(e) => setSelectedSiteNumber(e.target.value)}
+              onChange={(val) => setSelectedSiteNumber(val)}
               className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium outline-none focus:ring-2 focus:ring-orange-500"
             >
               {projects.length === 0 ? (
@@ -240,7 +241,7 @@ export const BatchCartModal: React.FC = () => {
                   );
                 })
               )}
-            </select>
+            </SearchableSelect>
           </div>
         )}
 

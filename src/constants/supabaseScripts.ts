@@ -15,6 +15,9 @@ import script11 from '../../supabase-client/11_suite_tables.sql?raw';
 import script12 from '../../supabase-client/12_user_preferences.sql?raw';
 import script13 from '../../supabase-client/13_transfer_stock_batch.sql?raw';
 import script14 from '../../supabase-client/14_mailing.sql?raw';
+import script15 from '../../supabase-client/15_search_orders_movements.sql?raw';
+import script16 from '../../supabase-client/16_audit_trail.sql?raw';
+import script17 from '../../supabase-client/17_transferts_valides.sql?raw';
 import scriptFixAudits from '../../supabase-client/fix_inventory_audits.sql?raw';
 import schemaMaster from '../../supabase-client/schema_master_licenses.sql?raw';
 import edgeFnSyncLicense from '../../supabase-client/generated/edge-functions/APP_TOT-Stock_licenses_sync-license/index.ts?raw';
@@ -36,6 +39,9 @@ export const SQL_SCRIPT_11_SUITE_TABLES = script11;
 export const SQL_SCRIPT_12_USER_PREFERENCES = script12;
 export const SQL_SCRIPT_13_TRANSFER_STOCK_BATCH = script13;
 export const SQL_SCRIPT_14_MAILING = script14;
+export const SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS = script15;
+export const SQL_SCRIPT_16_AUDIT_TRAIL = script16;
+export const SQL_SCRIPT_17_TRANSFERTS_VALIDES = script17;
 export const SQL_SCRIPT_FIX_INVENTORY_AUDITS = scriptFixAudits;
 export const SQL_MASTER_LICENSES_SCHEMA = schemaMaster;
 
@@ -43,4 +49,5 @@ export const EDGE_FN_BUNDLE_SYNC_LICENSE = edgeFnSyncLicense;
 export const EDGE_FN_BUNDLE_ADMIN_USERS = edgeFnAdminUsers;
 export const EDGE_FN_BUNDLE_SEND_REPORT_EMAIL = edgeFnSendReportEmail;
 export const EDGE_FN_BUNDLE_MASTER_LICENSES = edgeFnMasterLicenses;
+
 

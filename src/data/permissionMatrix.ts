@@ -2,8 +2,10 @@ export interface MenuPermissionButton {
   key: string;
   labelFr: string;
   labelEn: string;
+  labelNl?: string;
   descFr: string;
   descEn: string;
+  descNl?: string;
   icon?: string;
   badge?: string;
   isDangerous?: boolean;
@@ -162,9 +164,31 @@ export const MENU_PERMISSION_GROUPS: MenuGroup[] = [
         key: 'perm_stock_transfer',
         labelFr: 'Bouton / Action « Transfert entre Dépôts »',
         labelEn: 'Button / Action "Inter-Depot Transfer"',
+        labelNl: 'Knop / Actie "Overdracht tussen Depots"',
         descFr: 'Permet d\'effectuer un transfert de matériel d\'un dépôt source vers un dépôt destination',
         descEn: 'Allows recording material transfers from source depot to destination depot',
+        descNl: 'Hiermee kunt u materiaal overdragen van een brondepot naar een bestemmingsdepot',
         icon: '🔄',
+      },
+      {
+        key: 'perm_stock_transfer_store',
+        labelFr: 'Transférer depuis un dépôt magasin (logistique)',
+        labelEn: 'Transfer from a warehouse depot (logistics)',
+        labelNl: 'Overdragen vanuit een magazijndepot (logistiek)',
+        descFr: 'Autorise l\'expédition de matériel depuis tout dépôt fixe (magasin / entrepôt)',
+        descEn: 'Allows shipping material from any fixed warehouse depot (logistics)',
+        descNl: 'Staat verzending van materiaal vanuit elk vast magazijndepot toe (logistiek)',
+        icon: '🏬',
+      },
+      {
+        key: 'perm_stock_receive_all',
+        labelFr: 'Valider les réceptions de tous les dépôts',
+        labelEn: 'Validate receptions for all depots',
+        labelNl: 'Ontvangsten van alle depots valideren',
+        descFr: 'Permet de valider la réception de transferts pour tous les dépôts et d\'arbitrer les litiges (logistique)',
+        descEn: 'Allows validating transfer receptions for all depots and resolving disputes (logistics)',
+        descNl: 'Hiermee kunt u ontvangsten voor alle depots valideren en geschillen beslechten (logistiek)',
+        icon: '✅',
       },
     ],
   },
@@ -706,9 +730,21 @@ export const MENU_PERMISSION_GROUPS: MenuGroup[] = [
         key: 'perm_report_view',
         labelFr: 'Bouton « Consulter les Rapports d\'Activité »',
         labelEn: 'Button "View Activity Reports"',
+        labelNl: 'Knop "Activiteitenrapporten bekijken"',
         descFr: 'Accès aux états récapitulatifs, bilans de consommation et exports d\'activité',
         descEn: 'Access to summary reports, consumption balance sheets and activity exports',
+        descNl: 'Toegang tot overzichtsrapporten, verbruiksbalansen en activiteitenexporten',
         icon: '📊',
+      },
+      {
+        key: 'perm_report_stock_levels',
+        labelFr: 'Rapports de niveau de stock (logistique)',
+        labelEn: 'Stock level reports (logistics)',
+        labelNl: 'Voorraadniveaurapporten (logistiek)',
+        descFr: 'Accès aux rapports de niveau de stock, stocks faibles et ruptures (CSV, PDF, e-mail) réservés à la logistique',
+        descEn: 'Access to stock level, low stock and out-of-stock reports (CSV, PDF, email) reserved for logistics',
+        descNl: 'Toegang tot rapporten over voorraadniveaus, lage voorraden en voorraadtekorten (CSV, PDF, e-mail) voor logistiek',
+        icon: '📉',
       },
       {
         key: 'perm_manage_roles',

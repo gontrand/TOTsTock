@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { Product } from '../types';
+import { SearchableSelect } from './SearchableSelect';
 import {
   X,
   Save,
@@ -478,9 +479,9 @@ export const ProductFormModal: React.FC = () => {
             <label className="font-bold block text-slate-700 dark:text-slate-300 mb-1">
               {t('prod_form_category_label')}
             </label>
-            <select
+            <SearchableSelect
               value={subCategoryId}
-              onChange={(e) => setSubCategoryId(e.target.value)}
+              onChange={(val) => setSubCategoryId(val)}
               className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none"
             >
               <option value="">{t('prod_form_category_placeholder')}</option>
@@ -489,7 +490,7 @@ export const ProductFormModal: React.FC = () => {
                   {cat.name}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           </div>
 
           {/* Identification & Code-barres Fabricant (Unicité Garantie) */}
@@ -803,15 +804,16 @@ export const ProductFormModal: React.FC = () => {
                   + {t('common_edit')}
                 </button>
               </div>
-              <select
+              <SearchableSelect
                 value={storeName}
-                onChange={(e) => {
-                  if (e.target.value === '__MANAGE__') {
+                onChange={(val) => {
+                  if (val === '__MANAGE__') {
                     setDepotsModalOpen(true);
                   } else {
-                    setStoreName(e.target.value);
+                    setStoreName(val);
                   }
                 }}
+                recentKey="depots"
                 className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none text-xs font-semibold text-slate-800 dark:text-slate-100"
               >
                 {/* Preserve existing custom value if not yet in depots list */}
@@ -819,7 +821,7 @@ export const ProductFormModal: React.FC = () => {
                   <option value={storeName}>{storeName} ({tr(language, 'Actuel', 'Current')})</option>
                 )}
                 {depots.map((d) => (
-                  <option key={d.id} value={d.name}>
+                  <option key={String(d.id)} value={d.name}>
                     {d.name} {d.code ? `(${d.code})` : ''}
                   </option>
                 ))}
@@ -829,7 +831,7 @@ export const ProductFormModal: React.FC = () => {
                 <option value="__MANAGE__" className="text-amber-600 font-bold">
                   {t('prod_form_manage_depots')}
                 </option>
-              </select>
+              </SearchableSelect>
             </div>
             <div>
               <label className="font-bold block text-slate-700 dark:text-slate-300 mb-1 text-xs">

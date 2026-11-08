@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { Product } from '../../types';
 import { validateProductIdentifiersUniqueness } from '../../utils/crypto';
 import { getPlanMaxReferences } from '../../services/licenseService';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import { X, Save, Package, AlertTriangle, Lock } from 'lucide-react';
 import {
   requestGuardedNavigation,
@@ -409,9 +410,9 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Catégorie', 'Category', 'Categorie')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={subCategoryId}
-                    onChange={(e) => setSubCategoryId(e.target.value)}
+                    onChange={(val) => setSubCategoryId(val)}
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   >
                     <option value="">
@@ -422,7 +423,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
                         {sc.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div>
@@ -453,9 +454,10 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
                   <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Magasin / Dépôt', 'Store / Depot', 'Magazijn / Depot')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={storeName}
-                    onChange={(e) => setStoreName(e.target.value)}
+                    onChange={(val) => setStoreName(val)}
+                    recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   >
                     {depots.map((d) => (
@@ -463,7 +465,7 @@ export const DesktopProductFormDrawer: React.FC<DesktopProductFormDrawerProps> =
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2.5">

@@ -1539,7 +1539,9 @@ BEGIN
       AND NOT t.tgisinternal
       AND t.tgname NOT IN (
         'trg_check_product_quantity_update',
-        'trg_enforce_license_max_references'
+        'trg_enforce_license_max_references',
+        'trg_audit_stk_products',
+        'trg_audit_row'
       )
     ORDER BY c.relname ASC, t.tgname ASC
   LOOP

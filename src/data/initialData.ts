@@ -1,4 +1,4 @@
-import { Product, Role, User, Department, Project, SubCategory, Depot, StockMovement, ReleaseNote, MaterialOrder } from '../types';
+import { Product, Role, User, Department, Project, SubCategory, Depot, DepotHolder, StockMovement, ReleaseNote, MaterialOrder } from '../types';
 import { ALL_MENU_BUTTON_KEYS } from './permissionMatrix';
 
 export const DEFAULT_SUPER_ROLE: Role = {
@@ -15,7 +15,7 @@ export const RECOMMENDED_ROLES_SPEC: Role[] = [
     permissions: [
       'perm_tab_dashboard', 'perm_tab_inventory', 'perm_btn_center_show', 'perm_tab_movements', 'perm_tab_plus',
       'perm_header_notifications', 'perm_header_sync_details', 'perm_header_language_switch', 'perm_header_theme_toggle', 'perm_header_app_info', 'perm_header_logout',
-      'perm_mov_out', 'perm_stock_in', 'perm_action_create_prod', 'perm_stock_transfer',
+      'perm_mov_out', 'perm_stock_in', 'perm_action_create_prod', 'perm_stock_transfer', 'perm_stock_transfer_store', 'perm_stock_receive_all',
       'perm_dash_kpi', 'perm_dash_finance', 'perm_dash_kpi_all', 'perm_kpi_scope_department', 'perm_kpi_scope_other', 'perm_kpi_scope_individual', 'perm_kpi_filter_depot', 'perm_dep_view',
       'perm_prod_view', 'perm_prod_view_price', 'perm_inv_btn_scan', 'perm_menu_print_labels', 'perm_menu_inventory_audit', 'perm_inventory_validate', 'perm_prod_edit', 'perm_prod_delete', 'perm_prod_movement_direct', 'perm_prod_batch_cart', 'perm_inv_filters',
       'perm_mov_tabs', 'perm_mov_view_all', 'perm_mov_view_depot', 'perm_mov_tab_my', 'perm_mov_tab_proj', 'perm_mov_filter_dep', 'perm_mov_export_csv',
@@ -24,7 +24,7 @@ export const RECOMMENDED_ROLES_SPEC: Role[] = [
       'perm_depproj_menu', 'perm_dep_edit', 'perm_dep_delete', 'perm_proj_edit', 'perm_proj_delete',
       'perm_manage_categories',
       'perm_manage_depots', 'perm_depot_create', 'perm_depot_toggle_status', 'perm_depot_delete',
-      'perm_report_view', 'perm_audit_view', 'perm_view_all_login_logs', 'perm_config_email', 'perm_email_manual_send',
+      'perm_report_view', 'perm_report_stock_levels', 'perm_audit_view', 'perm_view_all_login_logs', 'perm_config_email', 'perm_email_manual_send',
       'perm_doc_manual'
     ],
   },
@@ -90,13 +90,13 @@ export const RECOMMENDED_ROLES_SPEC: Role[] = [
     permissions: [
       'perm_tab_dashboard', 'perm_tab_inventory', 'perm_btn_center_show', 'perm_tab_movements', 'perm_tab_plus',
       'perm_header_notifications', 'perm_header_sync_details', 'perm_header_language_switch', 'perm_header_theme_toggle', 'perm_header_app_info', 'perm_header_logout',
-      'perm_mov_out', 'perm_stock_in', 'perm_action_create_prod', 'perm_stock_transfer',
+      'perm_mov_out', 'perm_stock_in', 'perm_action_create_prod', 'perm_stock_transfer', 'perm_stock_transfer_store', 'perm_stock_receive_all',
       'perm_dash_kpi', 'perm_dash_finance', 'perm_dash_kpi_all', 'perm_kpi_filter_depot', 'perm_dep_view',
       'perm_prod_view', 'perm_prod_view_price', 'perm_inv_btn_scan', 'perm_menu_print_labels', 'perm_menu_inventory_audit', 'perm_inventory_validate', 'perm_prod_edit', 'perm_prod_movement_direct', 'perm_prod_batch_cart', 'perm_inv_filters',
       'perm_mov_tabs', 'perm_mov_view_all', 'perm_mov_view_depot', 'perm_mov_tab_my', 'perm_mov_tab_proj', 'perm_mov_filter_dep', 'perm_mov_export_csv',
       'perm_create_order', 'perm_menu_order_prep', 'perm_order_assign', 'perm_order_mark_ready', 'perm_order_mark_collected', 'perm_order_cancel',
       'perm_manage_categories', 'perm_manage_depots', 'perm_depot_create', 'perm_depot_toggle_status', 'perm_depot_delete',
-      'perm_report_view', 'perm_config_email', 'perm_email_manual_send',
+      'perm_report_view', 'perm_report_stock_levels', 'perm_config_email', 'perm_email_manual_send',
       'perm_menu_profile', 'perm_menu_language', 'perm_doc_manual'
     ],
   },
@@ -272,6 +272,13 @@ export const INITIAL_DEPOTS: Depot[] = [
     description: 'Camionnette atelier intervention plomberie & outillage mobile',
     is_active: true,
   },
+];
+
+export const INITIAL_DEPOT_HOLDERS: DepotHolder[] = [
+  { depot_id: '1', user_id: '2', can_send: true, can_receive: true },
+  { depot_id: '1', user_id: '3', can_send: true, can_receive: true },
+  { depot_id: '2', user_id: '4', can_send: true, can_receive: true },
+  { depot_id: '2', user_id: '5', can_send: true, can_receive: true },
 ];
 
 export const INITIAL_PRODUCTS: Product[] = [
@@ -525,6 +532,34 @@ export const INITIAL_MOVEMENTS: StockMovement[] = [
 ];
 
 export const INITIAL_RELEASE_NOTES: ReleaseNote[] = [
+  {
+    version: '5.13.0',
+    date: '2026-11-11',
+    title: 'Listes déroulantes avec recherche instantanée (SearchableSelect) & Correctifs v54b (Schéma 2.7.0)',
+    description:
+      'Composant unique SearchableSelect avec recherche instantanée sans accents, navigation clavier et dépôts récents sur toutes les listes déroulantes (Desktop & Mobile), correctif licence dans « À propos », message SQL explicite pour search_login_logs et normalisation String(depot.id).',
+  },
+  {
+    version: '5.12.0',
+    date: '2026-11-10',
+    title: 'Transferts Validés à la Réception, Responsables de Dépôt & Droits Fins (Schéma 2.7.0)',
+    description:
+      'Validation obligatoire des transferts à la réception (stk_transfers), responsables d’envoi et de réception par dépôt (stk_depot_holders), gestion des écarts et litiges (AWAITING_SENDER, DISPUTED, arbitrage logistique) et droits fins (perm_stock_transfer_store, perm_stock_receive_all, perm_report_stock_levels).',
+  },
+  {
+    version: '5.11.0',
+    date: '2026-11-09',
+    title: 'Journal d’Audit Serveur Complet & Immuable (Schéma 2.6.0)',
+    description:
+      'Triggers PostgreSQL automatiques sur 13 tables sensibles avec diff avant/après et masquage des secrets (***), immuabilité append-only, journal des connexions et échecs répétés (>= 5), écran « Journal d’audit » (Desktop + Mobile), export CSV et purge Super Admin (>= 90 jours).',
+  },
+  {
+    version: '5.10.0',
+    date: '2026-11-08',
+    title: 'Rapports Desktop (CSV / PDF / E-mail) & Recherche Serveur Commandes / Mouvements (Schéma 2.5.0)',
+    description:
+      'Fenêtre locale 7 jours (+ commandes actives), recherche serveur paginée (search_material_orders & search_stock_movements), page Desktop « Rapports » (CSV UTF-8 BOM, PDF jsPDF + autoTable) et envoi par e-mail avec pièces jointes base64.',
+  },
   {
     version: '5.9.1',
     date: '2026-11-07',

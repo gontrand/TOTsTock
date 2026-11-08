@@ -84,6 +84,9 @@ export async function runPrintJobsSqlTests() {
     '12_user_preferences.sql',
     '13_transfer_stock_batch.sql',
     '14_mailing.sql',
+    '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
     '07_app_compat.sql',
   ];
 
@@ -100,7 +103,7 @@ export async function runPrintJobsSqlTests() {
     `SELECT schema_version, min_schema_version FROM public.core_app_compat WHERE id = 1;`
   );
   if (
-    !/^2\.([4-9]|\d{2})\.\d+$/.test(String(compatRes.rows[0]?.schema_version)) ||
+    compatRes.rows[0]?.schema_version !== '2.7.0' ||
     compatRes.rows[0]?.min_schema_version !== '1.0.0'
   ) {
     throw new Error(
@@ -157,6 +160,9 @@ export async function runPrintJobsSqlTests() {
     '12_user_preferences.sql',
     '13_transfer_stock_batch.sql',
     '14_mailing.sql',
+    '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
     '07_app_compat.sql',
   ];
   for (const s of v100Scripts) {
@@ -577,8 +583,6 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
-    '13_transfer_stock_batch.sql',
-    '14_mailing.sql',
     '07_app_compat.sql',
   ]) {
     await db.exec(readClientScript(scriptToReplay));
@@ -936,6 +940,9 @@ export async function runPrintJobsSqlTests() {
     '12_user_preferences.sql',
     '13_transfer_stock_batch.sql',
     '14_mailing.sql',
+    '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
     '07_app_compat.sql',
   ];
 
@@ -1360,8 +1367,6 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
-    '13_transfer_stock_batch.sql',
-    '14_mailing.sql',
     '07_app_compat.sql',
   ];
 
@@ -1686,6 +1691,9 @@ export async function runLegacySchemaSqlTests() {
     '12_user_preferences.sql',
     '13_transfer_stock_batch.sql',
     '14_mailing.sql',
+    '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
     '07_app_compat.sql',
   ];
 

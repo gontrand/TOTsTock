@@ -3,6 +3,7 @@ import { Printer, Terminal, X } from 'lucide-react';
 import { Product } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { tr } from '../../i18n/dutchTranslator';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   CanonicalPrintLabelFormat,
   buildFullPrintableDocumentHtml,
@@ -179,9 +180,9 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
               <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                 {tr(language, "Format d'étiquette", 'Label format', 'Etiketformaat')}
               </label>
-              <select
+              <SearchableSelect
                 value={format}
-                onChange={(e) => setFormat(e.target.value as CanonicalPrintLabelFormat)}
+                onChange={(val) => setFormat(val as CanonicalPrintLabelFormat)}
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold"
               >
                 <option value="avery_70x37">
@@ -216,7 +217,7 @@ export const DesktopPrintLabelsDialog: React.FC<DesktopPrintLabelsDialogProps> =
                     'Bak- / schapetiket 90 × 50 mm'
                   )}
                 </option>
-              </select>
+              </SearchableSelect>
             </div>
 
             <div>

@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { getClientSupabase } from './clientSupabase';
+import { logAuditEventServer } from './auditService';
 import { masterSupabase } from './masterSupabase';
 import {
   getResolvedEdgeFunctionName,
@@ -46,6 +47,20 @@ export async function sendReportEmailViaEdgeFunction(params: {
           body: payload,
         });
         if (!error && data?.success) {
+          logAuditEventServer(
+            {
+              category: 'EXPORTS',
+              type: 'report_email',
+              title: `Envoi manuel de rapport par e-mail`,
+              description: `Sujet : ${params.subject.trim()}`,
+              meta: {
+                recipient: payload.to,
+                subject: payload.subject,
+                app_code: payload.app_code,
+              },
+            },
+            client
+          ).catch(() => {});
           return { success: true, message: data.message || `Rapport transmis avec succès à ${params.to}.` };
         }
         if (data && !data.success && data.error) {

@@ -93,6 +93,24 @@ export const SQL_STEPS = [
     label: 'Mailing multi-fournisseurs, expéditeurs par application (stk, hab, rpt, tools) et journal core_mail_log',
   },
   {
+    step: '15',
+    sourceRel: 'supabase-client/15_search_orders_movements.sql',
+    migrationName: '20261005069900_15_search_orders_movements.sql',
+    label: 'Recherche serveur paginée Commandes (search_material_orders) & Mouvements (search_stock_movements)',
+  },
+  {
+    step: '16',
+    sourceRel: 'supabase-client/16_audit_trail.sql',
+    migrationName: '20261005069950_16_audit_trail.sql',
+    label: 'Journal d\'audit serveur complet immuable, triggers automatiques & recherche paginée (16_audit_trail.sql)',
+  },
+  {
+    step: '17',
+    sourceRel: 'supabase-client/17_transferts_valides.sql',
+    migrationName: '20261005069970_17_transferts_valides.sql',
+    label: 'Transferts validés à la réception, responsables de dépôt (stk_depot_holders, stk_transfers) & droits fins (17_transferts_valides.sql)',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',
@@ -110,6 +128,8 @@ export const CREATE_TABLE_SOURCE_FILES = [
   'supabase-client/11_suite_tables.sql',
   'supabase-client/12_user_preferences.sql',
   'supabase-client/14_mailing.sql',
+  'supabase-client/16_audit_trail.sql',
+  'supabase-client/17_transferts_valides.sql',
 ];
 
 const AUTO_COLUMNS_START_MARKER = '-- [BEGIN AUTO_GENERATED_ADD_COLUMNS]';

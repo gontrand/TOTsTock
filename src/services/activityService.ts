@@ -88,7 +88,7 @@ const INITIAL_SEED_EVENTS: ActivityItem[] = [
       status: 'success',
       difference: 4,
       reason: 'Régularisation suite à inventaire tournant mensuel',
-      systemVersion: 'v5.9.1',
+      systemVersion: 'v5.11.0',
     },
   },
   {

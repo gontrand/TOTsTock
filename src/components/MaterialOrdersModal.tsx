@@ -3,6 +3,7 @@ import { tr } from '../i18n/dutchTranslator';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import { MaterialOrder, MaterialOrderItem, OrderBasket } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
 import { computeNextOrderNumber, formatOrderDatePrefix } from '../services/clientSupabase';
@@ -1383,10 +1384,9 @@ export const MaterialOrdersModal: React.FC = () => {
                                           {tr(language, 'Affecter chantier :', 'Assign site:')}
                                         </span>
                                       </div>
-                                      <select
+                                      <SearchableSelect
                                         value={basket.site_number || effectiveBasketSite}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
+                                        onChange={(val) => {
                                           updateOrderBasketSite(basket.id, val);
                                           if (basket.id === activeOrderBasketId) {
                                             setSelectedSiteNumber(val);
@@ -1400,7 +1400,7 @@ export const MaterialOrdersModal: React.FC = () => {
                                             {p.project_number} — {p.project_name}
                                           </option>
                                         ))}
-                                      </select>
+                                      </SearchableSelect>
                                     </div>
                                   </>
                                 );
@@ -1580,11 +1580,9 @@ export const MaterialOrdersModal: React.FC = () => {
                               <div className="flex items-center justify-between gap-1.5 flex-wrap pt-1.5 border-t border-slate-100 dark:border-slate-800/80">
                                 {/* Sélecteur direct de chantier depuis la miniature */}
                                 <div onClick={(e) => e.stopPropagation()} className="min-w-[115px] flex-1 max-w-full sm:max-w-[180px]">
-                                  <select
+                                  <SearchableSelect
                                     value={basket.site_number || effectiveMiniSite}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      const val = e.target.value;
+                                    onChange={(val) => {
                                       updateOrderBasketSite(basket.id, val);
                                       if (basket.id === activeOrderBasketId) {
                                         setSelectedSiteNumber(val);
@@ -1592,14 +1590,13 @@ export const MaterialOrdersModal: React.FC = () => {
                                       }
                                     }}
                                     className="w-full text-[10px] font-extrabold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-slate-800 dark:text-slate-100 outline-none truncate cursor-pointer hover:border-orange-500 shadow-2xs"
-                                    title={tr(language, 'Affecter ou changer le chantier de ce panier', 'Assign or change site for this basket')}
                                   >
                                     {(departmentProjects.length > 0 ? departmentProjects : projects).map((p) => (
                                       <option key={p.id} value={p.project_number}>
                                         {p.project_number} — {p.project_name}
                                       </option>
                                     ))}
-                                  </select>
+                                  </SearchableSelect>
                                 </div>
 
                                 <div className="flex items-center gap-1 flex-wrap max-w-full ml-auto">
@@ -2140,9 +2137,9 @@ export const MaterialOrdersModal: React.FC = () => {
                         className="w-full text-xs p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none uppercase font-bold"
                       />
                     ) : (
-                      <select
+                      <SearchableSelect
                         value={selectedSiteNumber}
-                        onChange={(e) => handleSiteSelectChange(e.target.value)}
+                        onChange={(val) => handleSiteSelectChange(val)}
                         className="w-full text-xs p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none font-bold"
                       >
                         {departmentProjects.length === 0 ? (
@@ -2156,7 +2153,7 @@ export const MaterialOrdersModal: React.FC = () => {
                             </option>
                           ))
                         )}
-                      </select>
+                      </SearchableSelect>
                     )}
                   </div>
 
@@ -2165,10 +2162,11 @@ export const MaterialOrdersModal: React.FC = () => {
                     <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
                       {tr(language, 'Dépôt / Magasin de retrait :', 'Warehouse / Pickup Location:')}
                     </label>
-                    <select
+                    <SearchableSelect
                       value={orderCart.length > 0 && orderCart[0]?.depot_name ? orderCart[0].depot_name : selectedDepot}
                       disabled={orderCart.length > 0 && Boolean(orderCart[0]?.depot_name)}
-                      onChange={(e) => setSelectedDepot(e.target.value)}
+                      onChange={(val) => setSelectedDepot(val)}
+                      recentKey="depots"
                       className={`w-full text-xs p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none font-bold ${
                         orderCart.length > 0 ? 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-not-allowed' : ''
                       }`}
@@ -2178,7 +2176,7 @@ export const MaterialOrdersModal: React.FC = () => {
                           {d.name} {d.code ? `(${d.code})` : ''}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                     {orderCart.length > 0 && orderCart[0]?.depot_name && (
                       <p className="text-[10px] text-orange-600 dark:text-orange-400 font-bold mt-1 flex items-center gap-1">
                         <span>🔒</span>
@@ -3300,10 +3298,10 @@ export const MaterialOrdersModal: React.FC = () => {
 
                 {/* Compact Category Dropdown */}
                 {availablePickerCategories.length > 0 && (
-                  <select
+                  <SearchableSelect
                     aria-label={tr(language, 'Filtrer par catégorie', 'Filter by category')}
                     value={effectivePickerCategory}
-                    onChange={(e) => setPickerSelectedCategory(e.target.value)}
+                    onChange={(val) => setPickerSelectedCategory(val)}
                     className="max-w-[150px] sm:max-w-[180px] py-2 px-2.5 text-xs font-bold rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700/70 text-slate-700 dark:text-slate-200 outline-none focus:border-orange-400 truncate cursor-pointer shrink-0"
                   >
                     <option value="ALL">
@@ -3314,7 +3312,7 @@ export const MaterialOrdersModal: React.FC = () => {
                         {cat}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 )}
               </div>
 
@@ -3758,9 +3756,9 @@ export const MaterialOrdersModal: React.FC = () => {
                 </span>
               </label>
 
-              <select
+              <SearchableSelect
                 value={selectedDelegateUserId}
-                onChange={(e) => setSelectedDelegateUserId(e.target.value)}
+                onChange={(val) => setSelectedDelegateUserId(val)}
                 className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-purple-500"
               >
                 <option value="">{tr(language, '— Choisir un collègue du département —', '— Choose a colleague —')}</option>
@@ -3776,7 +3774,7 @@ export const MaterialOrdersModal: React.FC = () => {
                     </option>
                   );
                 })}
-              </select>
+              </SearchableSelect>
             </div>
 
             {/* Optional Note / Message */}

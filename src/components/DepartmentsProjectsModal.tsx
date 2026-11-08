@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { Department, Project } from '../types';
+import { SearchableSelect } from './SearchableSelect';
 import {
   requestGuardedNavigation,
   scrollToAndFocusForm,
@@ -464,9 +465,9 @@ export const DepartmentsProjectsModal: React.FC = () => {
                       <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
                         {t('dep_manager_label')} (Principal)
                       </label>
-                      <select
+                      <SearchableSelect
                         value={depManagerId}
-                        onChange={(e) => setDepManagerId(e.target.value)}
+                        onChange={(val) => setDepManagerId(val)}
                         className="w-full p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none text-xs"
                       >
                         <option value="">{t('dep_manager_placeholder')}</option>
@@ -475,7 +476,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             {u.name} ({u.trigram})
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
 
@@ -521,9 +522,9 @@ export const DepartmentsProjectsModal: React.FC = () => {
 
                     {/* Sélecteur de suppléant avec bouton "+" */}
                     <div className="flex items-center gap-2 pt-1">
-                      <select
+                      <SearchableSelect
                         value={selectedDepDeputyToAdd}
-                        onChange={(e) => setSelectedDepDeputyToAdd(e.target.value)}
+                        onChange={(val) => setSelectedDepDeputyToAdd(val)}
                         className="flex-1 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
                       >
                         <option value="">
@@ -534,7 +535,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             {u.name} ({u.trigram}) - {u.department || 'Général'}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                       <button
                         type="button"
                         onClick={handleAddDepDeputy}
@@ -799,10 +800,10 @@ export const DepartmentsProjectsModal: React.FC = () => {
                       <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
                         {t('proj_dep_label')} *
                       </label>
-                      <select
+                      <SearchableSelect
                         value={projDepId}
-                        onChange={(e) => {
-                          setProjDepId(e.target.value);
+                        onChange={(val) => {
+                          setProjDepId(val);
                           // Reset manager if not in newly selected department
                           setProjManagerId('');
                           setProjDeputyIds([]);
@@ -814,7 +815,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             {d.name}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
@@ -850,9 +851,9 @@ export const DepartmentsProjectsModal: React.FC = () => {
                       <label className="block text-[11px] font-bold text-slate-500 mb-0.5">
                         {t('proj_manager_label')} (Conducteur Principal)
                       </label>
-                      <select
+                      <SearchableSelect
                         value={projManagerId}
-                        onChange={(e) => setProjManagerId(e.target.value)}
+                        onChange={(val) => setProjManagerId(val)}
                         className="w-full p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 outline-none text-xs"
                       >
                         <option value="">
@@ -865,7 +866,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             {u.name} ({u.trigram}) - {u.department || 'Général'}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
 
@@ -924,9 +925,9 @@ export const DepartmentsProjectsModal: React.FC = () => {
 
                     {/* Sélecteur de suppléant avec bouton "+" */}
                     <div className="flex items-center gap-2 pt-1">
-                      <select
+                      <SearchableSelect
                         value={selectedProjDeputyToAdd}
-                        onChange={(e) => setSelectedProjDeputyToAdd(e.target.value)}
+                        onChange={(val) => setSelectedProjDeputyToAdd(val)}
                         className="flex-1 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
                       >
                         <option value="">
@@ -937,7 +938,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             {u.name} ({u.trigram}) - {u.department || 'Général'}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                       <button
                         type="button"
                         onClick={handleAddProjDeputy}

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import {
@@ -7,6 +7,8 @@ import {
   buildCombinedActivities,
   formatRelativeTime,
 } from '../services/activityService';
+import { getClientSupabase } from '../services/clientSupabase';
+import { searchAuditLogsOnServer } from '../services/auditService';
 import { formatCurrency, formatDate } from '../utils/crypto';
 import { StockMovement } from '../types';
 import {
@@ -48,6 +50,8 @@ export const RecentActivityFeed: React.FC<RecentActivityFeedProps> = ({ customMo
     setActiveTab,
     currentUser,
     userHasPermission,
+    supabaseUrl,
+    supabaseKey,
     language,
     t,
   } = useApp();
@@ -58,17 +62,72 @@ export const RecentActivityFeed: React.FC<RecentActivityFeedProps> = ({ customMo
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(6);
   const [selectedActivity, setSelectedActivity] = useState<ActivityItem | null>(null);
+  const [serverActivities, setServerActivities] = useState<ActivityItem[]>([]);
 
   const canViewAllLoginLogs =
     userHasPermission('perm_view_all_login_logs') ||
     Number(currentUser?.id) === 0 ||
     Number(currentUser?.role_id) === 0;
 
+  const canViewAuditLogs =
+    userHasPermission('perm_audit_view') ||
+    Number(currentUser?.id) === 0 ||
+    Number(currentUser?.role_id) === 0 ||
+    Number(currentUser?.role_id) === 1;
+
   const canViewPrices = userHasPermission('perm_prod_view_price');
+
+  useEffect(() => {
+    if (!canViewAuditLogs) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    if (!client) return;
+
+    let cancelled = false;
+    searchAuditLogsOnServer(client, { period: '7d', limit: 30, offset: 0 })
+      .then(({ rows }) => {
+        if (cancelled) return;
+        const mapped: ActivityItem[] = rows.map((r) => ({
+          id: `SRV-${r.id}`,
+          timestamp: r.created_at,
+          type: 'USER_ACTION',
+          category:
+            r.category === 'MOVEMENTS'
+              ? 'MOVEMENTS'
+              : r.category === 'SCANS'
+              ? 'SCANS'
+              : 'SYSTEM',
+          title: r.title,
+          description: r.description,
+          user_id: r.user_id || undefined,
+          user_name: r.user_name,
+          user_trigram: r.user_trigram || undefined,
+          product_id: r.product_id || undefined,
+          product_ref: r.product_ref || undefined,
+          quantity_changed: r.quantity_changed ?? undefined,
+          site_number: r.site_number || undefined,
+          depot_name: r.depot_name || undefined,
+          badgeText: r.category,
+          meta: {
+            status: r.severity === 'CRITICAL' || r.severity === 'WARNING' ? 'warning' : 'info',
+            details: r.table_name ? `${r.table_name} (${r.record_id || ''})` : undefined,
+          },
+        }));
+        setServerActivities(mapped);
+      })
+      .catch(() => {
+        // Fallback silencieux sur storedActivities locales hors-ligne
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewAuditLogs, supabaseUrl, supabaseKey]);
 
   // Combine real stock movements and logged activities into a single chronological stream with role-based privacy for login logs
   const allActivities = useMemo(() => {
-    const rawStream = buildCombinedActivities(movements, products, storedActivities);
+    const mergedStored = [...serverActivities, ...storedActivities];
+    const rawStream = buildCombinedActivities(movements, products, mergedStored);
     if (canViewAllLoginLogs) return rawStream;
 
     return rawStream.filter((item) => {
@@ -88,7 +147,7 @@ export const RecentActivityFeed: React.FC<RecentActivityFeedProps> = ({ customMo
 
       return Boolean(isSelf);
     });
-  }, [movements, products, storedActivities, canViewAllLoginLogs, currentUser]);
+  }, [movements, products, storedActivities, serverActivities, canViewAllLoginLogs, currentUser]);
 
   // Activity counts for category tabs
   const counts = useMemo(() => {

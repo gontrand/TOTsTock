@@ -426,6 +426,28 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
     const logAudit = async (actionType: string, targetId: any, targetName: string, extra: any = {}) => {
       try {
         const auditId = `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+        const isSensitiveAction =
+          isDeptManager ||
+          ['delete', 'reset_password', 'set_role', 'block'].includes(actionType) ||
+          (actionType === 'update' && extra?.updates?.role_id !== undefined);
+        const severity = isSensitiveAction ? 'WARNING' : 'INFO';
+        const title = `Action utilisateur (${actionType}) : ${targetName || targetId}`;
+        const description = isDeptManager
+          ? `Action administrative (${actionType}) déléguée par ${callerProfile.name} (${callerProfile.department}) sur ${targetName || targetId}`
+          : `Action administrative (${actionType}) exécutée par ${callerProfile.name} sur ${targetName || targetId}`;
+        const detailsPayload = {
+          performed_by_id: callerProfile.id,
+          performed_by_name: callerProfile.name,
+          caller_role: callerProfile.role_id,
+          caller_department: callerProfile.department,
+          target_user_id: targetId,
+          target_user_name: targetName,
+          is_delegated_dept_manager: isDeptManager,
+          notice_it: isDeptManager
+            ? `Action administrative déléguée par le Responsable de Département ${callerProfile.name} (${callerProfile.department}) sur le compte ${targetName || targetId}.`
+            : null,
+          ...extra,
+        };
         await supabaseAdmin.from(TABLES.auditLogs).insert([{
           id: auditId,
           app: 'stock',
@@ -433,20 +455,13 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
           user_id: String(callerProfile.id),
           user_name: callerProfile.name,
           action: `USER_${actionType.toUpperCase()}`,
-          severity: isDeptManager ? 'WARNING' : 'INFO',
-          details: {
-            performed_by_id: callerProfile.id,
-            performed_by_name: callerProfile.name,
-            caller_role: callerProfile.role_id,
-            caller_department: callerProfile.department,
-            target_user_id: targetId,
-            target_user_name: targetName,
-            is_delegated_dept_manager: isDeptManager,
-            notice_it: isDeptManager
-              ? `Action administrative déléguée par le Responsable de Département ${callerProfile.name} (${callerProfile.department}) sur le compte ${targetName || targetId}.`
-              : null,
-            ...extra,
-          },
+          type: 'USER_ADMIN_' + actionType.toUpperCase(),
+          category: 'USERS',
+          title,
+          description,
+          severity,
+          meta: detailsPayload,
+          details: detailsPayload,
           created_at: new Date().toISOString(),
         }]);
       } catch (logErr: any) {

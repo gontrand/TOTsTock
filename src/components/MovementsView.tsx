@@ -3,12 +3,14 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { formatDate, formatCurrency } from '../utils/crypto';
 import { MaterialOrder, MaterialOrderItem } from '../types';
+import { SearchableSelect } from './SearchableSelect';
 import {
   isTransferMovement,
   getMovementSourceDepot,
   getMovementDestDepot,
   groupMovementsByTransferBatch,
 } from '../services/stockMovementService';
+import { logAuditEventServer } from '../services/auditService';
 import {
   ArrowLeftRight,
   Download,
@@ -299,12 +301,23 @@ export const MovementsView: React.FC = () => {
     const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
+    const filename = `journal_mouvements_${new Date().toISOString().split('T')[0]}.csv`;
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `journal_mouvements_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    logAuditEventServer({
+      category: 'EXPORTS',
+      type: 'csv_export',
+      title: 'Export CSV des mouvements (Mobile)',
+      description: `${filteredMovements.length} mouvements exportés`,
+      meta: {
+        rows: filteredMovements.length,
+        filename,
+      },
+    }).catch(() => {});
   };
 
   // Orders CSV Export (User Requested)
@@ -362,15 +375,23 @@ export const MovementsView: React.FC = () => {
     const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
+    const filename = `commandes_materiel_departement_${new Date().toISOString().split('T')[0]}.csv`;
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute(
-      'download',
-      `commandes_materiel_departement_${new Date().toISOString().split('T')[0]}.csv`
-    );
+    link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    logAuditEventServer({
+      category: 'EXPORTS',
+      type: 'csv_export',
+      title: 'Export CSV des commandes matériel (Mobile)',
+      description: `${filteredOrders.length} commandes exportées`,
+      meta: {
+        rows: filteredOrders.length,
+        filename,
+      },
+    }).catch(() => {});
   };
 
   return (
@@ -510,9 +531,9 @@ export const MovementsView: React.FC = () => {
               <Building2 className="w-3 h-3 text-orange-500 shrink-0 relative z-20" />
               <span className="truncate relative z-10">{t('mov_filter_dep')}</span>
             </label>
-            <select
+            <SearchableSelect
               value={selectedDepId}
-              onChange={(e) => setSelectedDepId(e.target.value)}
+              onChange={(val) => setSelectedDepId(val)}
               className="w-full p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 outline-none"
             >
               <option value="ALL">{t('mov_all_deps')}</option>
@@ -521,7 +542,7 @@ export const MovementsView: React.FC = () => {
                   {d.name}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           </div>
         )}
 

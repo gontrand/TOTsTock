@@ -2,9 +2,12 @@ export type DesktopPageId =
   | 'dashboard'
   | 'inventory'
   | 'audit'
+  | 'audit_log'
   | 'movements'
+  | 'transfers'
   | 'orders'
   | 'preparation'
+  | 'reports'
   | 'print_station'
   | 'settings';
 

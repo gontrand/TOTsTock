@@ -1,13 +1,18 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   ClipboardList,
+  Loader2,
   Plus,
   Printer,
+  RotateCcw,
   Search,
   ShoppingBag,
+  SlidersHorizontal,
   Trash2,
   Truck,
+  WifiOff,
   X,
   XCircle,
 } from 'lucide-react';
@@ -24,8 +29,19 @@ import {
   requestGuardedNavigation,
   useRegisterUnsavedForm,
 } from '../../services/unsavedChangesGuard';
+import {
+  buildSearchMaterialOrdersRpcParams,
+  createDefaultOrderSearchFilters,
+  doesOrderFilterExceedLocalWindow,
+  filterOrdersDefault7DaysAndActive,
+  filterOrdersLocally,
+  OrderSearchFilters,
+  ReportPeriodPreset,
+} from '../../services/reportsService';
+import { getClientSupabase, normalizeOrderRecord } from '../../services/clientSupabase';
 import { tr } from '../../i18n/dutchTranslator';
 import { Language } from '../../i18n/translations';
+import { SearchableSelect } from '../../components/SearchableSelect';
 
 export interface DesktopOrdersPageProps {
   selectedDepotFilter?: string;
@@ -39,8 +55,26 @@ export interface DesktopOrdersPageProps {
   onOpenOrderInPreparation?: (orderId: string) => void;
 }
 
-function getStatusBadge(status: OrderStatus, language: Language): { label: string; classes: string } {
-  switch (status) {
+const ORDER_STATUS_OPTIONS: OrderStatus[] = [
+  'WAITING_APPROVAL',
+  'PENDING',
+  'PREPARING',
+  'READY',
+  'COLLECTED',
+  'CANCELLED',
+  'REJECTED',
+];
+
+const SERVER_PAGE_SIZE = 50;
+
+function getStatusBadge(
+  status: OrderStatus | string | null | undefined,
+  language: Language
+): { label: string; classes: string } {
+  const normalized = String(status || 'PENDING')
+    .trim()
+    .toUpperCase();
+  switch (normalized) {
     case 'WAITING_APPROVAL':
       return {
         label: tr(language, 'À valider', 'Pending approval', 'Te valideren'),
@@ -52,6 +86,7 @@ function getStatusBadge(status: OrderStatus, language: Language): { label: strin
         classes: 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300',
       };
     case 'PREPARING':
+    case 'PARTIAL':
       return {
         label: tr(language, 'En préparation', 'In preparation', 'In voorbereiding'),
         classes: 'bg-sky-100 text-sky-800 dark:bg-sky-950/70 dark:text-sky-300',
@@ -62,6 +97,7 @@ function getStatusBadge(status: OrderStatus, language: Language): { label: strin
         classes: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300',
       };
     case 'COLLECTED':
+    case 'DELIVERED':
       return {
         label: tr(language, 'Retirée', 'Collected', 'Afgehaald'),
         classes: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -75,6 +111,11 @@ function getStatusBadge(status: OrderStatus, language: Language): { label: strin
       return {
         label: tr(language, 'Refusée', 'Rejected', 'Geweigerd'),
         classes: 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300',
+      };
+    default:
+      return {
+        label: normalized || tr(language, 'À préparer', 'To prepare', 'Te verzamelen'),
+        classes: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
       };
   }
 }
@@ -96,6 +137,8 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     depots,
     departments,
     projects,
+    supabaseUrl,
+    supabaseKey,
     userHasPermission,
     canApproveOrder,
     approveOrder,
@@ -115,8 +158,32 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   const handlePrepRedirect = onOpenPreparationForOrder ?? onOpenOrderInPreparation;
   const locale = language === 'nl' ? 'nl-NL' : language === 'en' ? 'en-GB' : 'fr-FR';
 
-  const [statusFilter, setStatusFilter] = useState<OrderStatus | 'ALL'>('ALL');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [filters, setFilters] = useState<OrderSearchFilters>(() => createDefaultOrderSearchFilters());
+  const [serverModeActive, setServerModeActive] = useState(false);
+  const [serverOrders, setServerOrders] = useState<MaterialOrder[]>([]);
+  const [serverTotalCount, setServerTotalCount] = useState<number>(0);
+  const [isSearchingServer, setIsSearchingServer] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [localFallbackActive, setLocalFallbackActive] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  const searchSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
   const [internalOrderId, setInternalOrderId] = useState<string | null>(
     controlledOrderId ?? initialSelectedOrderId ?? null
   );
@@ -136,14 +203,14 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   const [catalogQuery, setCatalogQuery] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (openNewOrderRequested) {
       setNewOrderOpen(true);
       onConsumeNewOrderRequest?.();
     }
   }, [openNewOrderRequested, onConsumeNewOrderRequest]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (initialSelectedOrderId) {
       setInternalOrderId(initialSelectedOrderId);
     }
@@ -158,39 +225,186 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     userHasPermission('perm_order_cancel') || userHasPermission('perm_orders_manage');
   const canViewPrices = userHasPermission('perm_prod_view_price');
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter((o) => {
-      if (statusFilter !== 'ALL' && o.status !== statusFilter) return false;
-      if (effectiveDepotFilter !== 'ALL' && o.depot_name && o.depot_name !== effectiveDepotFilter) {
-        return false;
+  const effectiveFilters: OrderSearchFilters = useMemo(() => {
+    const resolvedDepot =
+      filters.depot && filters.depot !== 'ALL'
+        ? filters.depot
+        : effectiveDepotFilter !== 'ALL'
+        ? effectiveDepotFilter
+        : '';
+    return {
+      ...filters,
+      depot: resolvedDepot,
+    };
+  }, [filters, effectiveDepotFilter]);
+
+  const exceedsLocalWindow = useMemo(
+    () => doesOrderFilterExceedLocalWindow(effectiveFilters),
+    [effectiveFilters]
+  );
+
+  const executeServerOrderSearch = useCallback(
+    async (targetFilters: OrderSearchFilters, offset: number, append: boolean) => {
+      const seq = ++searchSeqRef.current;
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      const offlineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+      const client = !offlineNow ? getClientSupabase(supabaseUrl, supabaseKey) : null;
+
+      if (!client || offlineNow || typeof (client as any).rpc !== 'function') {
+        if (seq !== searchSeqRef.current) return;
+        setLocalFallbackActive(true);
+        setServerModeActive(false);
+        setIsSearchingServer(false);
+        setIsLoadingMore(false);
+        return;
       }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const hay = [
-          o.order_number,
-          o.requester_name,
-          o.requester_department,
-          o.site_number,
-          o.depot_name,
-          o.notes,
-          ...o.items.map((it) => `${it.product_ref} ${it.product_name}`),
-        ]
+
+      if (append) {
+        setIsLoadingMore(true);
+      } else {
+        setIsSearchingServer(true);
+      }
+      setServerError(null);
+
+      try {
+        const rpcParams = buildSearchMaterialOrdersRpcParams(
+          targetFilters,
+          SERVER_PAGE_SIZE,
+          offset
+        );
+        let rpcCall: any = client.rpc('search_material_orders', rpcParams);
+        if (rpcCall && typeof rpcCall.abortSignal === 'function') {
+          rpcCall = rpcCall.abortSignal(controller.signal);
+        }
+        const { data, error } = await rpcCall;
+        if (seq !== searchSeqRef.current || controller.signal.aborted) return;
+
+        if (error) {
+          setLocalFallbackActive(true);
+          setServerModeActive(false);
+          setServerError(error.message || String(error));
+          return;
+        }
+
+        const rawList = Array.isArray(data) ? data : [];
+        const total =
+          rawList.length > 0 ? Number(rawList[0]?.total_count ?? rawList.length) : 0;
+        const rows = rawList
+          .map((r: any) => r?.row_data ?? r)
           .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
+          .map(normalizeOrderRecord);
+
+        setLocalFallbackActive(false);
+        setServerModeActive(true);
+        setServerTotalCount(total);
+        setServerOrders((prev) => {
+          if (!append) return rows;
+          const existingIds = new Set(prev.map((o) => String(o.id)));
+          const merged = [...prev];
+          for (const row of rows) {
+            if (!existingIds.has(String(row.id))) {
+              merged.push(row);
+            }
+          }
+          return merged;
+        });
+      } catch (err: any) {
+        if (seq !== searchSeqRef.current || controller.signal.aborted) return;
+        setLocalFallbackActive(true);
+        setServerModeActive(false);
+        setServerError(err?.message || null);
+      } finally {
+        if (seq === searchSeqRef.current) {
+          setIsSearchingServer(false);
+          setIsLoadingMore(false);
+        }
       }
-      return true;
+    },
+    [supabaseUrl, supabaseKey]
+  );
+
+  // Debounce 400ms when any filter exceeds local 7-day window
+  useEffect(() => {
+    if (!exceedsLocalWindow) {
+      searchSeqRef.current += 1;
+      abortControllerRef.current?.abort();
+      setServerModeActive(false);
+      setIsSearchingServer(false);
+      setIsLoadingMore(false);
+      setLocalFallbackActive(!isOnline);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      executeServerOrderSearch(effectiveFilters, 0, false);
+    }, 400);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [effectiveFilters, exceedsLocalWindow, isOnline, executeServerOrderSearch]);
+
+  const handleManualSearchClick = () => {
+    executeServerOrderSearch(effectiveFilters, 0, false);
+  };
+
+  const handleResetFilters = () => {
+    searchSeqRef.current += 1;
+    abortControllerRef.current?.abort();
+    setFilters(createDefaultOrderSearchFilters());
+    setServerModeActive(false);
+    setServerOrders([]);
+    setServerTotalCount(0);
+    setLocalFallbackActive(false);
+    setServerError(null);
+  };
+
+  const handleLoadMore = () => {
+    if (isLoadingMore || isSearchingServer) return;
+    executeServerOrderSearch(effectiveFilters, serverOrders.length, true);
+  };
+
+  const toggleStatusSelection = (status: OrderStatus) => {
+    setFilters((prev) => {
+      const exists = prev.statuses.includes(status);
+      const nextStatuses = exists
+        ? prev.statuses.filter((s) => s !== status)
+        : [...prev.statuses, status];
+      return { ...prev, statuses: nextStatuses };
     });
-  }, [orders, statusFilter, effectiveDepotFilter, searchQuery]);
+  };
+
+  // Default 7-day + active orders local list (or filtered local cache on fallback)
+  const localFilteredOrders = useMemo(() => {
+    if (!exceedsLocalWindow && filters.period === '7D') {
+      const base7dAndActive = filterOrdersDefault7DaysAndActive(orders);
+      return filterOrdersLocally(
+        base7dAndActive,
+        {
+          ...effectiveFilters,
+          // Period already applied with active preservation
+          period: 'ALL',
+        },
+        products
+      );
+    }
+    return filterOrdersLocally(orders, effectiveFilters, products);
+  }, [orders, products, effectiveFilters, exceedsLocalWindow, filters.period]);
+
+  const displayedOrders = serverModeActive ? serverOrders : localFilteredOrders;
+  const totalResultsCount = serverModeActive ? serverTotalCount : localFilteredOrders.length;
+  const showOfflineBanner = !isOnline || localFallbackActive;
 
   const activeOrder: MaterialOrder | null = useMemo(() => {
     if (selectedOrderId) {
-      const found = filteredOrders.find((o) => o.id === selectedOrderId);
+      const found = displayedOrders.find((o) => o.id === selectedOrderId);
       if (found) return found;
     }
-    return filteredOrders[0] || null;
-  }, [filteredOrders, selectedOrderId]);
+    return displayedOrders[0] || null;
+  }, [displayedOrders, selectedOrderId]);
 
   const handlePrintOrderSlip = async (order: MaterialOrder) => {
     let qrDataUrl = '';
@@ -291,364 +505,613 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   }, [products, orderDepot, catalogQuery]);
 
   return (
-    <div className="flex h-full min-h-0 bg-slate-50 dark:bg-slate-950">
-      {/* Left Column: Orders List */}
-      <div className="w-[410px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ShoppingBag className="w-5 h-5 text-orange-600" />
-              <h1 className="text-base font-black text-slate-900 dark:text-white">
-                {t('desktop_nav_orders')}
-              </h1>
-              <span className="px-2 py-0.5 text-[11px] font-mono font-bold rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                {filteredOrders.length}
+    <div className="flex flex-col h-full min-h-0 bg-slate-50 dark:bg-slate-950">
+      {/* Offline / Local Fallback Banner */}
+      {showOfflineBanner && (
+        <div
+          role="status"
+          data-testid="orders-local-fallback-banner"
+          className="px-6 py-2 bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center justify-between gap-2 shrink-0"
+        >
+          <div className="flex items-center gap-2">
+            <WifiOff className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              {tr(
+                language,
+                'Recherche limitée aux données locales',
+                'Search limited to local data',
+                'Zoekopdracht beperkt tot lokale gegevens'
+              )}
+            </span>
+          </div>
+          {serverError && (
+            <span className="text-[11px] font-normal text-amber-700 dark:text-amber-300 truncate max-w-md">
+              {serverError}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Top Filter Bar (Lot 1.2) */}
+      <div className="px-5 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 space-y-2.5 shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <ShoppingBag className="w-5 h-5 text-orange-600" />
+            <h1 className="text-base font-black text-slate-900 dark:text-white">
+              {t('desktop_nav_orders')}
+            </h1>
+            <span
+              data-testid="orders-results-count"
+              className="px-2.5 py-0.5 text-xs font-mono font-bold rounded-full bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800"
+            >
+              {totalResultsCount} {tr(language, 'résultats', 'results', 'resultaten')}
+            </span>
+            {isSearchingServer && (
+              <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-orange-600" />
+                {tr(language, 'Recherche...', 'Searching...', 'Zoeken...')}
               </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Period selector */}
+            <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-bold">
+              {(
+                [
+                  ['7D', tr(language, '7 j', '7 d', '7 d')],
+                  ['30D', tr(language, '30 j', '30 d', '30 d')],
+                  ['CUSTOM', tr(language, 'Personnalisée', 'Custom', 'Aangepast')],
+                  ['ALL', tr(language, 'Tout', 'All', 'Alles')],
+                ] as Array<[ReportPeriodPreset, string]>
+              ).map(([preset, label]) => (
+                <button
+                  key={preset}
+                  type="button"
+                  data-testid={`orders-period-${preset.toLowerCase()}`}
+                  onClick={() => setFilters((prev) => ({ ...prev, period: preset }))}
+                  className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                    filters.period === preset
+                      ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+
+            {filters.period === 'CUSTOM' && (
+              <div className="flex items-center gap-1.5 text-xs">
+                <input
+                  type="date"
+                  aria-label={tr(language, 'Date de début', 'Start date', 'Startdatum')}
+                  value={filters.fromDate}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, fromDate: e.target.value }))}
+                  className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                />
+                <span className="text-slate-400">→</span>
+                <input
+                  type="date"
+                  aria-label={tr(language, 'Date de fin', 'End date', 'Einddatum')}
+                  value={filters.toDate}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, toDate: e.target.value }))}
+                  className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                />
+              </div>
+            )}
+
+            <button
+              type="button"
+              data-testid="orders-search-btn"
+              onClick={handleManualSearchClick}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <Search className="w-3.5 h-3.5" />
+              {tr(language, 'Rechercher', 'Search', 'Zoeken')}
+            </button>
+
+            <button
+              type="button"
+              data-testid="orders-reset-btn"
+              onClick={handleResetFilters}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              {tr(language, 'Réinitialiser', 'Reset', 'Resetten')}
+            </button>
+
             {canCreateOrder && (
               <button
                 type="button"
                 onClick={() => setNewOrderOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {t('desktop_new_order')}
               </button>
             )}
           </div>
+        </div>
 
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={tr(
-                language,
-                'N° commande, chantier, demandeur, réf...',
-                'Order #, job site, requester, ref...',
-                'Bestelnr., werf, aanvrager, ref...'
-              )}
-              className="w-full pl-9 pr-8 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* Filter pills */}
-          <div className="flex flex-wrap gap-1 text-[11px] font-bold">
-            {(
-              [
-                ['ALL', tr(language, 'Toutes', 'All', 'Alle')],
-                ['WAITING_APPROVAL', tr(language, 'À valider', 'To approve', 'Te valideren')],
-                ['PENDING', tr(language, 'À préparer', 'To prepare', 'Te verzamelen')],
-                ['PREPARING', tr(language, 'En cours', 'In progress', 'Bezig')],
-                ['READY', tr(language, 'Prêtes', 'Ready', 'Klaar')],
-                ['COLLECTED', tr(language, 'Retirées', 'Collected', 'Afgehaald')],
-              ] as Array<[OrderStatus | 'ALL', string]>
-            ).map(([st, label]) => (
+        {/* Multi-status filter pills */}
+        <div className="flex flex-wrap items-center gap-1 text-[11px] font-bold">
+          <span className="text-slate-400 mr-1 flex items-center gap-1">
+            <SlidersHorizontal className="w-3 h-3" />
+            {tr(language, 'Statuts :', 'Statuses:', 'Statussen:')}
+          </span>
+          <button
+            type="button"
+            onClick={() => setFilters((prev) => ({ ...prev, statuses: [] }))}
+            className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+              filters.statuses.length === 0
+                ? 'bg-orange-600 text-white'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+            }`}
+          >
+            {tr(language, 'Tous', 'All', 'Alle')}
+          </button>
+          {ORDER_STATUS_OPTIONS.map((st) => {
+            const active = filters.statuses.includes(st);
+            const badge = getStatusBadge(st, language);
+            return (
               <button
                 key={st}
                 type="button"
-                onClick={() => setStatusFilter(st)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${
-                  statusFilter === st
+                data-testid={`orders-status-${st.toLowerCase()}`}
+                onClick={() => toggleStatusSelection(st)}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  active
                     ? 'bg-orange-600 text-white'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
                 }`}
               >
-                {label}
+                {badge.label}
               </button>
-            ))}
-          </div>
+            );
+          })}
         </div>
 
-        {/* Orders scrollable list */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-200/70 dark:divide-slate-800">
-          {filteredOrders.length === 0 ? (
-            <div className="p-8 text-center text-xs text-slate-400">
-              {tr(
+        {/* Detailed filter inputs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2 text-xs">
+          <div className="relative lg:col-span-2">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              data-testid="orders-filter-text"
+              value={filters.text}
+              onChange={(e) => setFilters((prev) => ({ ...prev, text: e.target.value }))}
+              placeholder={tr(
                 language,
-                'Aucune commande trouvée pour ce filtre.',
-                'No order found for this filter.',
-                'Geen bestellingen gevonden voor dit filter.'
+                'Texte libre (n° commande, notes...)',
+                'Free text (order #, notes...)',
+                'Vrije tekst (bestelnr., notities...)'
               )}
-            </div>
-          ) : (
-            filteredOrders.map((order) => {
-              const isSelected = activeOrder?.id === order.id;
-              const badge = getStatusBadge(order.status, language);
-              const totalLines = order.items.length;
-              const pickedLines = order.items.filter(
-                (it) => it.picked || it.unavailable
-              ).length;
+              className="w-full pl-8 pr-6 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-xs"
+            />
+            {filters.text && (
+              <button
+                type="button"
+                onClick={() => setFilters((prev) => ({ ...prev, text: '' }))}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
 
-              return (
-                <button
-                  key={order.id}
-                  type="button"
-                  onClick={() => setSelectedOrderId(order.id)}
-                  className={`w-full text-left p-4 transition-colors flex flex-col gap-1.5 ${
-                    isSelected
-                      ? 'bg-orange-50/90 dark:bg-orange-950/40 border-l-4 border-l-orange-600'
-                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs font-black text-slate-900 dark:text-white">
-                      {order.order_number}
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${badge.classes}`}
-                    >
-                      {badge.label}
-                    </span>
-                  </div>
+          <input
+            type="text"
+            data-testid="orders-filter-reference"
+            value={filters.reference}
+            onChange={(e) => setFilters((prev) => ({ ...prev, reference: e.target.value }))}
+            placeholder={tr(language, 'Réf. article', 'Item ref', 'Artikelref.')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono"
+          />
 
-                  <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
-                    <span className="font-semibold truncate">
-                      {order.requester_name} • {order.site_number || '—'}
-                    </span>
-                    <span className="font-mono text-[11px] text-slate-500">
-                      {pickedLines}/{totalLines} {tr(language, 'lignes', 'lines', 'regels')}
-                    </span>
-                  </div>
+          <input
+            type="text"
+            data-testid="orders-filter-requester"
+            value={filters.requester}
+            onChange={(e) => setFilters((prev) => ({ ...prev, requester: e.target.value }))}
+            placeholder={tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          />
 
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>{order.depot_name || tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot')}</span>
-                    <span className="font-mono">
-                      {new Date(order.created_at).toLocaleDateString(locale)}
-                    </span>
-                  </div>
-                </button>
-              );
-            })
-          )}
+          <input
+            type="text"
+            data-testid="orders-filter-preparer"
+            value={filters.preparer}
+            onChange={(e) => setFilters((prev) => ({ ...prev, preparer: e.target.value }))}
+            placeholder={tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          />
+
+          <SearchableSelect
+            data-testid="orders-filter-department"
+            value={filters.department}
+            onChange={(val) => setFilters((prev) => ({ ...prev, department: val }))}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          >
+            <option value="">{tr(language, 'Tous départements', 'All departments', 'Alle afdelingen')}</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </SearchableSelect>
+
+          <input
+            type="text"
+            data-testid="orders-filter-site"
+            value={filters.site}
+            onChange={(e) => setFilters((prev) => ({ ...prev, site: e.target.value }))}
+            placeholder={tr(language, 'Chantier', 'Job site', 'Werf')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono"
+          />
+
+          <SearchableSelect
+            data-testid="orders-filter-depot"
+            value={filters.depot}
+            onChange={(val) => setFilters((prev) => ({ ...prev, depot: val }))}
+            recentKey="depots"
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+          >
+            <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
+            {depots.map((d) => (
+              <option key={d.id} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </SearchableSelect>
+
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              data-testid="orders-filter-min-cost"
+              value={filters.minCost}
+              onChange={(e) => setFilters((prev) => ({ ...prev, minCost: e.target.value }))}
+              placeholder={tr(language, 'Min €', 'Min €', 'Min €')}
+              className="w-1/2 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono"
+            />
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              data-testid="orders-filter-max-cost"
+              value={filters.maxCost}
+              onChange={(e) => setFilters((prev) => ({ ...prev, maxCost: e.target.value }))}
+              placeholder={tr(language, 'Max €', 'Max €', 'Max €')}
+              className="w-1/2 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono"
+            />
+          </div>
         </div>
       </div>
 
-      {/* Right Column: Order Detail & Actions */}
-      <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
-        {!activeOrder ? (
-          <div className="flex-1 flex items-center justify-center text-sm text-slate-400">
-            {tr(
-              language,
-              'Sélectionnez une commande dans la liste de gauche pour afficher ses lignes.',
-              'Select an order from the left list to view its lines.',
-              'Selecteer een bestelling in de lijst links om de regels te bekijken.'
-            )}
-          </div>
-        ) : (
-          <>
-            {/* Order Header */}
-            <div className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-3">
-                  <h2 className="text-lg font-black font-mono text-slate-900 dark:text-white">
-                    {activeOrder.order_number}
-                  </h2>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${
-                      getStatusBadge(activeOrder.status, language).classes
+      {/* Main Split View: Left Orders List + Right Order Detail */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* Left Column: Orders List */}
+        <div className="w-[410px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full">
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-200/70 dark:divide-slate-800">
+            {displayedOrders.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-400">
+                {tr(
+                  language,
+                  'Aucune commande trouvée pour ce filtre.',
+                  'No order found for this filter.',
+                  'Geen bestellingen gevonden voor dit filter.'
+                )}
+              </div>
+            ) : (
+              displayedOrders.map((order) => {
+                const isSelected = activeOrder?.id === order.id;
+                const badge = getStatusBadge(order.status, language);
+                const orderItems = Array.isArray(order.items) ? order.items : [];
+                const totalLines = orderItems.length;
+                const pickedLines = orderItems.filter(
+                  (it) => it.picked || it.unavailable
+                ).length;
+
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => setSelectedOrderId(order.id)}
+                    className={`w-full text-left p-4 transition-colors flex flex-col gap-1.5 ${
+                      isSelected
+                        ? 'bg-orange-50/90 dark:bg-orange-950/40 border-l-4 border-l-orange-600'
+                        : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
                     }`}
                   >
-                    {getStatusBadge(activeOrder.status, language).label}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  {tr(language, 'Demandeur :', 'Requester:', 'Aanvrager:')}{' '}
-                  <strong className="text-slate-800 dark:text-slate-200">
-                    {activeOrder.requester_name}
-                  </strong>{' '}
-                  • {tr(language, 'Chantier :', 'Job site:', 'Werf:')}{' '}
-                  <strong className="font-mono text-slate-800 dark:text-slate-200">
-                    {activeOrder.site_number || '—'}
-                  </strong>{' '}
-                  • {tr(language, 'Dépôt :', 'Depot:', 'Depot:')}{' '}
-                  <strong className="text-slate-800 dark:text-slate-200">
-                    {activeOrder.depot_name || tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot')}
-                  </strong>
-                  {activeOrder.pickup_zone && (
-                    <>
-                      {' '}
-                      • {tr(language, 'Zone retrait :', 'Pickup zone:', 'Afhaalzone:')}{' '}
-                      <strong className="font-mono text-emerald-600 dark:text-emerald-400">
-                        {activeOrder.pickup_zone}
-                      </strong>
-                    </>
-                  )}
-                </p>
-              </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-xs font-black text-slate-900 dark:text-white">
+                        {order.order_number}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${badge.classes}`}
+                      >
+                        {badge.label}
+                      </span>
+                    </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                      <span className="font-semibold truncate">
+                        {order.requester_name} • {order.site_number || '—'}
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-500">
+                        {pickedLines}/{totalLines} {tr(language, 'lignes', 'lines', 'regels')}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>
+                        {order.depot_name || tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot')}
+                      </span>
+                      <span className="font-mono">
+                        {new Date(order.created_at).toLocaleDateString(locale)}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+
+            {/* Pagination: Charger plus */}
+            {serverModeActive && serverOrders.length < serverTotalCount && (
+              <div className="p-3 text-center bg-slate-50/60 dark:bg-slate-800/30">
                 <button
                   type="button"
-                  onClick={() => handlePrintOrderSlip(activeOrder)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50"
+                  data-testid="orders-load-more-btn"
+                  disabled={isLoadingMore}
+                  onClick={handleLoadMore}
+                  className="w-full py-2 px-4 rounded-lg text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  <Printer className="w-3.5 h-3.5 text-orange-500" />
-                  {tr(language, 'Imprimer bon', 'Print slip', 'Bon afdrukken')}
+                  {isLoadingMore
+                    ? tr(language, 'Chargement...', 'Loading...', 'Laden...')
+                    : `${tr(language, 'Charger plus', 'Load more', 'Meer laden')} (${serverOrders.length} / ${serverTotalCount})`}
                 </button>
-
-                {activeOrder.status === 'WAITING_APPROVAL' &&
-                  canApproveOrder(activeOrder) && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => approveOrder(activeOrder.id)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        {tr(language, 'Approuver', 'Approve', 'Goedkeuren')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          rejectOrder(
-                            activeOrder.id,
-                            tr(language, 'Refusé depuis le poste bureau', 'Rejected from desktop workstation', 'Geweigerd vanaf desktopwerkstation')
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        {tr(language, 'Refuser', 'Reject', 'Weigeren')}
-                      </button>
-                    </>
-                  )}
-
-                {(activeOrder.status === 'PENDING' ||
-                  activeOrder.status === 'PREPARING') &&
-                  canPrepOrder &&
-                  handlePrepRedirect && (
-                    <button
-                      type="button"
-                      onClick={() => handlePrepRedirect(activeOrder.id)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white"
-                    >
-                      <ClipboardList className="w-3.5 h-3.5" />
-                      {tr(language, 'Ouvrir en préparation (Picking)', 'Open in Picking', 'Openen in Orderpicken')}
-                    </button>
-                  )}
-
-                {activeOrder.status === 'READY' && canCollectOrder && (
-                  <button
-                    type="button"
-                    onClick={() => markOrderCollected(activeOrder.id)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
-                  >
-                    <Truck className="w-3.5 h-3.5" />
-                    {tr(language, 'Marquer retirée', 'Mark collected', 'Markeer als afgehaald')}
-                  </button>
-                )}
-
-                {(activeOrder.status === 'PENDING' ||
-                  activeOrder.status === 'WAITING_APPROVAL') &&
-                  canCancelOrder && (
-                    <button
-                      type="button"
-                      onClick={() => cancelOrder(activeOrder.id)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
-                    </button>
-                  )}
               </div>
-            </div>
+            )}
+          </div>
+        </div>
 
-            {/* Order Items Table */}
-            <div className="flex-1 overflow-auto p-6">
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-slate-100 dark:bg-slate-800/80 text-[11px] font-bold uppercase text-slate-500">
-                    <tr>
-                      <th className="py-2.5 px-4">{tr(language, 'Référence', 'Reference', 'Referentie')}</th>
-                      <th className="py-2.5 px-4">{tr(language, 'Désignation', 'Designation', 'Omschrijving')}</th>
-                      <th className="py-2.5 px-3">{tr(language, 'Emplacement', 'Location', 'Locatie')}</th>
-                      <th className="py-2.5 px-3 text-right">{tr(language, 'Demandé', 'Requested', 'Gevraagd')}</th>
-                      <th className="py-2.5 px-3 text-right">{tr(language, 'Préparé', 'Picked', 'Verzameld')}</th>
-                      <th className="py-2.5 px-4">{tr(language, 'Statut ligne', 'Line status', 'Regelstatus')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
-                    {activeOrder.items.map((it) => {
-                      const pickedQty = it.picked_quantity ?? (it.picked ? it.quantity : 0);
-                      const isMissing = Boolean(it.unavailable);
-                      const isPartial = !isMissing && it.picked && pickedQty > 0 && pickedQty < it.quantity;
-
-                      return (
-                        <tr key={String(it.product_id)} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                          <td className="py-3 px-4 font-mono font-bold text-orange-600 dark:text-orange-400">
-                            {it.product_ref}
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="font-bold text-slate-900 dark:text-white">
-                              {it.product_name}
-                            </div>
-                            {it.substituted && it.substituted_with_ref && (
-                              <div className="text-[11px] text-amber-600">
-                                {tr(language, 'Remplacé par', 'Replaced with', 'Vervangen door')}{' '}
-                                {it.substituted_with_ref} ({it.substituted_with_name})
-                              </div>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300">
-                            {it.rack_location || '—'}
-                          </td>
-                          <td className="py-3 px-3 text-right font-mono font-bold">
-                            {it.quantity}
-                          </td>
-                          <td className="py-3 px-3 text-right font-mono font-black text-emerald-600 dark:text-emerald-400">
-                            {pickedQty}
-                          </td>
-                          <td className="py-3 px-4">
-                            {isMissing ? (
-                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
-                                {tr(language, 'Manquant', 'Missing', 'Ontbrekend')}{' '}
-                                {it.unavailable_comment ? `(${it.unavailable_comment})` : ''}
-                              </span>
-                            ) : isPartial ? (
-                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
-                                {tr(language, 'Partiel', 'Partial', 'Gedeeltelijk')} ({pickedQty}/{it.quantity})
-                              </span>
-                            ) : it.picked ? (
-                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-                                {tr(language, 'Pointé', 'Picked', 'Verzameld')}
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
-                                {tr(language, 'En attente', 'Pending', 'In wachtrij')}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {canViewPrices && activeOrder.total_cost != null && (
-                <div className="mt-4 flex justify-end">
-                  <div className="px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
-                    {tr(language, 'Total estimé HT :', 'Estimated net total:', 'Geschat totaal excl. btw:')}{' '}
-                    <strong className="font-mono text-sm text-slate-900 dark:text-white ml-2">
-                      {formatCurrency(activeOrder.total_cost)}
-                    </strong>
-                  </div>
-                </div>
+        {/* Right Column: Order Detail & Actions */}
+        <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
+          {!activeOrder ? (
+            <div className="flex-1 flex items-center justify-center text-sm text-slate-400">
+              {tr(
+                language,
+                'Sélectionnez une commande dans la liste de gauche pour afficher ses lignes.',
+                'Select an order from the left list to view its lines.',
+                'Selecteer een bestelling in de lijst links om de regels te bekijken.'
               )}
             </div>
-          </>
-        )}
+          ) : (
+            <>
+              {/* Order Header */}
+              <div className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-lg font-black font-mono text-slate-900 dark:text-white">
+                      {activeOrder.order_number}
+                    </h2>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${
+                        getStatusBadge(activeOrder.status, language).classes
+                      }`}
+                    >
+                      {getStatusBadge(activeOrder.status, language).label}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    {tr(language, 'Demandeur :', 'Requester:', 'Aanvrager:')}{' '}
+                    <strong className="text-slate-800 dark:text-slate-200">
+                      {activeOrder.requester_name}
+                    </strong>{' '}
+                    • {tr(language, 'Chantier :', 'Job site:', 'Werf:')}{' '}
+                    <strong className="font-mono text-slate-800 dark:text-slate-200">
+                      {activeOrder.site_number || '—'}
+                    </strong>{' '}
+                    • {tr(language, 'Dépôt :', 'Depot:', 'Depot:')}{' '}
+                    <strong className="text-slate-800 dark:text-slate-200">
+                      {activeOrder.depot_name || tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot')}
+                    </strong>
+                    {activeOrder.preparer_name && (
+                      <>
+                        {' '}
+                        • {tr(language, 'Préparateur :', 'Preparer:', 'Orderpicker:')}{' '}
+                        <strong className="text-slate-800 dark:text-slate-200">
+                          {activeOrder.preparer_name}
+                        </strong>
+                      </>
+                    )}
+                    {activeOrder.pickup_zone && (
+                      <>
+                        {' '}
+                        • {tr(language, 'Zone retrait :', 'Pickup zone:', 'Afhaalzone:')}{' '}
+                        <strong className="font-mono text-emerald-600 dark:text-emerald-400">
+                          {activeOrder.pickup_zone}
+                        </strong>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handlePrintOrderSlip(activeOrder)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-orange-500" />
+                    {tr(language, 'Imprimer bon', 'Print slip', 'Bon afdrukken')}
+                  </button>
+
+                  {activeOrder.status === 'WAITING_APPROVAL' &&
+                    canApproveOrder(activeOrder) && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => approveOrder(activeOrder.id)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {tr(language, 'Approuver', 'Approve', 'Goedkeuren')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            rejectOrder(
+                              activeOrder.id,
+                              tr(
+                                language,
+                                'Refusé depuis le poste bureau',
+                                'Rejected from desktop workstation',
+                                'Geweigerd vanaf desktopwerkstation'
+                              )
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          {tr(language, 'Refuser', 'Reject', 'Weigeren')}
+                        </button>
+                      </>
+                    )}
+
+                  {(activeOrder.status === 'PENDING' ||
+                    activeOrder.status === 'PREPARING') &&
+                    canPrepOrder &&
+                    handlePrepRedirect && (
+                      <button
+                        type="button"
+                        onClick={() => handlePrepRedirect(activeOrder.id)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white"
+                      >
+                        <ClipboardList className="w-3.5 h-3.5" />
+                        {tr(
+                          language,
+                          'Ouvrir en préparation (Picking)',
+                          'Open in Picking',
+                          'Openen in Orderpicken'
+                        )}
+                      </button>
+                    )}
+
+                  {activeOrder.status === 'READY' && canCollectOrder && (
+                    <button
+                      type="button"
+                      onClick={() => markOrderCollected(activeOrder.id)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      {tr(language, 'Marquer retirée', 'Mark collected', 'Markeer als afgehaald')}
+                    </button>
+                  )}
+
+                  {(activeOrder.status === 'PENDING' ||
+                    activeOrder.status === 'WAITING_APPROVAL') &&
+                    canCancelOrder && (
+                      <button
+                        type="button"
+                        onClick={() => cancelOrder(activeOrder.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                      </button>
+                    )}
+                </div>
+              </div>
+
+              {/* Order Items Table */}
+              <div className="flex-1 overflow-auto p-6">
+                <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead className="bg-slate-100 dark:bg-slate-800/80 text-[11px] font-bold uppercase text-slate-500">
+                      <tr>
+                        <th className="py-2.5 px-4">{tr(language, 'Référence', 'Reference', 'Referentie')}</th>
+                        <th className="py-2.5 px-4">{tr(language, 'Désignation', 'Designation', 'Omschrijving')}</th>
+                        <th className="py-2.5 px-3">{tr(language, 'Emplacement', 'Location', 'Locatie')}</th>
+                        <th className="py-2.5 px-3 text-right">{tr(language, 'Demandé', 'Requested', 'Gevraagd')}</th>
+                        <th className="py-2.5 px-3 text-right">{tr(language, 'Préparé', 'Picked', 'Verzameld')}</th>
+                        <th className="py-2.5 px-4">{tr(language, 'Statut ligne', 'Line status', 'Regelstatus')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
+                      {(Array.isArray(activeOrder.items) ? activeOrder.items : []).map((it) => {
+                        const pickedQty = it.picked_quantity ?? (it.picked ? it.quantity : 0);
+                        const isMissing = Boolean(it.unavailable);
+                        const isPartial = !isMissing && it.picked && pickedQty > 0 && pickedQty < it.quantity;
+
+                        return (
+                          <tr key={String(it.product_id)} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="py-3 px-4 font-mono font-bold text-orange-600 dark:text-orange-400">
+                              {it.product_ref}
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {it.product_name}
+                              </div>
+                              {it.substituted && it.substituted_with_ref && (
+                                <div className="text-[11px] text-amber-600">
+                                  {tr(language, 'Remplacé par', 'Replaced with', 'Vervangen door')}{' '}
+                                  {it.substituted_with_ref} ({it.substituted_with_name})
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300">
+                              {it.rack_location || '—'}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-bold">
+                              {it.quantity}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-black text-emerald-600 dark:text-emerald-400">
+                              {pickedQty}
+                            </td>
+                            <td className="py-3 px-4">
+                              {isMissing ? (
+                                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
+                                  {tr(language, 'Manquant', 'Missing', 'Ontbrekend')}{' '}
+                                  {it.unavailable_comment ? `(${it.unavailable_comment})` : ''}
+                                </span>
+                              ) : isPartial ? (
+                                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                  {tr(language, 'Partiel', 'Partial', 'Gedeeltelijk')} ({pickedQty}/{it.quantity})
+                                </span>
+                              ) : it.picked ? (
+                                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                  {tr(language, 'Pointé', 'Picked', 'Verzameld')}
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                                  {tr(language, 'En attente', 'Pending', 'In wachtrij')}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {canViewPrices && activeOrder.total_cost != null && (
+                  <div className="mt-4 flex justify-end">
+                    <div className="px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
+                      {tr(language, 'Total estimé HT :', 'Estimated net total:', 'Geschat totaal excl. btw:')}{' '}
+                      <strong className="font-mono text-sm text-slate-900 dark:text-white ml-2">
+                        {formatCurrency(activeOrder.total_cost)}
+                      </strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* New Order Drawer */}
@@ -682,10 +1145,11 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Dépôt (mono-dépôt)', 'Depot (single-depot)', 'Depot (één depot)')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={orderDepot}
-                    onChange={(e) => setOrderDepot(e.target.value)}
+                    onChange={(val) => setOrderDepot(val)}
                     disabled={orderCart.length > 0}
+                    recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-semibold disabled:opacity-60"
                   >
                     {depots.map((d) => (
@@ -693,7 +1157,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div>
@@ -722,9 +1186,9 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Département', 'Department', 'Afdeling')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={orderDepartment}
-                    onChange={(e) => setOrderDepartment(e.target.value)}
+                    onChange={(val) => setOrderDepartment(val)}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                   >
                     <option value="">{tr(language, '— Choisir —', '— Select —', '— Kiezen —')}</option>
@@ -733,7 +1197,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 
@@ -842,7 +1306,12 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
 
               <div>
                 <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  {tr(language, 'Instructions / Notes de préparation', 'Preparation instructions / notes', 'Voorbereidingsinstructies / opmerkingen')}
+                  {tr(
+                    language,
+                    'Instructions / Notes de préparation',
+                    'Preparation instructions / notes',
+                    'Voorbereidingsinstructies / opmerkingen'
+                  )}
                 </label>
                 <textarea
                   rows={2}

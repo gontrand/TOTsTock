@@ -71,6 +71,8 @@ import {
   SQL_SCRIPT_12_USER_PREFERENCES,
   SQL_SCRIPT_13_TRANSFER_STOCK_BATCH,
   SQL_SCRIPT_14_MAILING,
+  SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS,
+  SQL_SCRIPT_16_AUDIT_TRAIL,
   SQL_MASTER_LICENSES_SCHEMA,
 } from '../constants/supabaseScripts';
 import { EdgeFunctionsSetupPanel } from './EdgeFunctionsSetupPanel';
@@ -3865,6 +3867,66 @@ ON CONFLICT (id) DO UPDATE SET
                     >
                       <Copy className="w-3.5 h-3.5" />
                       <span>{copiedSql === 'script_14' ? t('sql_script_14_copied_btn') : t('sql_script_14_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 15 : RECHERCHE SERVEUR COMMANDES & MOUVEMENTS */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-violet-950 text-white border border-indigo-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-indigo-400" />
+                      <span className="font-black text-xs text-indigo-200">
+                        {t('sql_script_15_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950 border border-indigo-600 text-indigo-300 font-bold">
+                      {t('sql_script_15_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-indigo-100/90 leading-relaxed">
+                    {t('sql_script_15_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_15_SEARCH_ORDERS_MOVEMENTS, 'script_15')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_15' ? t('sql_script_15_copied_btn') : t('sql_script_15_copy_btn')}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* CARTE SCRIPT 16 : JOURNAL D'AUDIT SERVEUR COMPLET */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-orange-950 via-slate-900 to-amber-950 text-white border border-orange-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-orange-400" />
+                      <span className="font-black text-xs text-orange-200">
+                        {t('sql_script_16_title')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-orange-950 border border-orange-600 text-orange-300 font-bold">
+                      {t('sql_script_16_badge')}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-orange-100/90 leading-relaxed">
+                    {t('sql_script_16_desc')}
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(SQL_SCRIPT_16_AUDIT_TRAIL, 'script_16')}
+                      className="flex-1 py-1.5 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedSql === 'script_16' ? t('sql_script_16_copied_btn') : t('sql_script_16_copy_btn')}</span>
                     </button>
                   </div>
                 </div>

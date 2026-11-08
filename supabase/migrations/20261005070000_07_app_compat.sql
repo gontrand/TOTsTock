@@ -3,12 +3,11 @@
 -- Source de vérité : supabase-client/07_app_compat.sql
 -- Étape 07 : Table app_compat, is_active_admin(), diagnostic_installation() et durcissement final anon
 -- =========================================================================
--- =========================================================================
 -- TOT STOCK - SCRIPT 07 : COMPATIBILITÉ APPLICATION, SCHÉMA & DIAGNOSTIC (07_app_compat.sql)
--- Description : Définit is_active_admin(), la table singleton public.core_app_compat (schema_version 2.4.1,
---   min_schema_version 1.0.0, latest_version 5.9.1), la fonction RPC public.diagnostic_installation()
+-- Description : Définit is_active_admin(), la table singleton public.core_app_compat (schema_version 2.7.0,
+--   min_schema_version 1.0.0, latest_version 5.13.0), la fonction RPC public.diagnostic_installation()
 --   (17 contrôles, réservée aux rôles 0, 1 et 5) et le durcissement final des fonctions SECURITY DEFINER.
--- Dépendances : Scripts 00, 09, 01 (01b), 02, 03, 04, 05, 06, 08, 11, 12, 13 et 14.
+-- Dépendances : Scripts 00, 09, 01 (01b), 02, 03, 04, 05, 06, 08, 11, 12, 13, 14, 15, 16 et 17.
 -- Ordre d'exécution : Toujours exécuté EN DERNIER.
 -- Rejouable : oui (idempotent)
 -- =========================================================================
@@ -74,7 +73,7 @@ GRANT EXECUTE ON FUNCTION public.is_active_admin() TO authenticated;
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS public.core_app_compat (
   id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-  schema_version     TEXT NOT NULL DEFAULT '2.4.1',
+  schema_version     TEXT NOT NULL DEFAULT '2.7.0',
   min_schema_version TEXT NOT NULL DEFAULT '1.0.0',
   min_app_version    TEXT NOT NULL DEFAULT '1.0.0',
   latest_version     TEXT,                          -- Optionnel : notification MAJ non bloquante
@@ -146,11 +145,11 @@ CREATE TRIGGER trg_app_compat_updated_at
 CREATE UNIQUE INDEX IF NOT EXISTS uq_core_app_compat_id ON public.core_app_compat (id);
 
 INSERT INTO public.core_app_compat (id, schema_version, min_schema_version, min_app_version, latest_version, message)
-VALUES (1, '2.4.1', '1.0.0', '1.0.0', '5.9.1', NULL)
+VALUES (1, '2.7.0', '1.0.0', '1.0.0', '5.13.0', NULL)
 ON CONFLICT (id) DO UPDATE
-SET schema_version = '2.4.1',
+SET schema_version = '2.7.0',
     min_schema_version = COALESCE(NULLIF(TRIM(public.core_app_compat.min_schema_version), ''), '1.0.0'),
-    latest_version = '5.9.1';
+    latest_version = '5.13.0';
 
 -- =========================================================================
 -- 3. DIAGNOSTIC D'INSTALLATION (Point 7, v37, v40, v41, v42)
@@ -218,6 +217,15 @@ DECLARE
     'enforce_license_max_depots_quota',
     'process_stock_movement',
     'transfer_stock_batch',
+    'send_stock_transfer',
+    'receive_stock_transfer',
+    'reject_stock_transfer',
+    'cancel_stock_transfer',
+    'confirm_stock_transfer_adjustment',
+    'resolve_transfer_dispute',
+    'list_overdue_transfers',
+    'get_stock_levels_report',
+    'set_depot_holders',
     'get_email_secret',
     'get_mail_config',
     'set_mail_account_secret',
@@ -231,7 +239,14 @@ DECLARE
     'cancel_print_job',
     'purge_print_jobs',
     'get_print_job_status',
-    'list_station_print_jobs'
+    'list_station_print_jobs',
+    'search_material_orders',
+    'search_stock_movements',
+    'log_audit_event',
+    'log_login_event',
+    'purge_audit_logs',
+    'search_audit_logs',
+    'search_login_logs'
   ];
   v_print_rpc_funcs TEXT[] := ARRAY[
     'register_print_station',
@@ -721,7 +736,9 @@ BEGIN
       AND NOT t.tgisinternal
       AND t.tgname NOT IN (
         'trg_check_product_quantity_update',
-        'trg_enforce_license_max_references'
+        'trg_enforce_license_max_references',
+        'trg_audit_stk_products',
+        'trg_audit_row'
       )
     ORDER BY c.relname ASC, t.tgname ASC
   LOOP
@@ -1014,18 +1031,23 @@ BEGIN
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public' AND p.prosecdef
   LOOP
-    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon', r.sig);
-    IF r.proname IN (
-      'get_email_secret',
-      'get_mail_config',
-      '_tot_write_mail_vault_secret',
-      '_tot_read_mail_vault_secret',
-      'sync_verified_license_token'
-    ) THEN
-      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM authenticated', r.sig);
-      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);
+    IF r.proname = 'log_login_failure' THEN
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', r.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO anon, authenticated, service_role', r.sig);
     ELSE
-      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role', r.sig);
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon', r.sig);
+      IF r.proname IN (
+        'get_email_secret',
+        'get_mail_config',
+        '_tot_write_mail_vault_secret',
+        '_tot_read_mail_vault_secret',
+        'sync_verified_license_token'
+      ) THEN
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM authenticated', r.sig);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);
+      ELSE
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role', r.sig);
+      END IF;
     END IF;
   END LOOP;
 END $$;

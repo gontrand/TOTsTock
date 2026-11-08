@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowLeftRight,
@@ -6,9 +6,12 @@ import {
   Calendar,
   Download,
   ExternalLink,
+  Loader2,
   Plus,
+  RotateCcw,
   Search,
   SlidersHorizontal,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -24,7 +27,20 @@ import {
   requestGuardedNavigation,
   useRegisterUnsavedForm,
 } from '../../services/unsavedChangesGuard';
+import {
+  buildSearchStockMovementsRpcParams,
+  createDefaultMovementSearchFilters,
+  doesMovementFilterExceedLocalWindow,
+  filterMovementsDefault7Days,
+  filterMovementsLocally,
+  MovementSearchFilters,
+  MovementTypeFilter,
+  ReportPeriodPreset,
+} from '../../services/reportsService';
+import { getClientSupabase, normalizeMovementRecord } from '../../services/clientSupabase';
+import { logAuditEventServer } from '../../services/auditService';
 import { tr } from '../../i18n/dutchTranslator';
+import { SearchableSelect } from '../../components/SearchableSelect';
 
 export interface DesktopMovementsPageProps {
   selectedDepotFilter?: string;
@@ -35,8 +51,7 @@ export interface DesktopMovementsPageProps {
   onSelectProductForDetail?: (productId: string) => void;
 }
 
-type TypeFilter = 'ALL' | 'IN' | 'OUT' | 'TRANSFER';
-type PeriodPreset = 'TODAY' | '7D' | '30D' | 'ALL' | 'CUSTOM';
+const SERVER_PAGE_SIZE = 50;
 
 export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
   selectedDepotFilter,
@@ -52,6 +67,9 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     depots,
     departments,
     projects,
+    currentUser,
+    supabaseUrl,
+    supabaseKey,
     userHasPermission,
     confirmBatchMovements,
     canTransferBetweenDepots,
@@ -60,15 +78,40 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     t,
   } = useApp();
 
+  const isSuperAdmin =
+    Number(currentUser?.role_id) === 0 || Number(currentUser?.role_id) === 1;
+
   const effectiveDepotFilter = selectedDepotFilter ?? globalDepotFilter ?? 'ALL';
   const locale = language === 'nl' ? 'nl-NL' : language === 'en' ? 'en-GB' : 'fr-FR';
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
-  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('ALL');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
-  const [departmentFilter, setDepartmentFilter] = useState('ALL');
+  const [filters, setFilters] = useState<MovementSearchFilters>(() =>
+    createDefaultMovementSearchFilters()
+  );
+  const [serverModeActive, setServerModeActive] = useState(false);
+  const [serverMovements, setServerMovements] = useState<StockMovement[]>([]);
+  const [serverTotalCount, setServerTotalCount] = useState<number>(0);
+  const [isSearchingServer, setIsSearchingServer] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [localFallbackActive, setLocalFallbackActive] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  const searchSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
   const [selectedMovement, setSelectedMovement] = useState<StockMovement | null>(null);
 
   // Quick Movement Drawer State
@@ -83,14 +126,14 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
   const [movComment, setMovComment] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (openNewMovementRequested) {
       setDrawerOpen(true);
       onConsumeNewMovementRequest?.();
     }
   }, [openNewMovementRequested, onConsumeNewMovementRequest]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (externalNewMovementTrigger && externalNewMovementTrigger > 0) {
       setDrawerOpen(true);
     }
@@ -124,81 +167,224 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
   const getMovProductName = (m: StockMovement, prod?: Product): string =>
     prod ? `${prod.brand || ''} ${prod.model || ''}`.trim() : m.product_ref || '';
 
-  const filteredMovements = useMemo(() => {
-    const now = Date.now();
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-
-    return movements.filter((m) => {
-      const mType = getMovType(m);
-      const isTrans = isTransferMovement(m);
-      if (typeFilter === 'TRANSFER') {
-        if (!isTrans) return false;
-      } else if (typeFilter !== 'ALL' && mType !== typeFilter) {
-        return false;
+  // Respect existing movement permissions (perm_mov_view_all / depot restrictions)
+  const canViewMovement = useCallback(
+    (m: StockMovement): boolean => {
+      if (!currentUser) return true;
+      if (currentUser.is_blocked) return false;
+      const roleIdNum = Number(currentUser.role_id);
+      if (
+        isSuperAdmin ||
+        roleIdNum === 0 ||
+        roleIdNum === 1 ||
+        userHasPermission('perm_mov_view_all')
+      ) {
+        return true;
       }
-
       const prod = productById.get(String(m.product_id));
-      if (effectiveDepotFilter !== 'ALL') {
-        const mDepot = getMovDepot(m, prod);
-        const dstDepot = getMovementDestDepot(m);
-        if (mDepot !== effectiveDepotFilter && dstDepot !== effectiveDepotFilter) return false;
+      const movDepot = getMovDepot(m, prod);
+      const dstDepot = getMovementDestDepot(m);
+      const allowed = currentUser.allowed_depots;
+      const hasAllDepots =
+        !allowed || allowed.length === 0 || allowed.includes('*') || allowed.includes('ALL');
+
+      if (userHasPermission('perm_mov_view_depot')) {
+        if (hasAllDepots) return true;
+        if (movDepot && allowed.includes(movDepot)) return true;
+        if (dstDepot && allowed.includes(dstDepot)) return true;
       }
 
-      if (departmentFilter !== 'ALL') {
-        if (getMovDept(m) !== departmentFilter) return false;
-      }
-
-      const ts = new Date(m.created_at).getTime();
-      if (!Number.isNaN(ts)) {
-        if (periodPreset === 'TODAY' && ts < startOfToday.getTime()) return false;
-        if (periodPreset === '7D' && ts < now - 7 * 86400_000) return false;
-        if (periodPreset === '30D' && ts < now - 30 * 86400_000) return false;
-        if (periodPreset === 'CUSTOM') {
-          if (customStart) {
-            const s = new Date(customStart).getTime();
-            if (!Number.isNaN(s) && ts < s) return false;
-          }
-          if (customEnd) {
-            const e = new Date(customEnd).getTime() + 86399_999;
-            if (!Number.isNaN(e) && ts > e) return false;
-          }
+      if (!hasAllDepots) {
+        const matchesAllowedDepot =
+          (movDepot && allowed.includes(movDepot)) || (dstDepot && allowed.includes(dstDepot));
+        if (!matchesAllowedDepot && String(m.user_id) !== String(currentUser.id)) {
+          return false;
         }
       }
 
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const haystack = [
-          m.product_ref,
-          prod?.reference,
-          prod?.brand,
-          prod?.model,
-          m.user_name,
-          getMovDept(m),
-          m.site_number,
-          m.order_number,
-          m.reason,
-          getMovDepot(m, prod),
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
+      if (
+        userHasPermission('perm_kpi_scope_department') &&
+        currentUser.department &&
+        getMovDept(m)
+      ) {
+        if (currentUser.department.toLowerCase().trim() === getMovDept(m).toLowerCase().trim()) {
+          return true;
+        }
       }
 
-      return true;
-    });
-  }, [
-    movements,
-    typeFilter,
-    effectiveDepotFilter,
-    departmentFilter,
-    periodPreset,
-    customStart,
-    customEnd,
-    searchQuery,
-    productById,
-  ]);
+      if (String(m.user_id) === String(currentUser.id)) return true;
+      if (hasAllDepots) return true;
+      return false;
+    },
+    [currentUser, isSuperAdmin, userHasPermission, productById]
+  );
+
+  const effectiveFilters: MovementSearchFilters = useMemo(() => {
+    const resolvedDepot =
+      filters.depot && filters.depot !== 'ALL'
+        ? filters.depot
+        : effectiveDepotFilter !== 'ALL'
+        ? effectiveDepotFilter
+        : '';
+    return {
+      ...filters,
+      depot: resolvedDepot,
+    };
+  }, [filters, effectiveDepotFilter]);
+
+  const exceedsLocalWindow = useMemo(
+    () => doesMovementFilterExceedLocalWindow(effectiveFilters),
+    [effectiveFilters]
+  );
+
+  const executeServerMovementSearch = useCallback(
+    async (targetFilters: MovementSearchFilters, offset: number, append: boolean) => {
+      const seq = ++searchSeqRef.current;
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      const offlineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+      const client = !offlineNow ? getClientSupabase(supabaseUrl, supabaseKey) : null;
+
+      if (!client || offlineNow || typeof (client as any).rpc !== 'function') {
+        if (seq !== searchSeqRef.current) return;
+        setLocalFallbackActive(true);
+        setServerModeActive(false);
+        setIsSearchingServer(false);
+        setIsLoadingMore(false);
+        return;
+      }
+
+      if (append) {
+        setIsLoadingMore(true);
+      } else {
+        setIsSearchingServer(true);
+      }
+      setServerError(null);
+
+      try {
+        const rpcParams = buildSearchStockMovementsRpcParams(
+          targetFilters,
+          SERVER_PAGE_SIZE,
+          offset
+        );
+        let rpcCall: any = client.rpc('search_stock_movements', rpcParams);
+        if (rpcCall && typeof rpcCall.abortSignal === 'function') {
+          rpcCall = rpcCall.abortSignal(controller.signal);
+        }
+        const { data, error } = await rpcCall;
+        if (seq !== searchSeqRef.current || controller.signal.aborted) return;
+
+        if (error) {
+          setLocalFallbackActive(true);
+          setServerModeActive(false);
+          setServerError(error.message || String(error));
+          return;
+        }
+
+        const rawList = Array.isArray(data) ? data : [];
+        const total =
+          rawList.length > 0 ? Number(rawList[0]?.total_count ?? rawList.length) : 0;
+        const rows = rawList
+          .map((r: any) => r?.row_data ?? r)
+          .filter(Boolean)
+          .map(normalizeMovementRecord)
+          .filter(canViewMovement);
+
+        setLocalFallbackActive(false);
+        setServerModeActive(true);
+        setServerTotalCount(total);
+        setServerMovements((prev) => {
+          if (!append) return rows;
+          const existingIds = new Set(prev.map((m) => String(m.id)));
+          const merged = [...prev];
+          for (const row of rows) {
+            if (!existingIds.has(String(row.id))) {
+              merged.push(row);
+            }
+          }
+          return merged;
+        });
+      } catch (err: any) {
+        if (seq !== searchSeqRef.current || controller.signal.aborted) return;
+        setLocalFallbackActive(true);
+        setServerModeActive(false);
+        setServerError(err?.message || null);
+      } finally {
+        if (seq === searchSeqRef.current) {
+          setIsSearchingServer(false);
+          setIsLoadingMore(false);
+        }
+      }
+    },
+    [supabaseUrl, supabaseKey, canViewMovement]
+  );
+
+  // Debounce 400ms when filter exceeds local 7d window
+  useEffect(() => {
+    if (!exceedsLocalWindow) {
+      searchSeqRef.current += 1;
+      abortControllerRef.current?.abort();
+      setServerModeActive(false);
+      setIsSearchingServer(false);
+      setIsLoadingMore(false);
+      setLocalFallbackActive(!isOnline);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      executeServerMovementSearch(effectiveFilters, 0, false);
+    }, 400);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [effectiveFilters, exceedsLocalWindow, isOnline, executeServerMovementSearch]);
+
+  const handleManualSearchClick = () => {
+    executeServerMovementSearch(effectiveFilters, 0, false);
+  };
+
+  const handleResetFilters = () => {
+    searchSeqRef.current += 1;
+    abortControllerRef.current?.abort();
+    setFilters(createDefaultMovementSearchFilters());
+    setServerModeActive(false);
+    setServerMovements([]);
+    setServerTotalCount(0);
+    setLocalFallbackActive(false);
+    setServerError(null);
+  };
+
+  const handleLoadMore = () => {
+    if (isLoadingMore || isSearchingServer) return;
+    executeServerMovementSearch(effectiveFilters, serverMovements.length, true);
+  };
+
+  const permittedLocalMovements = useMemo(
+    () => movements.filter(canViewMovement),
+    [movements, canViewMovement]
+  );
+
+  const localFilteredMovements = useMemo(() => {
+    if (!exceedsLocalWindow && filters.period === '7D') {
+      const base7d = filterMovementsDefault7Days(permittedLocalMovements);
+      return filterMovementsLocally(
+        base7d,
+        {
+          ...effectiveFilters,
+          period: 'ALL',
+        },
+        products
+      );
+    }
+    return filterMovementsLocally(permittedLocalMovements, effectiveFilters, products);
+  }, [permittedLocalMovements, products, effectiveFilters, exceedsLocalWindow, filters.period]);
+
+  const filteredMovements = serverModeActive ? serverMovements : localFilteredMovements;
+  const totalResultsCount = serverModeActive ? serverTotalCount : localFilteredMovements.length;
+  const showOfflineBanner = !isOnline || localFallbackActive;
 
   const totals = useMemo(() => {
     let totalIn = 0;
@@ -246,7 +432,9 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
       const dstDepot = getMovementDestDepot(m);
       const lineCost = (
         m.total_cost != null ? Number(m.total_cost) : qty * Number(prod?.unit_price || 0)
-      ).toFixed(2);
+      )
+        .toFixed(2)
+        .replace('.', ',');
       const row = [
         new Date(m.created_at).toLocaleString(locale),
         isTrans
@@ -272,13 +460,31 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
       type: 'text/csv;charset=utf-8;',
     });
     const url = URL.createObjectURL(blob);
+    const filename = `mouvements-stock-${new Date().toISOString().slice(0, 10)}.csv`;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mouvements-stock-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    logAuditEventServer({
+      category: 'EXPORTS',
+      type: 'csv_export',
+      title: 'Export CSV des mouvements de stock (Bureau)',
+      description: `${filteredMovements.length} mouvements exportés`,
+      meta: {
+        rows: filteredMovements.length,
+        period: filters.period,
+        filters: {
+          type: filters.type,
+          depot: filters.depot,
+          department: filters.department,
+          site: filters.site,
+        },
+        filename,
+      },
+    }).catch(() => {});
   };
 
   const performQuickMovementSave = async (): Promise<boolean> => {
@@ -354,13 +560,53 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-slate-50 dark:bg-slate-950">
+      {/* Offline / Local Fallback Banner */}
+      {showOfflineBanner && (
+        <div
+          role="status"
+          data-testid="movements-local-fallback-banner"
+          className="px-6 py-2 bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center justify-between gap-2 shrink-0"
+        >
+          <div className="flex items-center gap-2">
+            <WifiOff className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              {tr(
+                language,
+                'Recherche limitée aux données locales',
+                'Search limited to local data',
+                'Zoekopdracht beperkt tot lokale gegevens'
+              )}
+            </span>
+          </div>
+          {serverError && (
+            <span className="text-[11px] font-normal text-amber-700 dark:text-amber-300 truncate max-w-md">
+              {serverError}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Top Toolbar */}
-      <div className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+      <div className="px-6 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div>
-          <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
-            {t('desktop_nav_movements')}
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
+              {t('desktop_nav_movements')}
+            </h1>
+            <span
+              data-testid="movements-results-count"
+              className="px-2.5 py-0.5 text-xs font-mono font-bold rounded-full bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800"
+            >
+              {totalResultsCount} {tr(language, 'résultats', 'results', 'resultaten')}
+            </span>
+            {isSearchingServer && (
+              <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-orange-600" />
+                {tr(language, 'Recherche...', 'Searching...', 'Zoeken...')}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {filteredMovements.length}{' '}
             {tr(language, 'mouvement(s) affiché(s)', 'movement(s) displayed', 'beweging(en) weergegeven')} •{' '}
             {tr(language, 'Entrées :', 'Inflows:', 'Innames:')}{' '}
@@ -423,127 +669,223 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="px-6 py-3 bg-white/70 dark:bg-slate-900/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[240px] max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+      {/* Filter Bar (Lot 2) */}
+      <div className="px-6 py-3 bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 space-y-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Type segmented control */}
+          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-bold">
+            {(['ALL', 'IN', 'OUT', 'TRANSFER'] as MovementTypeFilter[]).map((tf) => (
+              <button
+                key={tf}
+                type="button"
+                data-testid={`desktop-movements-filter-${tf.toLowerCase()}`}
+                onClick={() => setFilters((prev) => ({ ...prev, type: tf }))}
+                className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
+                  filters.type === tf
+                    ? tf === 'TRANSFER'
+                      ? 'bg-sky-600 text-white shadow-2xs'
+                      : 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                }`}
+              >
+                {tf === 'ALL'
+                  ? tr(language, 'Tous', 'All', 'Alle')
+                  : tf === 'IN'
+                  ? tr(language, 'Entrées', 'Inflows', 'Innames')
+                  : tf === 'OUT'
+                  ? tr(language, 'Sorties', 'Outflows', 'Uitgiftes')
+                  : tr(language, 'Transferts', 'Transfers', 'Overdrachten')}
+              </button>
+            ))}
+          </div>
+
+          {/* Period presets (7D default) */}
+          <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-bold">
+            {(
+              [
+                ['7D', tr(language, '7 j', '7 d', '7 d')],
+                ['30D', tr(language, '30 j', '30 d', '30 d')],
+                ['CUSTOM', tr(language, 'Personnalisée', 'Custom', 'Aangepast')],
+                ['ALL', tr(language, 'Tout', 'All', 'Alles')],
+              ] as Array<[ReportPeriodPreset, string]>
+            ).map(([preset, label]) => (
+              <button
+                key={preset}
+                type="button"
+                data-testid={`movements-period-${preset.toLowerCase()}`}
+                onClick={() => setFilters((prev) => ({ ...prev, period: preset }))}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  filters.period === preset
+                    ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {filters.period === 'CUSTOM' && (
+            <div className="flex items-center gap-1.5 text-xs">
+              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+              <input
+                type="date"
+                aria-label={tr(language, 'Date de début', 'Start date', 'Startdatum')}
+                value={filters.fromDate}
+                onChange={(e) => setFilters((prev) => ({ ...prev, fromDate: e.target.value }))}
+                className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+              />
+              <span className="text-slate-400">→</span>
+              <input
+                type="date"
+                aria-label={tr(language, 'Date de fin', 'End date', 'Einddatum')}
+                value={filters.toDate}
+                onChange={(e) => setFilters((prev) => ({ ...prev, toDate: e.target.value }))}
+                className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+              />
+            </div>
+          )}
+
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="movements-search-btn"
+              onClick={handleManualSearchClick}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <Search className="w-3.5 h-3.5" />
+              {tr(language, 'Rechercher', 'Search', 'Zoeken')}
+            </button>
+
+            <button
+              type="button"
+              data-testid="movements-reset-btn"
+              onClick={handleResetFilters}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              {tr(language, 'Réinitialiser', 'Reset', 'Resetten')}
+            </button>
+          </div>
+        </div>
+
+        {/* Detailed filter inputs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2 text-xs">
+          <div className="relative lg:col-span-2">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              data-testid="movements-filter-text"
+              value={filters.text}
+              onChange={(e) => setFilters((prev) => ({ ...prev, text: e.target.value }))}
+              placeholder={tr(
+                language,
+                'Rechercher réf, article, chantier, commande, motif...',
+                'Search ref, item, job site, order, reason...',
+                'Zoek ref, artikel, werf, bestelling, reden...'
+              )}
+              className="w-full pl-8 pr-6 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs"
+            />
+            {filters.text && (
+              <button
+                type="button"
+                onClick={() => setFilters((prev) => ({ ...prev, text: '' }))}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
           <input
             type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={tr(
-              language,
-              'Rechercher réf, article, chantier, commande, utilisateur...',
-              'Search ref, item, job site, order, user...',
-              'Zoek ref, artikel, werf, bestelling, gebruiker...'
-            )}
-            className="w-full pl-9 pr-8 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+            data-testid="movements-filter-reference"
+            value={filters.reference}
+            onChange={(e) => setFilters((prev) => ({ ...prev, reference: e.target.value }))}
+            placeholder={tr(language, 'Réf. article', 'Item ref', 'Artikelref.')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
           />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
 
-        {/* Type segmented control */}
-        <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-bold">
-          {(['ALL', 'IN', 'OUT', 'TRANSFER'] as TypeFilter[]).map((tf) => (
-            <button
-              key={tf}
-              type="button"
-              data-testid={`desktop-movements-filter-${tf.toLowerCase()}`}
-              onClick={() => setTypeFilter(tf)}
-              className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
-                typeFilter === tf
-                  ? tf === 'TRANSFER'
-                    ? 'bg-sky-600 text-white shadow-2xs'
-                    : 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-              }`}
-            >
-              {tf === 'ALL'
-                ? tr(language, 'Tous', 'All', 'Alle')
-                : tf === 'IN'
-                ? tr(language, 'Entrées', 'Inflows', 'Innames')
-                : tf === 'OUT'
-                ? tr(language, 'Sorties', 'Outflows', 'Uitgiftes')
-                : tr(language, 'Transferts', 'Transfers', 'Overdrachten')}
-            </button>
-          ))}
-        </div>
+          <input
+            type="text"
+            data-testid="movements-filter-user"
+            value={filters.user}
+            onChange={(e) => setFilters((prev) => ({ ...prev, user: e.target.value }))}
+            placeholder={tr(language, 'Opérateur / Utilisateur', 'Operator / User', 'Operator / Gebruiker')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+          />
 
-        {/* Period presets */}
-        <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-0.5 text-xs font-bold">
-          {(
-            [
-              ['TODAY', tr(language, 'Aujourd’hui', 'Today', 'Vandaag')],
-              ['7D', tr(language, '7 j', '7 d', '7 d')],
-              ['30D', tr(language, '30 j', '30 d', '30 d')],
-              ['ALL', tr(language, 'Tout', 'All', 'Alles')],
-              ['CUSTOM', tr(language, 'Dates', 'Dates', 'Datums')],
-            ] as Array<[PeriodPreset, string]>
-          ).map(([preset, label]) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => setPeriodPreset(preset)}
-              className={`px-2.5 py-1 rounded-md transition-colors ${
-                periodPreset === preset
-                  ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {periodPreset === 'CUSTOM' && (
-          <div className="flex items-center gap-1.5 text-xs">
-            <Calendar className="w-3.5 h-3.5 text-slate-400" />
-            <input
-              type="date"
-              value={customStart}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
-            />
-            <span className="text-slate-400">→</span>
-            <input
-              type="date"
-              value={customEnd}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
-            />
-          </div>
-        )}
-
-        {/* Department filter */}
-        <div className="flex items-center gap-1.5 text-xs">
-          <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
-          <select
-            value={departmentFilter}
-            onChange={(e) => setDepartmentFilter(e.target.value)}
-            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200"
+          <SearchableSelect
+            data-testid="movements-filter-department"
+            value={filters.department}
+            onChange={(val) => setFilters((prev) => ({ ...prev, department: val }))}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
           >
-            <option value="ALL">
-              {tr(
-                language,
-                'Tous départements / utilisateurs',
-                'All departments / users',
-                'Alle afdelingen / gebruikers'
-              )}
+            <option value="">
+              {tr(language, 'Tous départements', 'All departments', 'Alle afdelingen')}
             </option>
             {departments.map((d) => (
               <option key={d.id} value={d.name}>
-                {tr(language, 'Dépt :', 'Dept:', 'Afd:')} {d.name}
+                {d.name}
               </option>
             ))}
-          </select>
+          </SearchableSelect>
+
+          <input
+            type="text"
+            data-testid="movements-filter-site"
+            value={filters.site}
+            onChange={(e) => setFilters((prev) => ({ ...prev, site: e.target.value }))}
+            placeholder={tr(language, 'Chantier', 'Job site', 'Werf')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
+          />
+
+          <input
+            type="text"
+            data-testid="movements-filter-order-number"
+            value={filters.orderNumber}
+            onChange={(e) => setFilters((prev) => ({ ...prev, orderNumber: e.target.value }))}
+            placeholder={tr(language, 'N° commande', 'Order #', 'Bestelnr.')}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
+          />
+
+          <SearchableSelect
+            data-testid="movements-filter-depot"
+            value={filters.depot}
+            onChange={(val) => setFilters((prev) => ({ ...prev, depot: val }))}
+            recentKey="depots"
+            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+          >
+            <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
+            {depots.map((d) => (
+              <option key={d.id} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </SearchableSelect>
+
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              data-testid="movements-filter-min-cost"
+              value={filters.minCost}
+              onChange={(e) => setFilters((prev) => ({ ...prev, minCost: e.target.value }))}
+              placeholder={tr(language, 'Min €', 'Min €', 'Min €')}
+              className="w-1/2 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
+            />
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              data-testid="movements-filter-max-cost"
+              value={filters.maxCost}
+              onChange={(e) => setFilters((prev) => ({ ...prev, maxCost: e.target.value }))}
+              placeholder={tr(language, 'Max €', 'Max €', 'Max €')}
+              className="w-1/2 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
+            />
+          </div>
         </div>
       </div>
 
@@ -741,6 +1083,23 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
               )}
             </tbody>
           </table>
+
+          {/* Pagination: Charger plus */}
+          {serverModeActive && serverMovements.length < serverTotalCount && (
+            <div className="p-4 text-center bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                data-testid="movements-load-more-btn"
+                disabled={isLoadingMore}
+                onClick={handleLoadMore}
+                className="py-2 px-6 rounded-lg text-xs font-bold bg-orange-50 dark:bg-orange-950/50 border border-orange-200 dark:border-orange-800 text-orange-700 dark:text-orange-300 hover:bg-orange-100 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isLoadingMore
+                  ? tr(language, 'Chargement...', 'Loading...', 'Laden...')
+                  : `${tr(language, 'Charger plus', 'Load more', 'Meer laden')} (${serverMovements.length} / ${serverTotalCount})`}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Detail Panel for Selected Movement */}
@@ -951,12 +1310,12 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                   )}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 mb-2"
                 />
-                <select
+                <SearchableSelect
                   required
                   value={movProductId}
-                  onChange={(e) => {
-                    setMovProductId(e.target.value);
-                    const p = productById.get(e.target.value);
+                  onChange={(val) => {
+                    setMovProductId(val);
+                    const p = productById.get(val);
                     if (p?.store_name) setMovDepot(p.store_name);
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-semibold"
@@ -969,7 +1328,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                       [{p.reference}] {p.brand} {p.model} (Stock: {p.quantity})
                     </option>
                   ))}
-                </select>
+                </SearchableSelect>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -992,9 +1351,10 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Dépôt concerné', 'Target depot', 'Betrokken depot')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={movDepot}
-                    onChange={(e) => setMovDepot(e.target.value)}
+                    onChange={(val) => setMovDepot(val)}
+                    recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                   >
                     {depots.map((d) => (
@@ -1002,7 +1362,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 
@@ -1012,9 +1372,9 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                       {tr(language, 'Département', 'Department', 'Afdeling')}
                     </label>
-                    <select
+                    <SearchableSelect
                       value={movDepartment}
-                      onChange={(e) => setMovDepartment(e.target.value)}
+                      onChange={(val) => setMovDepartment(val)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                     >
                       <option value="">{tr(language, '— Aucun —', '— None —', '— Geen —')}</option>
@@ -1023,7 +1383,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                           {d.name}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">

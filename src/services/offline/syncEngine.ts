@@ -224,7 +224,7 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
           }
         } else if (op.action === 'RPC_STOCK_TRANSFER_BATCH') {
           const batchId = op.payload?.p_batch_id || op.operation_id;
-          const { data, error } = await client.rpc('transfer_stock_batch', {
+          const { data, error } = await client.rpc('send_stock_transfer', {
             p_batch_id: batchId,
             p_source_depot: op.payload?.p_source_depot || null,
             p_dest_depot: op.payload?.p_dest_depot || null,
@@ -237,10 +237,10 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
               throw error;
             }
             console.error(
-              '[TOT Stock][SyncEngine] RPC transfer_stock_batch rejected:',
+              '[TOT Stock][SyncEngine] RPC send_stock_transfer rejected:',
               sanitizeErrorForConsole(error)
             );
-            rejectReason = formatServerMovementRejectionMessage(error.message);
+            rejectReason = error.message || formatServerMovementRejectionMessage(error.message);
             result.conflicts.push({
               operation_id: op.operation_id,
               message: rejectReason,
@@ -248,15 +248,15 @@ export async function processSyncQueue(client: SupabaseClient | null): Promise<S
             });
           } else if (data && data.success === false) {
             console.error(
-              '[TOT Stock][SyncEngine] RPC transfer_stock_batch returned failure:',
+              '[TOT Stock][SyncEngine] RPC send_stock_transfer returned failure:',
               sanitizeErrorForConsole(data)
             );
-            rejectReason = formatServerMovementRejectionMessage(
-              data.message || 'Transfert rejeté par le serveur.'
-            );
+            rejectReason =
+              data.message ||
+              formatServerMovementRejectionMessage('Transfert rejeté par le serveur.');
             result.conflicts.push({
               operation_id: op.operation_id,
-              message: rejectReason,
+              message: rejectReason || 'Transfert rejeté par le serveur.',
               details: data,
             });
           } else {

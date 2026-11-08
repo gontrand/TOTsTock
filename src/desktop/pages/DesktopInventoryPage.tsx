@@ -25,7 +25,9 @@ import {
 } from '../../services/desktopInventoryLogic';
 import { DesktopProductDetailPanel } from '../components/DesktopProductDetailPanel';
 import { DesktopProductFormDrawer } from '../components/DesktopProductFormDrawer';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import { requestGuardedNavigation } from '../../services/unsavedChangesGuard';
+import { logAuditEventServer } from '../../services/auditService';
 import {
   readLocalPreferenceValue,
   setUserPreference,
@@ -413,13 +415,29 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
     const csv = buildInventoryCsvContent(targetList, subCategories, canViewPrices);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
+    const filename = `inventaire-tot-stock-${new Date().toISOString().slice(0, 10)}.csv`;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `inventaire-tot-stock-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 3000);
+    logAuditEventServer({
+      category: 'EXPORTS',
+      type: 'csv_export',
+      title: 'Export CSV du catalogue / inventaire (Bureau)',
+      description: `${targetList.length} articles exportés`,
+      meta: {
+        rows: targetList.length,
+        filters: {
+          depot: selectedStore,
+          category: selectedSubCat,
+          stockStatus,
+        },
+        filename,
+      },
+    }).catch(() => {});
   };
 
   const handleBulkMovement = () => {
@@ -533,9 +551,10 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
               {t('inv_warehouse')}
             </label>
-            <select
+            <SearchableSelect
               value={selectedStore}
-              onChange={(e) => setSelectedStore(e.target.value)}
+              onChange={(val) => setSelectedStore(val)}
+              recentKey="depots"
               className="w-full px-2.5 py-2 rounded-xl text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
             >
               <option value="">{t('search_store_all')}</option>
@@ -544,7 +563,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                   {st}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           </div>
 
           {/* Category */}
@@ -552,9 +571,9 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
               {t('inv_category')}
             </label>
-            <select
+            <SearchableSelect
               value={selectedSubCat}
-              onChange={(e) => setSelectedSubCat(e.target.value)}
+              onChange={(val) => setSelectedSubCat(val)}
               className="w-full px-2.5 py-2 rounded-xl text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
             >
               <option value="">{t('search_subcat_all')}</option>
@@ -563,7 +582,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                   {sc.name}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           </div>
 
           {/* Supplier */}
@@ -571,9 +590,9 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
             <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
               {t('inv_supplier')}
             </label>
-            <select
+            <SearchableSelect
               value={selectedSupplier}
-              onChange={(e) => setSelectedSupplier(e.target.value)}
+              onChange={(val) => setSelectedSupplier(val)}
               className="w-full px-2.5 py-2 rounded-xl text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
             >
               <option value="">{t('search_supplier_all')}</option>
@@ -582,7 +601,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                   {sup}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           </div>
 
           {/* Room / Shelf */}

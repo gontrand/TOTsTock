@@ -1406,8 +1406,190 @@ export const MAX_RECIPIENTS_PER_CALL = 20;
 export const MAX_SUBJECT_LENGTH = 200;
 export const MAX_EMAIL_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 Mo
 export const MAX_EMAILS_PER_USER_PER_HOUR = 30;
+export const MAX_ATTACHMENTS = 5;
+export const MAX_TOTAL_ATTACHMENT_BYTES = 3 * 1024 * 1024; // 3 Mo (limite Microsoft Graph / pièces jointes)
+export const ALLOWED_ATTACHMENT_TYPES = ['text/csv', 'application/pdf'] as const;
+export type AllowedAttachmentMimeType = (typeof ALLOWED_ATTACHMENT_TYPES)[number];
 
 const EMAIL_VALIDATION_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function sanitizeAttachmentFilename(
+  rawFilename: string,
+  mimeType: AllowedAttachmentMimeType
+): string {
+  const expectedExt = mimeType === 'application/pdf' ? '.pdf' : '.csv';
+  // Supprimer tout chemin éventuel (/ ou \) et caractères de contrôle
+  const baseName = String(rawFilename || '')
+    .replace(/[\r\n\0]/g, '')
+    .split(/[/\\]/)
+    .pop()
+    ?.trim() || `rapport${expectedExt}`;
+
+  const safeChars = baseName
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^\.+/, '');
+
+  const truncated = (safeChars || `rapport${expectedExt}`).slice(0, 110);
+  if (truncated.toLowerCase().endsWith(expectedExt)) {
+    return truncated;
+  }
+  const withoutWrongExt = truncated.replace(/\.(csv|pdf)$/i, '');
+  return `${withoutWrongExt || 'rapport'}${expectedExt}`;
+}
+
+function decodeBase64Strict(rawBase64: string): Uint8Array | null {
+  const cleaned = String(rawBase64 || '')
+    .trim()
+    .replace(/^data:[^;]+;base64,/i, '')
+    .replace(/\s+/g, '');
+
+  if (!cleaned || cleaned.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned)) {
+    return null;
+  }
+
+  try {
+    if (typeof atob === 'function') {
+      const bin = atob(cleaned);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) {
+        out[i] = bin.charCodeAt(i);
+      }
+      return out;
+    }
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(cleaned, 'base64'));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function validateAttachmentInput(rawAttachments: unknown):
+  | {
+      ok: true;
+      attachments: MailAttachmentInput[];
+      totalBytes: number;
+    }
+  | {
+      ok: false;
+      error: string;
+    } {
+  if (rawAttachments === undefined || rawAttachments === null) {
+    return { ok: true, attachments: [], totalBytes: 0 };
+  }
+  if (!Array.isArray(rawAttachments)) {
+    return {
+      ok: false,
+      error: 'Format de pièces jointes invalide : "attachments" doit être un tableau.',
+    };
+  }
+  if (rawAttachments.length > MAX_ATTACHMENTS) {
+    return {
+      ok: false,
+      error: `Nombre maximal de pièces jointes dépassé (${rawAttachments.length}/${MAX_ATTACHMENTS} max).`,
+    };
+  }
+
+  const validated: MailAttachmentInput[] = [];
+  let totalBytes = 0;
+
+  for (let idx = 0; idx < rawAttachments.length; idx += 1) {
+    const item = rawAttachments[idx] as Record<string, unknown> | null;
+    if (!item || typeof item !== 'object') {
+      return {
+        ok: false,
+        error: `Pièce jointe #${idx + 1} invalide.`,
+      };
+    }
+
+    const rawFilename = typeof item.filename === 'string' ? item.filename.trim() : '';
+    const rawBase64 = (
+      typeof item.contentBase64 === 'string'
+        ? item.contentBase64
+        : typeof item.content === 'string'
+        ? item.content
+        : ''
+    ).trim();
+    const rawType = String(item.contentType || item.type || item.mimeType || '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
+
+    if (!rawFilename || !rawBase64) {
+      return {
+        ok: false,
+        error: `Pièce jointe #${idx + 1} incomplète : "filename" et "contentBase64" sont requis.`,
+      };
+    }
+
+    // Si contentType est omis, le déduire de l'extension (.csv ou .pdf uniquement)
+    const effectiveType =
+      rawType ||
+      (rawFilename.toLowerCase().endsWith('.pdf')
+        ? 'application/pdf'
+        : rawFilename.toLowerCase().endsWith('.csv')
+        ? 'text/csv'
+        : '');
+
+    if (!(ALLOWED_ATTACHMENT_TYPES as readonly string[]).includes(effectiveType)) {
+      return {
+        ok: false,
+        error: `Type MIME non autorisé pour "${rawFilename}" ("${rawType || 'inconnu'}"). Seuls text/csv et application/pdf sont acceptés.`,
+      };
+    }
+
+    const mimeType = effectiveType as AllowedAttachmentMimeType;
+    const decoded = decodeBase64Strict(rawBase64);
+    if (!decoded || decoded.byteLength === 0) {
+      return {
+        ok: false,
+        error: `Pièce jointe "${rawFilename}" invalide : contenu base64 mal formé ou vide.`,
+      };
+    }
+
+    if (mimeType === 'application/pdf') {
+      // Vérification de la signature %PDF (0x25 0x50 0x44 0x46)
+      const isPdfMagic =
+        decoded.byteLength >= 4 &&
+        decoded[0] === 0x25 &&
+        decoded[1] === 0x50 &&
+        decoded[2] === 0x44 &&
+        decoded[3] === 0x46;
+      if (!isPdfMagic) {
+        return {
+          ok: false,
+          error: `Pièce jointe PDF "${rawFilename}" invalide : signature %PDF absente.`,
+        };
+      }
+    }
+
+    totalBytes += decoded.byteLength;
+    if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+      return {
+        ok: false,
+        error: `Taille cumulée des pièces jointes dépassée (${(totalBytes / (1024 * 1024)).toFixed(2)} Mo > 3 Mo maximum). Envoyez uniquement le CSV ou réduisez la période.`,
+      };
+    }
+
+    const cleanBase64 = rawBase64
+      .replace(/^data:[^;]+;base64,/i, '')
+      .replace(/\s+/g, '');
+
+    validated.push({
+      filename: sanitizeAttachmentFilename(rawFilename, mimeType),
+      contentBase64: cleanBase64,
+      contentType: mimeType,
+    });
+  }
+
+  return {
+    ok: true,
+    attachments: validated,
+    totalBytes,
+  };
+}
 
 export interface SendReportEmailDeps {
   authenticate?: (
@@ -1485,9 +1667,21 @@ export async function resolveServerMailConfig(
   appCode: string
 ): Promise<ResolvedMailConfig> {
   try {
-    const { data, error } = await supabaseAdmin.rpc('get_mail_config', {
+    let { data, error } = await supabaseAdmin.rpc('get_mail_config', {
       p_app_code: appCode,
     });
+    // Si l'expéditeur 'rpt' n'est pas encore configuré mais que 'stk' l'est, repli transparent sur 'stk'
+    if (!error && data && typeof data === 'object' && !(data as ResolvedMailConfig).configured && appCode !== 'stk') {
+      const stkFallback = await supabaseAdmin.rpc('get_mail_config', {
+        p_app_code: 'stk',
+      });
+      if (!stkFallback.error && stkFallback.data && (stkFallback.data as ResolvedMailConfig).configured) {
+        data = {
+          ...(stkFallback.data as ResolvedMailConfig),
+          app_code: appCode,
+        };
+      }
+    }
     if (error) {
       const rawErrMsg = String(error.message || error.details || error || '').trim();
       const isMissingRpc =
@@ -1804,22 +1998,21 @@ export function createSendReportEmailHandler(deps: SendReportEmailDeps = {}) {
         );
       }
 
-      const attachments: MailAttachmentInput[] = [];
-      let totalPayloadBytes = new TextEncoder().encode(rawHtml).length;
-      if (Array.isArray(body?.attachments)) {
-        for (const att of body.attachments) {
-          if (att && typeof att.filename === 'string' && typeof att.contentBase64 === 'string') {
-            totalPayloadBytes += att.contentBase64.length;
-            attachments.push({
-              filename: att.filename.trim(),
-              contentBase64: att.contentBase64.trim(),
-              contentType: typeof att.contentType === 'string' ? att.contentType.trim() : undefined,
-            });
-          }
-        }
+      const attValidation = validateAttachmentInput(body?.attachments);
+      if (!attValidation.ok) {
+        return jsonResponse(
+          {
+            success: false,
+            configured: true,
+            error: attValidation.error,
+          },
+          400
+        );
       }
 
-      if (totalPayloadBytes > MAX_EMAIL_PAYLOAD_BYTES) {
+      const attachments = attValidation.attachments;
+      const htmlBytes = new TextEncoder().encode(rawHtml).length;
+      if (htmlBytes + attValidation.totalBytes > MAX_EMAIL_PAYLOAD_BYTES) {
         return jsonResponse(
           {
             success: false,

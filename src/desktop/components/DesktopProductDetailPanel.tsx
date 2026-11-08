@@ -7,6 +7,8 @@ import {
 } from '../../hooks/useProductDetailController';
 import { formatCurrency, formatDate } from '../../utils/crypto';
 import { getProductDisplayLocation, getProductStockState } from '../../services/desktopInventoryLogic';
+import { computeProductInTransitQty } from '../../services/transferService';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   X,
   Copy,
@@ -54,6 +56,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
     setProductFormState,
     canTransferBetweenDepots,
     openStockTransferModal,
+    transfers,
   } = useApp();
   const ctrl = useProductDetailController(productId);
   const {
@@ -445,9 +448,10 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                   <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
                     {tr(language, 'Dépôt', 'Depot', 'Depot')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={editStoreName}
-                    onChange={(e) => setEditStoreName(e.target.value)}
+                    onChange={(val) => setEditStoreName(val)}
+                    recentKey="depots"
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   >
                     {depots.map((d) => (
@@ -455,15 +459,15 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
                 <div>
                   <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
                     {tr(language, 'Catégorie', 'Category', 'Categorie')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={editSubCatId}
-                    onChange={(e) => setEditSubCatId(e.target.value)}
+                    onChange={(val) => setEditSubCatId(val)}
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   >
                     <option value="">—</option>
@@ -472,7 +476,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                         {sc.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 
@@ -608,6 +612,15 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                   <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                     {tr(language, 'Seuil :', 'Min:', 'Min:')} {product.min_stock_alert ?? 2}
                   </div>
+                  {computeProductInTransitQty(product.id, transfers) > 0 && (
+                    <div
+                      data-testid="desktop-product-in-transit-badge"
+                      className="mt-1 px-2 py-0.5 rounded-full text-[10.5px] font-black bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-200 border border-sky-300 dark:border-sky-700 inline-block"
+                    >
+                      {tr(language, 'En transit :', 'In transit:', 'Onderweg:')}{' '}
+                      {computeProductInTransitQty(product.id, transfers)}
+                    </div>
+                  )}
                 </div>
 
                 {ctrl.canViewPrices ? (
@@ -838,12 +851,13 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                         <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
                           {tr(language, 'Dépôt cible', 'Target depot', 'Doeldepot')}
                         </label>
-                        <select
+                        <SearchableSelect
                           value={targetDepotName}
-                          onChange={(e) => {
+                          onChange={(val) => {
                             userSelectedTargetDepotRef.current = true;
-                            setTargetDepotName(e.target.value);
+                            setTargetDepotName(val);
                           }}
+                          recentKey="depots"
                           className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold"
                         >
                           {availableDepotsForAdd.map((d) => (
@@ -851,7 +865,7 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                               {d.name}
                             </option>
                           ))}
-                        </select>
+                        </SearchableSelect>
                       </div>
                       <div>
                         <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
@@ -1116,15 +1130,15 @@ export const DesktopProductDetailPanel: React.FC<DesktopProductDetailPanelProps>
                 )}
                 className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
               />
-              <select
+              <SearchableSelect
                 value={ctrl.historyTypeFilter}
-                onChange={(e) => ctrl.setHistoryTypeFilter(e.target.value as 'ALL' | 'IN' | 'OUT')}
+                onChange={(val) => ctrl.setHistoryTypeFilter(val as 'ALL' | 'IN' | 'OUT')}
                 className="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
               >
                 <option value="ALL">{tr(language, 'Tous', 'All', 'Alle')}</option>
                 <option value="OUT">{tr(language, 'Sorties', 'Out', 'Uit')}</option>
                 <option value="IN">{tr(language, 'Entrées', 'In', 'In')}</option>
-              </select>
+              </SearchableSelect>
             </div>
 
             {ctrl.productMovements.length === 0 ? (

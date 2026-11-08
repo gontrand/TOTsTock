@@ -27,6 +27,8 @@ import {
   OrderBasket,
   BatchBasket,
   StockLevel,
+  DepotHolder,
+  StockTransferRecord,
 } from '../types';
 import { ALL_MENU_BUTTON_KEYS } from '../data/permissionMatrix';
 import {
@@ -44,6 +46,11 @@ import {
   logActivityEvent,
   clearAllStoredActivities,
 } from '../services/activityService';
+import {
+  logAuditEventServer,
+  logLoginEventServer,
+  logLoginFailureServer,
+} from '../services/auditService';
 import {
   getSavedLicense,
   saveLicenseLocally,
@@ -72,6 +79,7 @@ import {
   INITIAL_PROJECTS,
   INITIAL_SUBCATEGORIES,
   INITIAL_DEPOTS,
+  INITIAL_DEPOT_HOLDERS,
   DEFAULT_SUPER_ROLE,
   INITIAL_ORDERS,
   RECOMMENDED_ROLES_SPEC,
@@ -220,6 +228,17 @@ import {
   TransferBatchRollbackSnapshot,
 } from '../services/stockMovementService';
 import {
+  getEligibleSourceDepots,
+  canUserInitiateTransfer,
+  getEligibleDestDepots,
+  getDepotReceivers,
+  canUserReceiveTransfer,
+  fetchDepotHoldersFromServer,
+  saveDepotHoldersRpc,
+  fetchStockTransfersFromServer,
+  computeTransferBadgeCounts,
+} from '../services/transferService';
+import {
   verifyDevicePinWithLockout,
   wipeDeviceLocalData,
   verifyUserStatusOnResume,
@@ -263,6 +282,16 @@ interface AppContextType {
   canUserViewUser: (targetUser: User) => boolean;
   subCategories: SubCategory[];
   depots: Depot[];
+  depotHolders: DepotHolder[];
+  saveDepotHolders: (
+    depotId: string | number,
+    holders: Array<{ user_id: string | number; can_send: boolean; can_receive: boolean }>
+  ) => Promise<{ success: boolean; error?: string }>;
+  transfers: StockTransferRecord[];
+  refreshTransfers: () => Promise<void>;
+  transfersModalOpen: boolean;
+  setTransfersModalOpen: (open: boolean) => void;
+  transferBadgeCount: number;
   batchCart: BatchCartItem[];
 
   // Modals & Navigation triggers
@@ -421,6 +450,10 @@ interface AppContextType {
     success: boolean;
     status?: 'committed' | 'queued_offline' | 'rejected';
     batchId?: string;
+    transferId?: string;
+    transferNumber?: string;
+    transferStatus?: string;
+    receiverNames?: string[];
     message: string;
     items?: any[];
   }>;
@@ -1140,6 +1173,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return INITIAL_DEPOTS.map(normalizeDepotRecord);
   });
+
+  const [depotHolders, setDepotHolders] = useState<DepotHolder[]>(() => {
+    const saved = localStorage.getItem(`${LOCAL_PREFIX}depot_holders`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return INITIAL_DEPOT_HOLDERS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${LOCAL_PREFIX}depot_holders`, JSON.stringify(depotHolders));
+    } catch {}
+  }, [depotHolders]);
+
+  const [transfers, setTransfers] = useState<StockTransferRecord[]>(() => {
+    const saved = localStorage.getItem(`${LOCAL_PREFIX}transfers`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return [];
+  });
+
+  const transfersRef = useRef<StockTransferRecord[]>(transfers);
+  useEffect(() => {
+    transfersRef.current = transfers;
+    try {
+      localStorage.setItem(`${LOCAL_PREFIX}transfers`, JSON.stringify(transfers));
+    } catch {}
+  }, [transfers]);
+
+  const [transfersModalOpen, setTransfersModalOpen] = useState(false);
 
   // Current Logged In User (encrypted when local encryption is active)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -2158,6 +2229,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return cleanProf;
             });
             localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(cleanProf));
+            if ((event as string) === 'TOKEN_REFRESHED' || (event as string) === 'INITIAL_SESSION') {
+              logLoginEventServer(
+                'SESSION_RESTORED',
+                { user_id: String(cleanProf.id), user_name: cleanProf.name },
+                client
+              ).catch(() => {});
+            }
             let deletedIds: string[] = [];
             try {
               const rawDel = localStorage.getItem('tot_deleted_user_ids');
@@ -2482,7 +2560,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         runSilentLiveSync();
       }
-    }, 3000);
+    }, 6000);
 
     // Exécuter immédiatement à la connexion ou au changement de session utilisateur
     const initialTimer = setTimeout(() => {
@@ -2600,6 +2678,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const client = getClientSupabase(supabaseUrl, supabaseKey);
     if (client) {
+      if (currentUser) {
+        logLoginEventServer(
+          'LOGOUT',
+          { user_id: String(currentUser.id), user_name: currentUser.name },
+          client
+        ).catch(() => {});
+      }
       await client.auth.signOut().catch(() => {});
     }
 
@@ -3146,6 +3231,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           },
         });
         if (pinRes.wiped) {
+          logLoginFailureServer(
+            u.email || u.trigram || String(emailOrUserId),
+            'PIN_LOCKOUT_WIPED',
+            { mode: 'local_pin' },
+            client
+          ).catch(() => {});
           return {
             success: false,
             message: translations[language].pin_lockout_wiped_error,
@@ -3162,8 +3253,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setCurrentUser(u);
           setLoginModalOpen(false);
           setActiveTab('home');
+          logLoginEventServer('LOGIN_SUCCESS', { mode: 'local_pin' }, client).catch(() => {});
           return { success: true };
         }
+        logLoginFailureServer(
+          u.email || u.trigram || String(emailOrUserId),
+          'INVALID_PIN',
+          { mode: 'local_pin', remaining_attempts: pinRes.remainingAttempts },
+          client
+        ).catch(() => {});
         return {
           success: false,
           message: translations[language].pin_attempts_remaining_error.replace(
@@ -3317,6 +3415,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             } else if (authErr?.message) {
               friendlyMsg = authErr.message;
             }
+            if (!isNetErr && !errCode.includes('failed to fetch') && !errCode.includes('fetch failed')) {
+              logLoginFailureServer(
+                cleanEmail,
+                errCode.includes('email not confirmed') ? 'EMAIL_NOT_CONFIRMED' : 'INVALID_CREDENTIALS',
+                { mode: 'supabase_auth' },
+                client
+              ).catch(() => {});
+            }
             return { success: false, message: friendlyMsg };
           }
         }
@@ -3410,6 +3516,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch {}
 
         if (activeProfile.is_blocked) {
+          logLoginFailureServer(
+            cleanEmail,
+            'ACCOUNT_BLOCKED',
+            { mode: 'supabase_auth', user_id: String(activeProfile.id) },
+            client
+          ).catch(() => {});
           await client.auth.signOut().catch(() => {});
           return { success: false, message: 'Ce compte utilisateur est verrouillé.' };
         }
@@ -3439,6 +3551,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(activeProfile));
         setLoginModalOpen(false);
         setActiveTab('home');
+
+        logLoginEventServer(
+          'LOGIN_SUCCESS',
+          { mode: 'supabase_auth', role_id: activeProfile.role_id },
+          client
+        ).catch(() => {});
 
         // Audit log connection
         logActivity({
@@ -3802,6 +3920,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Save local device PIN only (PBKDF2 salted in browser localStorage, NEVER written to database)
       await saveLocalDevicePin(currentUser.id, newPin);
       resetPinFailedAttempts();
+      logAuditEventServer({
+        category: 'SECURITY',
+        type: 'local_pin_updated',
+        title: 'Code PIN local modifié',
+        description: `Modification du code PIN de déverrouillage rapide sur l'appareil par ${currentUser.name}`,
+        severity: 'WARNING',
+        meta: { user_id: String(currentUser.id) },
+      }).catch(() => {});
 
       return { success: true, message: 'Code de déverrouillage local enregistré sur cet appareil.' };
     },
@@ -4124,15 +4250,123 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const canTransferBetweenDepots = useMemo(
     () =>
-      canUserTransferStock(
+      canUserInitiateTransfer(
         currentUser,
         depots,
-        userHasPermission('perm_stock_transfer')
+        depotHolders,
+        userHasPermission('perm_stock_transfer'),
+        userHasPermission('perm_stock_transfer_store')
       ),
-    [currentUser, depots, userHasPermission]
+    [currentUser, depots, depotHolders, userHasPermission]
   );
 
-  // LOT 2 (v49) : Transfert multi-articles atomique entre dépôts via RPC transfer_stock_batch
+  const saveDepotHolders = useCallback(
+    async (
+      depotId: string | number,
+      holders: Array<{ user_id: string | number; can_send: boolean; can_receive: boolean }>
+    ): Promise<{ success: boolean; error?: string }> => {
+      const depotIdStr = String(depotId);
+      const normalized = holders
+        .filter((h) => Boolean(h.can_send) || Boolean(h.can_receive))
+        .map((h) => ({
+          depot_id: depotIdStr,
+          user_id: String(h.user_id),
+          can_send: Boolean(h.can_send),
+          can_receive: Boolean(h.can_receive),
+        }));
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      if (client) {
+        const res = await saveDepotHoldersRpc(client, depotIdStr, normalized);
+        if (!res.success) {
+          return { success: false, error: res.error || 'Erreur lors de la sauvegarde des responsables' };
+        }
+      }
+
+      setDepotHolders((prev) => [
+        ...prev.filter((h) => String(h.depot_id) !== depotIdStr),
+        ...normalized,
+      ]);
+      return { success: true };
+    },
+    [supabaseUrl, supabaseKey]
+  );
+
+  const hasInitializedTransfersPollRef = useRef(false);
+
+  const refreshTransfers = useCallback(async () => {
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    if (!client) return;
+    try {
+      const [remoteHolders, remoteTransfers] = await Promise.all([
+        fetchDepotHoldersFromServer(client),
+        fetchStockTransfersFromServer(client, { limit: 150 }),
+      ]);
+      if (Array.isArray(remoteHolders) && remoteHolders.length > 0) {
+        setDepotHolders(remoteHolders);
+      }
+      if (Array.isArray(remoteTransfers)) {
+        const prevMap = new Map<string, StockTransferRecord>();
+        for (const oldT of transfersRef.current) {
+          prevMap.set(String(oldT.id), oldT);
+        }
+        if (hasInitializedTransfersPollRef.current && currentUser) {
+          const canReceiveAll = userHasPermission('perm_stock_receive_all');
+          let shouldBeep = false;
+          for (const t of remoteTransfers) {
+            const prevT = prevMap.get(String(t.id));
+            if (
+              !prevT &&
+              t.status === 'IN_TRANSIT' &&
+              String(t.sender_id) !== String(currentUser.id) &&
+              canUserReceiveTransfer(t, currentUser, depots, remoteHolders.length > 0 ? remoteHolders : depotHolders, canReceiveAll)
+            ) {
+              shouldBeep = true;
+              break;
+            }
+            if (
+              prevT &&
+              prevT.status !== t.status &&
+              String(t.sender_id) === String(currentUser.id) &&
+              (t.status === 'AWAITING_SENDER' ||
+                t.status === 'PARTIALLY_RECEIVED' ||
+                t.status === 'REJECTED')
+            ) {
+              shouldBeep = true;
+              break;
+            }
+          }
+          if (shouldBeep) {
+            playNewOrderBeep();
+          }
+        }
+        hasInitializedTransfersPollRef.current = true;
+        setTransfers(remoteTransfers);
+      }
+    } catch {}
+  }, [supabaseUrl, supabaseKey, currentUser, depots, depotHolders, userHasPermission]);
+
+  useEffect(() => {
+    if (!supabaseUrl || !supabaseKey) return;
+    refreshTransfers().catch(() => {});
+    const timer = setInterval(() => {
+      refreshTransfers().catch(() => {});
+    }, 30 * 1000);
+    return () => clearInterval(timer);
+  }, [supabaseUrl, supabaseKey, refreshTransfers]);
+
+  const transferBadgeCount = useMemo(() => {
+    const counts = computeTransferBadgeCounts(
+      transfers,
+      currentUser,
+      depots,
+      depotHolders,
+      userHasPermission('perm_stock_receive_all')
+    );
+    return counts.totalBadge;
+  }, [transfers, currentUser, depots, depotHolders, userHasPermission]);
+
+  // LOT 3 (v54) : Envoi d'un transfert multi-articles avec validation à la réception via RPC send_stock_transfer
   const transferStockBatchBetweenDepots = useCallback(
     async (params: {
       batchId?: string;
@@ -4144,6 +4378,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       success: boolean;
       status?: 'committed' | 'queued_offline' | 'rejected';
       batchId?: string;
+      transferId?: string;
+      transferNumber?: string;
+      transferStatus?: string;
+      receiverNames?: string[];
       message: string;
       items?: any[];
     }> => {
@@ -4162,36 +4400,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
-      if (
-        !currentUser ||
-        !(
-          Number(currentUser.role_id) === 0 ||
-          Number(currentUser.role_id) === 1 ||
-          userHasPermission('perm_stock_transfer')
-        )
-      ) {
+      const eligibleSources = getEligibleSourceDepots(
+        currentUser,
+        depots,
+        depotHolders,
+        userHasPermission('perm_stock_transfer'),
+        userHasPermission('perm_stock_transfer_store')
+      );
+      const isSourceAllowed = eligibleSources.some(
+        (d) => d.name.trim().toLowerCase() === srcDepot.toLowerCase()
+      );
+      if (!currentUser || !isSourceAllowed) {
         return {
           success: false,
           message: tr(
             language,
-            "Accès refusé : vous n'avez pas la permission de transférer du stock entre dépôts.",
-            'Access denied: you do not have permission to transfer stock between depots.',
-            'Toegang geweigerd: u heeft geen toestemming om voorraad tussen depots over te dragen.'
-          ),
-        };
-      }
-
-      if (
-        !isUserAllowedForDepot(currentUser, srcDepot) ||
-        !isUserAllowedForDepot(currentUser, dstDepot)
-      ) {
-        return {
-          success: false,
-          message: tr(
-            language,
-            "Accès refusé : vous n'êtes pas autorisé sur le dépôt source ou destination.",
-            'Access denied: you are not authorized for the source or destination depot.',
-            'Toegang geweigerd: u heeft geen toegang tot het bron- of doeldepot.'
+            `Accès refusé : vous n'êtes pas responsable autorisé à envoyer depuis le dépôt "${srcDepot}".`,
+            `Access denied: you are not an authorized sender for depot "${srcDepot}".`,
+            `Toegang geweigerd: u bent geen geautoriseerde verzender voor depot "${srcDepot}".`
           ),
         };
       }
@@ -4204,6 +4430,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             'Transfert refusé : le dépôt source ou le dépôt de destination est fermé / inactif.',
             'Transfer rejected: source or destination depot is closed/inactive.',
             'Overdracht geweigerd: het bron- of doeldepot is gesloten / inactief.'
+          ),
+        };
+      }
+
+      const dstDepotObj = depots.find(
+        (d) => d.name.trim().toLowerCase() === dstDepot.toLowerCase()
+      );
+      const receivers = dstDepotObj
+        ? getDepotReceivers(dstDepotObj.id, depotHolders, users)
+        : [];
+      if (receivers.length === 0) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            `Le dépôt de destination "${dstDepot}" n'a aucun responsable de réception configuré.`,
+            `Destination depot "${dstDepot}" has no reception holder configured.`,
+            `Het doeldepot "${dstDepot}" heeft geen geconfigureerde ontvanger.`
           ),
         };
       }
@@ -4317,8 +4561,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           user_id: currentUser ? currentUser.id : null,
           user_name: currentUser ? currentUser.name : 'Transfert Inter-Dépôts',
           movement_type: 'OUT',
-          type: 'TRANSFER',
-          action: 'STOCK_TRANSFER_BATCH',
+          type: 'TRANSFER_OUT',
+          action: 'TRANSFER_SENT',
           quantity: qty,
           quantity_changed: qty,
           depot_name: srcDepot,
@@ -4347,17 +4591,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           localMovementId: movId,
         });
 
+        // En v54, seul le dépôt source est débité à l'envoi (le dépôt destination sera crédité à la réception)
         optimisticLevels = applyMovementToStockLevelsList(optimisticLevels, {
           productId: prod.id,
           depotName: srcDepot,
           newDepotQty: Math.max(0, prevSrcQty - qty),
-          destDepotName: dstDepot,
-          newDestDepotQty: prevDstQty + qty,
-          destRack: entry.destRack,
         });
       });
 
-      // Mise à jour optimiste de stockLevels et movements (sans modifier product.store_name côté client)
+      // Mise à jour optimiste de stockLevels et movements
       setStockLevels(optimisticLevels);
       setMovements((prev) => [...localMovements, ...prev]);
 
@@ -4381,9 +4623,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               let next = [...prev];
               for (const itemRes of serverData.items) {
                 if (!itemRes?.product_id) continue;
-                const matchedInput = consolidated.find(
-                  (c) => String(c.product.id) === String(itemRes.product_id)
-                );
                 next = applyMovementToStockLevelsList(next, {
                   productId: String(itemRes.product_id),
                   depotName: srcDepot,
@@ -4391,18 +4630,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     typeof itemRes.source_depot_quantity === 'number'
                       ? itemRes.source_depot_quantity
                       : undefined,
-                  destDepotName: dstDepot,
-                  newDestDepotQty:
-                    typeof itemRes.dest_depot_quantity === 'number'
-                      ? itemRes.dest_depot_quantity
-                      : undefined,
-                  destRack: matchedInput?.destRack,
                 });
               }
               return next;
             });
 
-            // Mettre à jour product.store_name uniquement si le serveur l'indique (store_name_updated = true)
             const updatedStoreItems = new Map<string, any>();
             for (const itemRes of serverData.items) {
               if (itemRes?.product_id) {
@@ -4420,7 +4652,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                       typeof sItem.total_quantity === 'number'
                         ? sItem.total_quantity
                         : p.quantity,
-                    ...(sItem.store_name_updated === true ? { store_name: dstDepot } : {}),
                   };
                 })
               );
@@ -4450,24 +4681,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
-      // 1 seule entrée par lot dans le journal d'audit / d'activité
+      const serverData = commitRes.serverData || {};
+      const transferId = String(serverData.transfer_id || `TRF-ID-${Date.now()}`);
+      const transferNumber = String(
+        serverData.transfer_number ||
+          `TRF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(transfers.length + 1).padStart(4, '0')}`
+      );
+      const receiverNames = receivers.map((r) => r.name);
+
+      const newTransferRecord: StockTransferRecord = {
+        id: transferId,
+        transfer_number: transferNumber,
+        batch_id: batchId,
+        source_depot: srcDepot,
+        dest_depot: dstDepot,
+        sender_id: currentUser?.id ?? null,
+        sender_name: currentUser?.name ?? null,
+        sender_trigram: currentUser?.trigram ?? null,
+        status: 'IN_TRANSIT',
+        reason: params.reason || null,
+        items: consolidated.map((c) => ({
+          product_id: String(c.product.id),
+          product_ref: c.product.reference,
+          product_name: `${c.product.brand || ''} ${c.product.model || ''}`.trim() || c.product.reference,
+          quantity_sent: c.quantity,
+          quantity_received: null,
+          quantity_accepted: null,
+          dest_rack: c.destRack || null,
+          line_status: 'PENDING',
+          receiver_comment: null,
+          sender_comment: null,
+          unit_price: Number(c.product.unit_price) || 0,
+        })),
+        comments: [],
+        total_items: consolidated.length,
+        total_quantity_sent: totalPieces,
+        total_quantity_received: 0,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      setTransfers((prev) => [
+        newTransferRecord,
+        ...prev.filter((t) => String(t.id) !== transferId && String(t.batch_id) !== batchId),
+      ]);
+
       logActivity({
         type: 'STOCK_OUT',
         category: 'MOVEMENTS',
         title: tr(
           language,
-          `Transfert inter-dépôts : ${srcDepot} → ${dstDepot}`,
-          `Inter-depot transfer: ${srcDepot} → ${dstDepot}`,
-          `Overdracht tussen depots: ${srcDepot} → ${dstDepot}`
+          `Transfert envoyé (${transferNumber}) : ${srcDepot} → ${dstDepot}`,
+          `Transfer sent (${transferNumber}): ${srcDepot} → ${dstDepot}`,
+          `Overdracht verzonden (${transferNumber}): ${srcDepot} → ${dstDepot}`
         ),
-        description: `${consolidated.length} article(s), ${totalPieces} pièce(s) : ${srcDepot} → ${dstDepot}${
-          params.reason ? ` (${params.reason})` : ''
-        }`,
+        description: `${consolidated.length} article(s), ${totalPieces} pièce(s) : ${srcDepot} → ${dstDepot} (En transit — en attente de ${receiverNames.join(', ')})`,
         user_name: currentUser?.name,
         user_trigram: currentUser?.trigram,
         depot_name: srcDepot,
         site_number: `TRANSFERT -> ${dstDepot}`,
-        badgeText: 'TRANSFERT',
+        badgeText: 'EN TRANSIT',
       });
 
       if (commitRes.status === 'queued_offline') {
@@ -4475,6 +4748,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           success: true,
           status: 'queued_offline',
           batchId,
+          transferId,
+          transferNumber,
+          transferStatus: 'IN_TRANSIT',
+          receiverNames,
           message: tr(
             language,
             'Transfert en attente de synchronisation',
@@ -4488,11 +4765,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         success: true,
         status: 'committed',
         batchId,
+        transferId,
+        transferNumber,
+        transferStatus: 'IN_TRANSIT',
+        receiverNames,
         message: tr(
           language,
-          `Transfert de ${consolidated.length} article(s) (${totalPieces} pièce(s)) : ${srcDepot} → ${dstDepot} effectué avec succès.`,
-          `Transferred ${consolidated.length} item(s) (${totalPieces} unit(s)): ${srcDepot} → ${dstDepot}.`,
-          `Overdracht van ${consolidated.length} artikel(en) (${totalPieces} stuk(s)): ${srcDepot} → ${dstDepot} voltooid.`
+          `Transfert envoyé — en attente de validation par ${receiverNames.join(', ')}`,
+          `Transfer sent — awaiting validation by ${receiverNames.join(', ')}`,
+          `Overdracht verzonden — in afwachting van validatie door ${receiverNames.join(', ')}`
         ),
         items: commitRes.serverData?.items,
       };
@@ -4501,6 +4782,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       products,
       stockLevels,
       depots,
+      depotHolders,
+      users,
+      transfers.length,
       currentUser,
       language,
       supabaseUrl,
@@ -7116,6 +7400,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       user_trigram: currentUser?.trigram || 'ADM',
       meta: { details: `Nombre de rôles: ${freshRoles.length}` },
     });
+    logAuditEventServer(
+      {
+        category: 'SECURITY',
+        type: 'roles_reset_recommended',
+        title: 'Rôles réinitialisés aux recommandations',
+        description: `L'ensemble des ${freshRoles.length} rôles a été rétabli aux recommandations.`,
+        severity: 'WARNING',
+        meta: { roles_count: freshRoles.length },
+      },
+      client
+    ).catch(() => {});
     return true;
   }, [supabaseUrl, supabaseKey, language, logActivity, currentUser]);
 
@@ -7499,6 +7794,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       visibleProjects,
       subCategories,
       depots,
+      depotHolders,
+      saveDepotHolders,
+      transfers,
+      refreshTransfers,
+      transfersModalOpen,
+      setTransfersModalOpen,
+      transferBadgeCount,
       batchCart,
       loginModalOpen,
       setLoginModalOpen,
@@ -7723,6 +8025,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       visibleProjects,
       subCategories,
       depots,
+      depotHolders,
+      saveDepotHolders,
+      transfers,
+      refreshTransfers,
+      transfersModalOpen,
+      setTransfersModalOpen,
+      transferBadgeCount,
       batchCart,
       loginModalOpen,
       profileModalOpen,

@@ -6,6 +6,7 @@ import {
   useRegisterUnsavedForm,
 } from '../services/unsavedChangesGuard';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import {
   X,
   Warehouse,
@@ -39,12 +40,15 @@ import {
 } from 'lucide-react';
 import { Depot, PLAN_TIERS, getPlanName } from '../types';
 import { normalizeSupabaseUrl } from '../services/clientSupabase';
+import { DepotHoldersSection, DraftDepotHolder } from './DepotHoldersSection';
 
 export const DepotsModal: React.FC = () => {
   const {
     depotsModalOpen,
     setDepotsModalOpen,
     depots,
+    depotHolders,
+    saveDepotHolders,
     maxDepots,
     products,
     users,
@@ -122,10 +126,19 @@ export const DepotsModal: React.FC = () => {
   // Temporary depot deactivation is available starting from Standard plan
   const canDeactivateDepots = license?.plan_type && license.plan_type !== 'free';
 
+  const canEditDepotHolders = Boolean(
+    !currentUser ||
+      Number(currentUser.id) === 0 ||
+      Number(currentUser.role_id) === 0 ||
+      Number(currentUser.role_id) === 1 ||
+      userHasPermission('perm_manage_depots')
+  );
+
   const [isActive, setIsActive] = useState(true);
   const [togglingDepotId, setTogglingDepotId] = useState<string | number | null>(null);
   const [pickupZones, setPickupZones] = useState<string[]>([]);
   const [newZoneInput, setNewZoneInput] = useState('');
+  const [draftHolders, setDraftHolders] = useState<DraftDepotHolder[]>([]);
 
   const handleAddZone = (zoneName?: string) => {
     const toAdd = (zoneName || newZoneInput).trim();
@@ -176,6 +189,7 @@ export const DepotsModal: React.FC = () => {
     setIsActive(true);
     setPickupZones([]);
     setNewZoneInput('');
+    setDraftHolders([]);
     setEditingDepotId(null);
     setIsFormOpen(false);
     setErrorMessage(null);
@@ -198,6 +212,14 @@ export const DepotsModal: React.FC = () => {
     setIsActive(d.is_active !== false);
     setPickupZones(d.pickup_zones && Array.isArray(d.pickup_zones) ? d.pickup_zones : []);
     setNewZoneInput('');
+    const existingHolders = depotHolders
+      .filter((h) => String(h.depot_id) === String(d.id))
+      .map((h) => ({
+        user_id: h.user_id,
+        can_send: Boolean(h.can_send),
+        can_receive: Boolean(h.can_receive),
+      }));
+    setDraftHolders(existingHolders);
     setErrorMessage(null);
     setIsFormOpen(true);
     scrollToAndFocusForm(depotFormRef.current, depotNameInputRef.current);
@@ -312,6 +334,13 @@ export const DepotsModal: React.FC = () => {
     if (!result.success) {
       setErrorMessage(result.message);
       return false;
+    }
+
+    const targetDepotId =
+      editingDepotId ??
+      depots.find((d) => d.name.trim().toLowerCase() === cleanName.toLowerCase())?.id;
+    if (targetDepotId !== undefined && targetDepotId !== null && canEditDepotHolders) {
+      await saveDepotHolders(targetDepotId, draftHolders);
     }
 
     setSuccessMessage(result.message);
@@ -829,9 +858,9 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                           <label className="text-[11px] font-black text-slate-700 dark:text-slate-300 block mb-1">
                             {tr(language, 'Type de véhicule *', 'Vehicle Type *')}
                           </label>
-                          <select
+                          <SearchableSelect
                             value={vehicleType}
-                            onChange={(e) => setVehicleType(e.target.value)}
+                            onChange={(val) => setVehicleType(val)}
                             className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 font-bold"
                           >
                             <option value="Fourgon">Fourgon d'intervention</option>
@@ -841,7 +870,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                             <option value="Atelier Mobile">Atelier mobile spécialisé</option>
                             <option value="Break / Berline">Véhicule de liaison / Break</option>
                             <option value="Autre">Autre véhicule</option>
-                          </select>
+                          </SearchableSelect>
                         </div>
                         <div>
                           <label className="text-[11px] font-black text-slate-700 dark:text-slate-300 block mb-1">
@@ -877,9 +906,9 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                           <label className="text-[11px] font-black text-slate-700 dark:text-slate-300 block mb-1">
                             {tr(language, 'Chantier rattaché (Conducteur associé)', 'Associated Project / Site')}
                           </label>
-                          <select
+                          <SearchableSelect
                             value={projectNumber}
-                            onChange={(e) => setProjectNumber(e.target.value)}
+                            onChange={(val) => setProjectNumber(val)}
                             className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                           >
                             <option value="">{tr(language, '-- Sélectionner un chantier --', '-- Select project --')}</option>
@@ -888,7 +917,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                                 {p.project_number} - {p.project_name}
                               </option>
                             ))}
-                          </select>
+                          </SearchableSelect>
                         </div>
                       </div>
                     )}
@@ -936,10 +965,9 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                         <User className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                         <span>{type === 'VEHICLE' ? (tr(language, 'Chauffeur / Responsable du véhicule', 'Vehicle Driver / Manager')) : (tr(language, 'Responsable du dépôt', 'Depot Manager'))}</span>
                       </label>
-                      <select
+                      <SearchableSelect
                         value={managerId}
-                        onChange={(e) => {
-                          const newMgrId = e.target.value;
+                        onChange={(newMgrId) => {
                           setManagerId(newMgrId);
                           const newDriver = users.find((u) => String(u.id) === String(newMgrId));
                           if (newDriver?.department && newDriver.department !== 'Général') {
@@ -971,7 +999,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                             {u.name} ({u.trigram}){u.department ? ` • ${u.department}` : ''}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
 
                     <div>
@@ -979,9 +1007,9 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                         <Building2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                         <span>{tr(language, 'Département / Service de rattachement', 'Assigned Department')}</span>
                       </label>
-                      <select
+                      <SearchableSelect
                         value={departmentId}
-                        onChange={(e) => setDepartmentId(e.target.value)}
+                        onChange={(val) => setDepartmentId(val)}
                         className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold"
                       >
                         <option value="">{tr(language, '— Direction générale / Global —', '— General / Global —')}</option>
@@ -990,9 +1018,24 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                             {d.name}
                           </option>
                         ))}
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
+
+                  {/* Section Responsables du dépôt (stk_depot_holders : Envoi can_send & Réception can_receive) */}
+                  <DepotHoldersSection
+                    language={language}
+                    users={users}
+                    holders={draftHolders}
+                    onChange={setDraftHolders}
+                    canEdit={canEditDepotHolders}
+                    depotId={editingDepotId}
+                    onSaveDirect={
+                      editingDepotId !== null
+                        ? (nextHolders) => saveDepotHolders(editingDepotId, nextHolders)
+                        : undefined
+                    }
+                  />
 
                   {/* Binômes autorisés sur ce véhicule (Règle stricte Camionnette) */}
                   {type === 'VEHICLE' && (
@@ -1522,10 +1565,11 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                               <span className="font-medium text-slate-700 dark:text-slate-300">
                                 {tr(language, 'Transférer vers un autre dépôt :', 'Transfer to another depot:')}
                               </span>
-                              <select
+                              <SearchableSelect
                                 value={targetTransferDepot}
                                 disabled={reassignAction !== 'transfer'}
-                                onChange={(e) => setTargetTransferDepot(e.target.value)}
+                                onChange={(val) => setTargetTransferDepot(val)}
+                                recentKey="depots"
                                 className="ml-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-bold text-xs outline-none focus:ring-1 focus:ring-amber-500"
                               >
                                 {otherDepotOptions.map((opt) => (
@@ -1533,7 +1577,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                                     {opt.name} {opt.code ? `(${opt.code})` : ''}
                                   </option>
                                 ))}
-                              </select>
+                              </SearchableSelect>
                             </label>
                           )}
 
@@ -1716,6 +1760,50 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                           )}
                         </div>
                       )}
+
+                      {/* Responsables stk_depot_holders & avertissement si aucun responsable de réception */}
+                      {(() => {
+                        const dHolders = depotHolders.filter((h) => String(h.depot_id) === String(d.id));
+                        const hasReceiver = dHolders.some((h) => Boolean(h.can_receive));
+                        return (
+                          <div className="flex items-center gap-2 text-[11px] mt-1 flex-wrap">
+                            <span className="font-semibold text-indigo-700 dark:text-indigo-300 flex items-center gap-1">
+                              <Users className="w-3 h-3" />
+                              <span>{tr(language, 'Responsables :', 'Holders:', 'Verantwoordelijken:')}</span>
+                            </span>
+                            {dHolders.length > 0 ? (
+                              dHolders.map((h) => {
+                                const hu = users.find((u) => String(u.id) === String(h.user_id));
+                                return (
+                                  <span
+                                    key={String(h.user_id)}
+                                    className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-800"
+                                  >
+                                    {hu?.name || `#${h.user_id}`} ({h.can_send ? 'Env' : ''}
+                                    {h.can_send && h.can_receive ? '/' : ''}
+                                    {h.can_receive ? 'Réc' : ''})
+                                  </span>
+                                );
+                              })
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">
+                                {tr(language, 'Aucun responsable configuré', 'No holder configured', 'Geen verantwoordelijke')}
+                              </span>
+                            )}
+                            {!hasReceiver && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-200 border border-amber-300 dark:border-amber-800 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                {tr(
+                                  language,
+                                  'Aucun responsable de réception',
+                                  'No reception holder',
+                                  'Geen ontvangstverantwoordelijke'
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Binômes assignés sur véhicule */}
                       {d.type === 'VEHICLE' && (

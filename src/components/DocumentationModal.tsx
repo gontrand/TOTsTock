@@ -1767,7 +1767,44 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                   </ul>
                 </div>
 
-                {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.4.1 / App 5.9.1) */}
+                {/* ChapitreJournal d'audit serveur complet (v53 / v54) */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-orange-600 dark:text-orange-400 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>Journal d&apos;audit serveur immuable, Transferts validés à la réception &amp; Responsables de dépôt (Schéma {EXPECTED_SCHEMA_VERSION})</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Responsables de dépôt (<code>stk_depot_holders</code>) :</strong> chaque dépôt (fixe, véhicule ou conteneur) peut avoir plusieurs responsables avec droits séparés <strong>Envoi</strong> (<code>can_send</code>) et <strong>Réception</strong> (<code>can_receive</code>), configurables via <code>set_depot_holders</code> (rôles 0/1 ou <code>perm_manage_depots</code>).
+                    </li>
+                    <li>
+                      <strong>Transferts validés en 2 étapes (<code>stk_transfers</code>) :</strong> l&apos;expédition (<code>send_stock_transfer</code>) débite le dépôt source et place le lot en statut <code>IN_TRANSIT</code> (numéro <code>TRF-AAAA-NNNNNN</code>). Le dépôt receveur valide la réception ligne par ligne (<code>receive_stock_transfer</code> : accepter, modifier la quantité reçue avec passage en <code>AWAITING_SENDER</code> pour confirmation par l&apos;expéditeur via <code>confirm_stock_transfer_adjustment</code>, ou refuser avec retour au dépôt source) ou refuse en bloc (<code>reject_stock_transfer</code>). Les litiges (<code>DISPUTED</code>) sont arbitrés par la logistique (<code>resolve_transfer_dispute</code> : <code>RETURN_TO_SOURCE</code> ou <code>WRITE_OFF</code>). L&apos;expéditeur ne peut jamais valider lui-même la réception (séparation des tâches).
+                    </li>
+                    <li>
+                      <strong>Permissions fines (v54) :</strong> <code>perm_stock_transfer_store</code> (expédier depuis tout dépôt fixe <code>FIXED</code>), <code>perm_stock_receive_all</code> (valider la réception sur tout dépôt et arbitrer les litiges), et <code>perm_report_stock_levels</code> (consulter et exporter les rapports Stocks faibles / Ruptures via <code>get_stock_levels_report</code>).
+                    </li>
+                    <li>
+                      <strong>Traçabilité automatique côté serveur :</strong> les triggers PostgreSQL <code>trg_audit_*</code> enregistrent automatiquement toute création, modification (avec tableau comparatif <code>meta.changes</code> ancienne → nouvelle valeur) et suppression sur 13 tables sensibles, complétés par les RPC <code>log_audit_event</code>, <code>log_login_event</code> et <code>log_login_failure</code> ainsi que la fonction Edge <code>admin-users</code>.
+                    </li>
+                    <li>
+                      <strong>Immuabilité &amp; Rétention (≥ 90 jours) :</strong> tout <code>UPDATE</code> ou <code>DELETE</code> direct sur <code>core_audit_logs</code> et <code>core_login_logs</code> est bloqué par trigger. Seul le Super Administrateur (rôle 0) peut purger les entrées de plus de 90 jours via <code>purge_audit_logs</code> (avec double confirmation).
+                    </li>
+                    <li>
+                      <strong>Confidentialité :</strong> aucun mot de passe, code PIN, clé API, secret SMTP/Graph, jeton signé ou contenu brut de lignes exportées n&apos;est jamais enregistré ; les champs sensibles sont remplacés par <code>***</code>.
+                    </li>
+                    <li>
+                      <strong>{tr(language, 'Astuce : tapez pour filtrer n\'importe quelle liste', 'Tip: type to filter any dropdown list', 'Tip: typ om elke keuzelijst te filteren')} :</strong>{' '}
+                      {tr(
+                        language,
+                        'toutes les listes déroulantes de l\'application (dépôts, chantiers, départements, utilisateurs, catégories, statuts, etc.) intègrent une recherche instantanée insensible à la casse et aux accents, la navigation au clavier (↑/↓, Entrée, Échap) et la mémorisation des 3 derniers dépôts utilisés.',
+                        'all dropdown lists across the application (depots, job sites, departments, users, categories, statuses, etc.) include instant case- and accent-insensitive search, keyboard navigation (↑/↓, Enter, Escape), and recent depots memory.',
+                        'alle keuzelijsten in de applicatie (depots, werven, afdelingen, gebruikers, categorieën, statussen, enz.) bevatten directe hoofdletter- en accentongevoelige zoekfunctie, toetsenbordnavigatie (↑/↓, Enter, Escape) en onthouden recente depots.'
+                      )}
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.7.0 / App 5.13.0) */}
                 <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
                   <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400 flex items-center gap-2">
                     <Database className="w-4 h-4 shrink-0" />
@@ -1775,7 +1812,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                   </h4>
                   <ol className="list-decimal pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
                     <li>
-                      <strong>Étape 1 — Scripts SQL (<code>00</code> à <code>14</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL</em>). Le script 14 migre automatiquement votre ancienne configuration Brevo éventuelle.
+                      <strong>Étape 1 — Scripts SQL (<code>00</code> à <code>17</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code>, <code>15_search_orders_movements.sql</code>, <code>16_audit_trail.sql</code>, <code>17_transferts_valides.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL</em>). Le script 14 migre automatiquement votre ancienne configuration Brevo éventuelle.
                     </li>
                     <li>
                       <strong>Étape 2 — Fonctions Edge (onglet <em>4. Fonctions Edge</em>) :</strong> mettez à jour dans Supabase Dashboard les 3 fonctions autonomes (<code>APP_TOT-Stock_admin-users</code>, <code>APP_TOT-Stock_licenses_sync-license</code>, <code>APP_TOT-Stock_send-report-email</code>) générées dans <code>supabase-client/generated/edge-functions/</code>.

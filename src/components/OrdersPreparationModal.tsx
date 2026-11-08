@@ -10,6 +10,7 @@ import {
 } from '../utils/qrCodeHelper';
 import { useApp } from '../context/AppContext';
 import { MaterialOrder, OrderStatus } from '../types';
+import { SearchableSelect } from './SearchableSelect';
 import { printHtmlViaIframe, generateOrderSlipHtml, generateThermalLabelHtml } from '../utils/printHelper';
 import { playScanBeep } from '../utils/crypto';
 import { hapticFeedback } from '../utils/haptics';
@@ -1570,9 +1571,10 @@ export const OrdersPreparationModal: React.FC = () => {
             {hasMultipleDepots ? (
               <div className="flex items-center gap-1.5 shrink-0">
                 <Building2 className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                <select
+                <SearchableSelect
                   value={selectedDepotFilter}
-                  onChange={(e) => setSelectedDepotFilter(e.target.value)}
+                  onChange={(val) => setSelectedDepotFilter(val)}
+                  recentKey="depots"
                   className="text-xs py-1.5 px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
                 >
                   <option value="ALL">
@@ -1583,7 +1585,7 @@ export const OrdersPreparationModal: React.FC = () => {
                       {depName}
                     </option>
                   ))}
-                </select>
+                </SearchableSelect>
               </div>
             ) : singleAssignedDepot ? (
               <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-900 text-blue-800 dark:text-blue-300 text-xs font-bold shrink-0">

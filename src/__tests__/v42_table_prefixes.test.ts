@@ -160,10 +160,10 @@ describe('Prompt v42 — Préfixes de tables core_ et stk_ pour la suite TOT (sc
     });
   });
 
-  describe('3. Version de schéma 2.4.1 et traductions FR / EN / NL du diagnostic', () => {
-    it('définit EXPECTED_SCHEMA_VERSION = 2.4.1 et MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0', () => {
-      expect(APP_VERSION).toBe('5.9.1');
-      expect(EXPECTED_SCHEMA_VERSION).toBe('2.4.1');
+  describe('3. Version de schéma 2.7.0 et traductions FR / EN / NL du diagnostic', () => {
+    it('définit EXPECTED_SCHEMA_VERSION = 2.7.0 et MIN_SUPPORTED_SCHEMA_VERSION = 1.0.0', () => {
+      expect(APP_VERSION).toBe('5.13.0');
+      expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
       expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
     });
 

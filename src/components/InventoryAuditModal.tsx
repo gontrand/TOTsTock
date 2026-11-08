@@ -3,6 +3,7 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { Product } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
+import { SearchableSelect } from './SearchableSelect';
 import {
   buildDepotAuditCountingRows,
   buildAuditAdjustmentsFromSession,
@@ -793,27 +794,28 @@ export const InventoryAuditModal: React.FC = () => {
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
                       Magasin / Dépôt
                     </label>
-                    <select
+                    <SearchableSelect
                       value={selectedDepot}
-                      onChange={(e) => setSelectedDepot(e.target.value)}
+                      onChange={(val) => setSelectedDepot(val)}
+                      recentKey="depots"
                       className="w-full p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer"
                     >
                       <option value="ALL">{t('audit_scope_all_depots')}</option>
                       {depots.map((d) => (
-                        <option key={d.id} value={d.name}>
+                        <option key={String(d.id)} value={d.name}>
                           {d.name} {d.is_active === false ? '(Fermé)' : ''}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
 
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
                       Catégorie
                     </label>
-                    <select
+                    <SearchableSelect
                       value={selectedCategory}
-                      onChange={(e) => setSelectedCategory(e.target.value)}
+                      onChange={(val) => setSelectedCategory(val)}
                       className="w-full p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer"
                     >
                       <option value="ALL">{t('audit_scope_all_cats')}</option>
@@ -822,7 +824,7 @@ export const InventoryAuditModal: React.FC = () => {
                           {c.name}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                 </div>
               </div>

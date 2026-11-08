@@ -2,10 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { DesktopShell } from './DesktopShell';
 import { DesktopAuditPage } from './pages/DesktopAuditPage';
+import { DesktopAuditLogPage } from './pages/DesktopAuditLogPage';
 import { DesktopMovementsPage } from './pages/DesktopMovementsPage';
 import { DesktopOrdersPage } from './pages/DesktopOrdersPage';
 import { DesktopPreparationPage } from './pages/DesktopPreparationPage';
 import { DesktopPrintStationPage } from './pages/DesktopPrintStationPage';
+import { DesktopReportsPage } from './pages/DesktopReportsPage';
 import { DesktopSettingsPage } from './pages/DesktopSettingsPage';
 import { DesktopCsvImportModal } from './components/DesktopCsvImportModal';
 import { DesktopPrintLabelsDialog } from './components/DesktopPrintLabelsDialog';
@@ -104,6 +106,7 @@ export const DesktopWorkspace: React.FC = () => {
         renderAuditPage={({ globalDepotFilter }) => (
           <DesktopAuditPage selectedDepotFilter={globalDepotFilter} />
         )}
+        renderAuditLogPage={() => <DesktopAuditLogPage />}
         renderMovementsPage={({ globalDepotFilter }) => (
           <DesktopMovementsPage
             selectedDepotFilter={globalDepotFilter}
@@ -135,6 +138,9 @@ export const DesktopWorkspace: React.FC = () => {
           />
         )}
         renderPrintStationPage={() => <DesktopPrintStationPage />}
+        renderReportsPage={({ globalDepotFilter }) => (
+          <DesktopReportsPage selectedDepotFilter={globalDepotFilter} />
+        )}
         renderSettingsPage={({ section, onChangeSection }) => (
           <DesktopSettingsPage
             initialSection={section}

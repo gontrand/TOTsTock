@@ -923,9 +923,9 @@ export async function commitStockTransferBatch(
     };
   }
 
-  // Cas 2 : En ligne -> Appel de la RPC transfer_stock_batch
+  // Cas 2 : En ligne -> Appel de la RPC send_stock_transfer
   try {
-    const { data, error } = await client.rpc('transfer_stock_batch', {
+    const { data, error } = await client.rpc('send_stock_transfer', {
       p_batch_id: batchId,
       p_source_depot: cleanSource,
       p_dest_depot: cleanDest,
@@ -940,7 +940,7 @@ export async function commitStockTransferBatch(
         status: 'committed',
         rolledBack: false,
         batchId,
-        message: 'Transfert effectué avec succès.',
+        message: 'Transfert envoyé — en attente de validation.',
         serverData: data,
       };
     }
@@ -966,7 +966,7 @@ export async function commitStockTransferBatch(
     const errCode = (error as any)?.code ? String((error as any).code) : undefined;
 
     console.error(
-      '[StockTransferBatch] Refus serveur lors de transfer_stock_batch:',
+      '[StockTransferBatch] Refus serveur lors de send_stock_transfer:',
       sanitizeErrorForConsole({
         batchId,
         sourceDepot: cleanSource,
@@ -983,7 +983,7 @@ export async function commitStockTransferBatch(
       await deleteFromStore('stock_movements', mov.id).catch(() => {});
     }
 
-    const visibleError = formatServerMovementRejectionMessage(rawMsg, errCode);
+    const visibleError = sanitizeStringForConsole(String(rawMsg).trim()) || formatServerMovementRejectionMessage(rawMsg, errCode);
     onErrorMessage?.(visibleError);
 
     if (recordRejectedInQueue) {
@@ -1028,7 +1028,7 @@ export async function commitStockTransferBatch(
     for (const mov of localMovements) {
       await deleteFromStore('stock_movements', mov.id).catch(() => {});
     }
-    const visibleError = formatServerMovementRejectionMessage(err?.message || String(err));
+    const visibleError = sanitizeStringForConsole(String(err?.message || err).trim()) || formatServerMovementRejectionMessage(err?.message || String(err));
     onErrorMessage?.(visibleError);
 
     if (recordRejectedInQueue) {

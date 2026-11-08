@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { canUserManageMailSettings } from '../services/mailingService';
+import { SearchableSelect } from './SearchableSelect';
 import {
   User,
   LogOut,
@@ -40,8 +41,10 @@ import {
   Stethoscope,
   Scan,
   ArrowLeftRight,
+  ShieldAlert,
 } from 'lucide-react';
 import { APP_VERSION } from '../appVersion';
+import { DesktopAuditLogPage } from '../desktop/pages/DesktopAuditLogPage';
 import { canUserAccessScannerMode } from '../services/orderPickingLogic';
 import { SUPPORTED_CURRENCIES } from '../utils/crypto';
 import { getClientSupabase, checkEmailServiceConfigured } from '../services/clientSupabase';
@@ -100,6 +103,8 @@ export const PlusMenuView: React.FC = () => {
     isPreparer,
     canTransferBetweenDepots,
     openStockTransferModal,
+    setTransfersModalOpen,
+    transferBadgeCount,
     t,
   } = useApp();
 
@@ -145,6 +150,12 @@ export const PlusMenuView: React.FC = () => {
   const canDiagnostic = Boolean(
     currentUser && [0, 1, 5].includes(Number(currentUser.role_id))
   );
+  const canAuditTrail = Boolean(
+    currentUser &&
+      (Number(currentUser.role_id) === 0 ||
+        Number(currentUser.role_id) === 1 ||
+        userHasPermission('perm_audit_view'))
+  );
 
   // Documentation buttons
   const canDocManual = userHasPermission('perm_doc_manual');
@@ -166,6 +177,7 @@ export const PlusMenuView: React.FC = () => {
   );
 
   const [menuSearch, setMenuSearch] = useState('');
+  const [auditLogModalOpen, setAuditLogModalOpen] = useState(false);
   const [hapticEnabled, setHapticEnabledState] = useState<boolean>(() => isHapticsEnabled());
   const [soundEnabled, setSoundEnabledState] = useState<boolean>(() => isSoundEnabled());
   const [hapticIntensity, setHapticIntensityState] = useState<HapticIntensity>(() => getHapticIntensity());
@@ -317,6 +329,22 @@ export const PlusMenuView: React.FC = () => {
         visible: canDiagnostic,
       },
       {
+        id: 'server_audit_log',
+        title: tr(language, "Journal d'audit serveur", 'Server Audit Log', 'Server Auditlogboek'),
+        category: tr(language, 'Sécurité & Droits', 'Security & Access', 'Beveiliging & Toegang'),
+        description: tr(
+          language,
+          'Journal immuable des événements sensibles, modifications de tables et connexions',
+          'Immutable log of sensitive events, table changes and user logins',
+          'Onveranderlijk logboek van gevoelige gebeurtenissen, tabelwijzigingen en aanmeldingen'
+        ),
+        keywords: ['audit', 'journal', 'logs', 'securite', 'connexions', 'historique', 'immuable', 'trace'],
+        icon: <ShieldAlert className="w-4 h-4 text-orange-600" />,
+        action: () => setAuditLogModalOpen(true),
+        badge: tr(language, 'Immuable', 'Immutable', 'Onveranderlijk'),
+        visible: canAuditTrail,
+      },
+      {
         id: 'depots',
         title: tr(language, 'Gestion des Dépôts & Magasins', 'Manage Depots & Warehouses'),
         category: tr(language, 'Logistique', 'Logistics'),
@@ -356,6 +384,27 @@ export const PlusMenuView: React.FC = () => {
         action: () => openStockTransferModal({}),
         badge: tr(language, 'Multi-articles', 'Multi-item', 'Multi-artikel'),
         visible: canTransferBetweenDepots,
+      },
+      {
+        id: 'transfers_receptions',
+        title: tr(
+          language,
+          'Transferts & Réceptions à valider',
+          'Transfers & Receptions to Validate',
+          'Overdrachten & Te valideren ontvangsten'
+        ),
+        category: tr(language, 'Logistique', 'Logistics', 'Logistiek'),
+        description: tr(
+          language,
+          'Valider les réceptions en transit, confirmer les écarts et arbitrer les litiges',
+          'Validate in-transit receptions, confirm discrepancies, and resolve disputes',
+          'Valideer ontvangsten onderweg, bevestig afwijkingen en beslecht geschillen'
+        ),
+        keywords: ['transferts', 'reception', 'transit', 'litige', 'valider', 'depot'],
+        icon: <ArrowLeftRight className="w-4 h-4 text-emerald-600" />,
+        action: () => setTransfersModalOpen(true),
+        badge: transferBadgeCount > 0 ? String(transferBadgeCount) : undefined,
+        visible: true,
       },
       {
         id: 'projects',
@@ -507,6 +556,8 @@ export const PlusMenuView: React.FC = () => {
     openScannerPickingMode,
     canTransferBetweenDepots,
     openStockTransferModal,
+    setTransfersModalOpen,
+    transferBadgeCount,
     currency,
     depots.length,
     maxDepots,
@@ -945,9 +996,9 @@ export const PlusMenuView: React.FC = () => {
               </div>
             </div>
             {canManageCurrency ? (
-              <select
+              <SearchableSelect
                 value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
+                onChange={(val) => setCurrency(val)}
                 className="text-xs font-bold py-1.5 px-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 outline-none cursor-pointer shrink-0 relative z-20"
               >
                 {SUPPORTED_CURRENCIES.map((c) => (
@@ -955,7 +1006,7 @@ export const PlusMenuView: React.FC = () => {
                     {c.flag} {c.code} ({c.symbol})
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
             ) : (
               <div
                 className="text-xs font-bold py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 cursor-not-allowed select-none shrink-0 relative z-20"
@@ -1162,6 +1213,48 @@ export const PlusMenuView: React.FC = () => {
               <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 relative z-20" />
             </button>
           )}
+
+          <button
+            type="button"
+            data-testid="plus-menu-transfers-receptions-btn"
+            onClick={() => setTransfersModalOpen(true)}
+            className="w-full p-3.5 flex items-center justify-between gap-2 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition text-left cursor-pointer relative overflow-hidden"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1 relative z-10 overflow-hidden">
+              <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 flex items-center justify-center font-bold shrink-0 relative z-20">
+                <ArrowLeftRight className="w-4 h-4 shrink-0 relative z-20" />
+              </div>
+              <div className="min-w-0 flex-1 relative z-0 overflow-hidden">
+                <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 flex-wrap">
+                  <span>
+                    {tr(
+                      language,
+                      'Transferts & Réceptions',
+                      'Transfers & Receptions',
+                      'Overdrachten & Ontvangsten'
+                    )}
+                  </span>
+                  {transferBadgeCount > 0 && (
+                    <span
+                      data-testid="plus-menu-transfers-badge"
+                      className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-600 text-white shrink-0"
+                    >
+                      {transferBadgeCount}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {tr(
+                    language,
+                    'Valider les réceptions en transit, confirmer les écarts et suivre l’historique',
+                    'Validate in-transit receptions, confirm discrepancies, and track history',
+                    'Valideer ontvangsten onderweg, bevestig afwijkingen en volg geschiedenis'
+                  )}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 relative z-20" />
+          </button>
 
           {canTransferBetweenDepots && (
             <button
@@ -1494,6 +1587,38 @@ export const PlusMenuView: React.FC = () => {
             </button>
           )}
 
+          {canAuditTrail && (
+            <button
+              type="button"
+              data-testid="plus-menu-audit-log-btn"
+              onClick={() => setAuditLogModalOpen(true)}
+              className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60 transition cursor-pointer relative overflow-hidden"
+            >
+              <div className="flex items-center gap-3 min-w-0 flex-1 relative z-10 overflow-hidden">
+                <div className="w-8 h-8 rounded-xl bg-orange-100 dark:bg-orange-950/60 text-orange-600 dark:text-orange-400 flex items-center justify-center font-bold shrink-0 relative z-20">
+                  <ShieldAlert className="w-4 h-4 shrink-0 relative z-20" />
+                </div>
+                <div className="min-w-0 flex-1 relative z-0 overflow-hidden">
+                  <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 flex-wrap">
+                    <span>{tr(language, "Journal d'audit serveur", 'Server Audit Log', 'Server Auditlogboek')}</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 shrink-0">
+                      {tr(language, 'Immuable', 'Immutable', 'Onveranderlijk')}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {tr(
+                      language,
+                      'Événements serveur, modifications avant/après et journal des connexions',
+                      'Server events, before/after diffs and login history',
+                      'Servergebeurtenissen, voor/na-verschillen en aanmeldingsgeschiedenis'
+                    )}
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 relative z-20" />
+            </button>
+          )}
+
           {canDiagnostic && (
             <button
               type="button"
@@ -1647,6 +1772,17 @@ export const PlusMenuView: React.FC = () => {
         </div>
       </div>
       </>
+      )}
+
+      {auditLogModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col">
+          <div className="flex-1 overflow-hidden bg-slate-50 dark:bg-slate-950">
+            <DesktopAuditLogPage
+              isModal={true}
+              onClose={() => setAuditLogModalOpen(false)}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

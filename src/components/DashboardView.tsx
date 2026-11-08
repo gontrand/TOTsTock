@@ -3,6 +3,7 @@ import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { formatCurrency, formatDate } from '../utils/crypto';
 import { RecentActivityFeed } from './RecentActivityFeed';
+import { SearchableSelect } from './SearchableSelect';
 import {
   fetchDashboardKpisFromSupabase,
   DashboardKpisResult,
@@ -284,9 +285,9 @@ export const DashboardView: React.FC = () => {
               <span className="truncate relative z-10">{tr(language, 'Choisir le département :', 'Choose department:')}</span>
             </span>
             <div className="flex items-center gap-1.5 shrink-0 relative z-20">
-              <select
+              <SearchableSelect
                 value={selectedOtherDept}
-                onChange={(e) => setSelectedOtherDept(e.target.value)}
+                onChange={(val) => setSelectedOtherDept(val)}
                 className="text-xs font-bold py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 outline-none cursor-pointer"
               >
                 {departments.map((d) => (
@@ -294,7 +295,7 @@ export const DashboardView: React.FC = () => {
                     {d.name}
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
               <button
                 type="button"
                 onClick={() => setDepartmentsProjectsModal({ open: true, tab: 'deps' })}
@@ -325,9 +326,10 @@ export const DashboardView: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 relative z-20">
-              <select
+              <SearchableSelect
                 value={selectedDepot}
-                onChange={(e) => setSelectedDepot(e.target.value)}
+                onChange={(val) => setSelectedDepot(val)}
+                recentKey="depots"
                 className="w-full sm:w-auto text-xs font-bold py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 outline-none cursor-pointer"
               >
                 <option value="ALL">
@@ -338,7 +340,7 @@ export const DashboardView: React.FC = () => {
                     📍 {dep.name} ({dep.count} réf.)
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
               {selectedDepot !== 'ALL' && (
                 <button
                   type="button"
@@ -393,9 +395,9 @@ export const DashboardView: React.FC = () => {
             </div>
 
             <div className="flex flex-col items-end gap-1.5 shrink-0 relative z-20">
-              <select
+              <SearchableSelect
                 value={kpiPeriod}
-                onChange={(e) => setKpiPeriod(e.target.value as typeof kpiPeriod)}
+                onChange={(val) => setKpiPeriod(val as typeof kpiPeriod)}
                 className="text-[11px] font-semibold py-1 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 outline-none"
               >
                 <option value="1d">{t('dash_vs_1_day')}</option>
@@ -404,7 +406,7 @@ export const DashboardView: React.FC = () => {
                 <option value="6m">{t('dash_vs_6_months')}</option>
                 <option value="1y">{t('dash_vs_1_year')}</option>
                 <option value="2y">{t('dash_vs_2_years')}</option>
-              </select>
+              </SearchableSelect>
 
               <div
                 className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold shrink-0 relative z-20 ${
@@ -545,16 +547,16 @@ export const DashboardView: React.FC = () => {
               <ArrowDownCircle className="w-3.5 h-3.5 shrink-0 relative z-20" />
               <span className="truncate relative z-10">{t('dash_recent_out')}</span>
             </span>
-            <select
+            <SearchableSelect
               value={outPeriod}
-              onChange={(e) => setOutPeriod(e.target.value as typeof outPeriod)}
+              onChange={(val) => setOutPeriod(val as typeof outPeriod)}
               className="text-[10px] font-semibold py-0.5 px-1.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 outline-none shrink-0 relative z-20"
             >
               <option value="1d">{t('dash_today')}</option>
               <option value="1w">{t('dash_7_days')}</option>
               <option value="1m">{t('dash_30_days')}</option>
               <option value="1y">{t('dash_year')}</option>
-            </select>
+            </SearchableSelect>
           </div>
           <div className="text-center py-1">
             <div className="text-xl font-black text-red-600 dark:text-red-400">
@@ -576,16 +578,16 @@ export const DashboardView: React.FC = () => {
               <ArrowUpCircle className="w-3.5 h-3.5 shrink-0 relative z-20" />
               <span className="truncate relative z-10">{t('dash_recent_in')}</span>
             </span>
-            <select
+            <SearchableSelect
               value={inPeriod}
-              onChange={(e) => setInPeriod(e.target.value as typeof inPeriod)}
+              onChange={(val) => setInPeriod(val as typeof inPeriod)}
               className="text-[10px] font-semibold py-0.5 px-1.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 outline-none shrink-0 relative z-20"
             >
               <option value="1d">{t('dash_today')}</option>
               <option value="1w">{t('dash_7_days')}</option>
               <option value="1m">{t('dash_30_days')}</option>
               <option value="1y">{t('dash_year')}</option>
-            </select>
+            </SearchableSelect>
           </div>
           <div className="text-center py-1">
             <div className="text-xl font-black text-emerald-600 dark:text-emerald-400">
@@ -608,15 +610,15 @@ export const DashboardView: React.FC = () => {
             <Flame className="w-4 h-4 text-orange-500 shrink-0 relative z-20" />
             <span className="truncate relative z-10">{t('dash_stock_rotation')}</span>
           </h3>
-          <select
+          <SearchableSelect
             value={rotationPeriod}
-            onChange={(e) => setRotationPeriod(e.target.value as typeof rotationPeriod)}
+            onChange={(val) => setRotationPeriod(val as typeof rotationPeriod)}
             className="text-[10px] font-semibold py-0.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 outline-none shrink-0 relative z-20"
           >
             <option value="1w">{t('dash_7_days')}</option>
             <option value="1m">{t('dash_30_days')}</option>
             <option value="1y">{t('dash_this_year')}</option>
-          </select>
+          </SearchableSelect>
         </div>
 
         <div className="grid grid-cols-2 gap-3 text-xs">
@@ -681,16 +683,16 @@ export const DashboardView: React.FC = () => {
             <BarChart3 className="w-4 h-4 text-orange-500 shrink-0 relative z-20" />
             <span className="truncate relative z-10">{t('dash_in_out_comparison')}</span>
           </h3>
-          <select
+          <SearchableSelect
             value={chartPeriod}
-            onChange={(e) => setChartPeriod(e.target.value as typeof chartPeriod)}
+            onChange={(val) => setChartPeriod(val as typeof chartPeriod)}
             className="text-[10px] font-semibold py-0.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 outline-none shrink-0 relative z-20"
           >
             <option value="1d">{t('dash_today')}</option>
             <option value="1w">{t('dash_7_days')}</option>
             <option value="1m">{t('dash_30_days')}</option>
             <option value="1y">{t('dash_year')}</option>
-          </select>
+          </SearchableSelect>
         </div>
 
         <div className="grid grid-cols-2 gap-4 pt-2 border-b border-dashed border-slate-200 dark:border-slate-800 pb-3">

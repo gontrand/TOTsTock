@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { tr } from '../../i18n/dutchTranslator';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   CSV_IMPORT_MAX_BYTES,
   CsvColumnMapping,
@@ -436,10 +437,10 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                           'Dubbele referenties:'
                         )}
                       </span>
-                      <select
+                      <SearchableSelect
                         value={duplicateStrategy}
-                        onChange={(e) =>
-                          setDuplicateStrategy(e.target.value as 'update' | 'skip')
+                        onChange={(val) =>
+                          setDuplicateStrategy(val as 'update' | 'skip')
                         }
                         className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-bold"
                       >
@@ -459,7 +460,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                             'Reeds aanwezige referenties negeren'
                           )}
                         </option>
-                      </select>
+                      </SearchableSelect>
                     </div>
                   </div>
 
@@ -470,12 +471,12 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                           {tr(language, tf.labelFr, tf.labelEn, tf.labelNl)}{' '}
                           {tf.required && <span className="text-rose-500">*</span>}
                         </label>
-                        <select
+                        <SearchableSelect
                           value={mapping[tf.field] || ''}
-                          onChange={(e) =>
+                          onChange={(val) =>
                             setMapping((prev) => ({
                               ...prev,
-                              [tf.field]: e.target.value || undefined,
+                              [tf.field]: val || undefined,
                             }))
                           }
                           className="w-48 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
@@ -488,7 +489,7 @@ export const DesktopCsvImportModal: React.FC<DesktopCsvImportModalProps> = ({
                               {h}
                             </option>
                           ))}
-                        </select>
+                        </SearchableSelect>
                       </div>
                     ))}
                   </div>

@@ -37,6 +37,7 @@ import {
 import { generateQrCodeDataUrlWithTotLogo } from '../../utils/qrCodeHelper';
 import { dispatchStationPrintDocument } from '../../services/printStationService';
 import { tr } from '../../i18n/dutchTranslator';
+import { SearchableSelect } from '../../components/SearchableSelect';
 
 export interface DesktopPreparationPageProps {
   selectedDepotFilter?: string;
@@ -944,9 +945,9 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
               {tr(language, 'Déclarer manquant :', 'Declare missing:', 'Markeer als ontbrekend:')}{' '}
               {missingModalItem.product_ref}
             </h3>
-            <select
+            <SearchableSelect
               value={missingReason}
-              onChange={(e) => setMissingReason(e.target.value)}
+              onChange={(val) => setMissingReason(val)}
               className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-semibold"
             >
               <option value="Rupture de stock en rayon">
@@ -958,7 +959,7 @@ export const DesktopPreparationPage: React.FC<DesktopPreparationPageProps> = ({
               <option value="Article endommagé / non conforme">
                 {tr(language, 'Article endommagé / non conforme', 'Damaged / non-compliant item', 'Artikel beschadigd / niet-conform')}
               </option>
-            </select>
+            </SearchableSelect>
             <div className="flex justify-end gap-2">
               <button
                 type="button"

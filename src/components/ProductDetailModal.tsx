@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import {
   formatCurrency,
   formatDate,
@@ -42,6 +43,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { getProductDepotBreakdown } from '../services/desktopInventoryLogic';
+import { computeProductInTransitQty } from '../services/transferService';
 import {
   buildAvailableDepotsSignature,
   buildProductEditableSignature,
@@ -76,6 +78,7 @@ export const ProductDetailModal: React.FC = () => {
     addProductToDepot,
     canTransferBetweenDepots,
     openStockTransferModal,
+    transfers,
   } = useApp();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -547,7 +550,7 @@ export const ProductDetailModal: React.FC = () => {
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 {t('product_stock_state')}
               </div>
-              <div className="flex items-center gap-2 mt-0.5">
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                 <span
                   className={`text-2xl font-black ${
                     isOut ? 'text-rose-600' : isLow ? 'text-amber-500' : 'text-emerald-600'
@@ -558,6 +561,15 @@ export const ProductDetailModal: React.FC = () => {
                 <span className="text-xs text-slate-400">
                   {t('product_units')} ({t('product_alert_threshold')}: {min})
                 </span>
+                {computeProductInTransitQty(product.id, transfers) > 0 && (
+                  <span
+                    data-testid="product-in-transit-badge"
+                    className="px-2 py-0.5 rounded-full text-[11px] font-black bg-sky-100 text-sky-800 dark:bg-sky-950/80 dark:text-sky-200 border border-sky-300 dark:border-sky-700"
+                  >
+                    {tr(language, 'En transit :', 'In transit:', 'Onderweg:')}{' '}
+                    {computeProductInTransitQty(product.id, transfers)}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -801,20 +813,21 @@ export const ProductDetailModal: React.FC = () => {
                     <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">
                       {tr(language, 'Dépôt cible', 'Target depot', 'Doeldepot')}
                     </label>
-                    <select
+                    <SearchableSelect
                       value={targetDepotName}
-                      onChange={(e) => {
+                      onChange={(val) => {
                         userSelectedTargetDepotRef.current = true;
-                        setTargetDepotName(e.target.value);
+                        setTargetDepotName(val);
                       }}
+                      recentKey="depots"
                       className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
                     >
                       {availableDepotsForAdd.map((d) => (
-                        <option key={d.id} value={d.name}>
+                        <option key={String(d.id)} value={d.name}>
                           {d.name}
                         </option>
                       ))}
-                    </select>
+                    </SearchableSelect>
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">

@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "5.9.1",
+  "version": "5.13.0",
   "type": "module",
   "scripts": {
     "predev": "npm run build:sql",
@@ -41,6 +41,8 @@
     "express": "^4.21.2",
     "idb": "^8.0.3",
     "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "jsqr": "^1.4.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

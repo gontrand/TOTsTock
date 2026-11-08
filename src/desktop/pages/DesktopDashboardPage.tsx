@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { useDashboardMetrics, describeDonutSlice } from '../../hooks/useDashboardMetrics';
 import { formatCurrency } from '../../utils/crypto';
 import { RecentActivityFeed } from '../../components/RecentActivityFeed';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import { DesktopPageId } from '../types';
 import {
   Package,
@@ -179,9 +180,9 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
           )}
 
           {kpiScope === 'OTHER_DEPARTMENT' && isLogistiqueOrDirection && (
-            <select
+            <SearchableSelect
               value={selectedOtherDept}
-              onChange={(e) => setSelectedOtherDept(e.target.value)}
+              onChange={(val) => setSelectedOtherDept(val)}
               className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
             >
               {departments.map((d) => (
@@ -189,13 +190,14 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
                   {d.name}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           )}
 
           {canFilterDepots && kpiScope === 'COMPANY' && (
-            <select
+            <SearchableSelect
               value={selectedDepot}
-              onChange={(e) => setSelectedDepot(e.target.value)}
+              onChange={(val) => setSelectedDepot(val)}
+              recentKey="depots"
               aria-label={tr(language, 'Filtrer par dépôt', 'Filter by depot', 'Filter op depot')}
               className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
             >
@@ -207,7 +209,7 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
                   {d.name} ({d.count})
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
           )}
         </div>
       </div>

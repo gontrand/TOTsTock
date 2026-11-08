@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
+import { SearchableSelect } from './SearchableSelect';
 import { Product } from '../types';
 import { formatCurrency } from '../utils/crypto';
 import { generateBarcode1DDataUrl, generateQrCodeDataUrlWithTotLogo } from '../utils/qrCodeHelper';
@@ -18,6 +19,7 @@ import {
   setDesktopPrintSettings,
 } from '../services/desktopBridge';
 import { dispatchStationPrintDocument } from '../services/printStationService';
+import { logAuditEventServer } from '../services/auditService';
 import {
   X,
   Printer,
@@ -350,14 +352,25 @@ export const PrintLabelsModal: React.FC = () => {
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
 
-    // Direct download file
+    const filename = `Planche_Etiquettes_${labelFormat}_${new Date().toISOString().slice(0, 10)}.html`;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Planche_Etiquettes_${labelFormat}_${new Date().toISOString().slice(0, 10)}.html`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    logAuditEventServer({
+      category: 'EXPORTS',
+      type: 'pdf_export',
+      title: `Impression / Export planche d'étiquettes (${labelFormat})`,
+      description: `${itemsToPrint.length} étiquettes sélectionnées`,
+      meta: {
+        rows: itemsToPrint.length,
+        format: labelFormat,
+        filename,
+      },
+    }).catch(() => {});
 
     setPrintNotice(
       tr(
@@ -591,10 +604,9 @@ export const PrintLabelsModal: React.FC = () => {
                     )}
                   </span>
                 </label>
-                <select
+                <SearchableSelect
                   value={selectedPrinter}
-                  onChange={async (e) => {
-                    const nextPrinter = e.target.value;
+                  onChange={async (nextPrinter) => {
                     setSelectedPrinter(nextPrinter);
                     await setDesktopPrintSettings({
                       printerName: nextPrinter,
@@ -620,7 +632,7 @@ export const PrintLabelsModal: React.FC = () => {
                       </option>
                     ))
                   )}
-                </select>
+                </SearchableSelect>
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -742,9 +754,10 @@ export const PrintLabelsModal: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-2 gap-1.5 text-xs">
-                  <select
+                  <SearchableSelect
                     value={filterDepot}
-                    onChange={(e) => setFilterDepot(e.target.value)}
+                    onChange={(val) => setFilterDepot(val)}
+                    recentKey="depots"
                     className="p-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] outline-none"
                   >
                     <option value="ALL">{t('print_filter_depot')}</option>
@@ -753,11 +766,11 @@ export const PrintLabelsModal: React.FC = () => {
                         {d.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
 
-                  <select
+                  <SearchableSelect
                     value={filterCategory}
-                    onChange={(e) => setFilterCategory(e.target.value)}
+                    onChange={(val) => setFilterCategory(val)}
                     className="p-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] outline-none"
                   >
                     <option value="ALL">{t('print_filter_cat')}</option>
@@ -766,7 +779,7 @@ export const PrintLabelsModal: React.FC = () => {
                         {c.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
               </div>
 

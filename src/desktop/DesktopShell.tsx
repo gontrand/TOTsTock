@@ -26,6 +26,10 @@ import {
 } from './types';
 import { DesktopDashboardPage } from './pages/DesktopDashboardPage';
 import { DesktopInventoryPage } from './pages/DesktopInventoryPage';
+import { SearchableSelect } from '../components/SearchableSelect';
+import { DesktopReportsPage } from './pages/DesktopReportsPage';
+import { DesktopAuditLogPage } from './pages/DesktopAuditLogPage';
+import { DesktopTransfersPage } from './pages/DesktopTransfersPage';
 import { DesktopCommandPalette } from './components/DesktopCommandPalette';
 import { DesktopShortcutsModal } from './components/DesktopShortcutsModal';
 import { requestGuardedNavigation } from '../services/unsavedChangesGuard';
@@ -60,6 +64,7 @@ import {
   Trash2,
   Keyboard,
   ShieldCheck,
+  ShieldAlert,
   FileSpreadsheet,
   Users,
   Warehouse,
@@ -75,6 +80,7 @@ import {
 
 interface DesktopShellProps {
   renderAuditPage?: (props: { globalDepotFilter: string }) => React.ReactNode;
+  renderAuditLogPage?: () => React.ReactNode;
   renderMovementsPage?: (props: { globalDepotFilter: string }) => React.ReactNode;
   renderOrdersPage?: (props: {
     selectedOrderId: string | null;
@@ -88,6 +94,7 @@ interface DesktopShellProps {
     f8Trigger: number;
   }) => React.ReactNode;
   renderPrintStationPage?: () => React.ReactNode;
+  renderReportsPage?: (props: { globalDepotFilter: string }) => React.ReactNode;
   renderSettingsPage?: (props: {
     section: DesktopSettingsSection;
     onChangeSection: (s: DesktopSettingsSection) => void;
@@ -102,10 +109,12 @@ export const DESKTOP_SHELL_RECOGNIZED_COMMANDS: readonly DesktopMenuCommandId[] 
 
 export const DesktopShell: React.FC<DesktopShellProps> = ({
   renderAuditPage,
+  renderAuditLogPage,
   renderMovementsPage,
   renderOrdersPage,
   renderPreparationPage,
   renderPrintStationPage,
+  renderReportsPage,
   renderSettingsPage,
   onOpenCsvImportModal,
   onOpenQuickMovementDrawer,
@@ -138,6 +147,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     rejectedSyncOps,
     retryRejectedMovement,
     discardRejectedMovement,
+    transferBadgeCount,
   } = useApp();
 
   // Persisted sidebar collapse state
@@ -180,9 +190,12 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           'dashboard',
           'inventory',
           'audit',
+          'audit_log',
           'movements',
+          'transfers',
           'orders',
           'preparation',
+          'reports',
           'print_station',
           'settings',
         ].includes(saved)
@@ -465,6 +478,14 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     userHasPermission('perm_doc_android') ||
     userHasPermission('perm_doc_marketing') ||
     userHasPermission('perm_doc_supabase');
+  const canReports =
+    userHasPermission('perm_report_view') ||
+    Number(currentUser?.role_id) === 0 ||
+    Number(currentUser?.role_id) === 1;
+  const canAuditLog =
+    userHasPermission('perm_audit_view') ||
+    Number(currentUser?.role_id) === 0 ||
+    Number(currentUser?.role_id) === 1;
 
   const pendingPrepCount = orders.filter(
     (o) => o.status === 'PENDING' || o.status === 'PREPARING'
@@ -624,6 +645,33 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
 
               <button
                 type="button"
+                data-testid="desktop-nav-transfers"
+                onClick={() => handleNavigatePage('transfers')}
+                title={tr(language, 'Transferts', 'Transfers', 'Overdrachten')}
+                className={`w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer ${
+                  activePage === 'transfers'
+                    ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <ArrowLeftRight className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
+                {!sidebarCollapsed && (
+                  <span className="truncate flex-1 text-left">
+                    {tr(language, 'Transferts', 'Transfers', 'Overdrachten')}
+                  </span>
+                )}
+                {transferBadgeCount > 0 && (
+                  <span
+                    data-testid="desktop-transfers-badge"
+                    className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-rose-600 text-white"
+                  >
+                    {transferBadgeCount}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => handleNavigatePage('orders')}
                 title={t('desktop_nav_orders')}
                 className={`w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer ${
@@ -661,6 +709,27 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                   {!sidebarCollapsed && pendingPrepCount > 0 && (
                     <span className="font-mono tabular-nums text-[11px] font-bold text-orange-600 dark:text-orange-400">
                       {pendingPrepCount}
+                    </span>
+                  )}
+                </button>
+              )}
+
+              {canReports && (
+                <button
+                  type="button"
+                  data-testid="desktop-nav-reports"
+                  onClick={() => handleNavigatePage('reports')}
+                  title={tr(language, 'Rapports', 'Reports', 'Rapporten')}
+                  className={`w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer ${
+                    activePage === 'reports'
+                      ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                  {!sidebarCollapsed && (
+                    <span className="truncate flex-1 text-left">
+                      {tr(language, 'Rapports', 'Reports', 'Rapporten')}
                     </span>
                   )}
                 </button>
@@ -733,6 +802,27 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                   <span className="truncate">{t('desktop_nav_settings')}</span>
                 )}
               </button>
+
+              {canAuditLog && (
+                <button
+                  type="button"
+                  data-testid="desktop-nav-audit-log"
+                  onClick={() => handleNavigatePage('audit_log')}
+                  title={tr(language, "Journal d'audit", 'Audit Log', 'Auditlogboek')}
+                  className={`w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer ${
+                    activePage === 'audit_log'
+                      ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  {!sidebarCollapsed && (
+                    <span className="truncate flex-1 text-left">
+                      {tr(language, "Journal d'audit", 'Audit Log', 'Auditlogboek')}
+                    </span>
+                  )}
+                </button>
+              )}
 
               {canUsers && !sidebarCollapsed && (
                 <button
@@ -914,10 +1004,9 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               </kbd>
             </button>
 
-            <select
+            <SearchableSelect
               value={globalDepot}
-              onChange={(e) => {
-                const val = e.target.value;
+              onChange={(val) => {
                 setGlobalDepot(val);
                 try {
                   localStorage.setItem(DESKTOP_GLOBAL_DEPOT_KEY, val);
@@ -925,6 +1014,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                   // Ignore
                 }
               }}
+              recentKey="depots"
               aria-label={tr(language, 'Sélecteur de dépôt global', 'Global depot selector', 'Globaal depotselectie')}
               className={`px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
                 globalDepot !== 'ALL' &&
@@ -948,7 +1038,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                     : ''}
                 </option>
               ))}
-            </select>
+            </SearchableSelect>
             {globalDepot !== 'ALL' &&
               depots.some(
                 (d) =>
@@ -1437,10 +1527,15 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           {activePage === 'audit' &&
             (renderAuditPage ? renderAuditPage({ globalDepotFilter: globalDepot }) : null)}
 
+          {activePage === 'audit_log' &&
+            (renderAuditLogPage ? renderAuditLogPage() : <DesktopAuditLogPage />)}
+
           {activePage === 'movements' &&
             (renderMovementsPage ? (
               renderMovementsPage({ globalDepotFilter: globalDepot })
             ) : null)}
+
+          {activePage === 'transfers' && <DesktopTransfersPage />}
 
           {activePage === 'orders' &&
             (renderOrdersPage ? (
@@ -1463,6 +1558,13 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
 
           {activePage === 'print_station' &&
             (renderPrintStationPage ? renderPrintStationPage() : null)}
+
+          {activePage === 'reports' &&
+            (renderReportsPage ? (
+              renderReportsPage({ globalDepotFilter: globalDepot })
+            ) : (
+              <DesktopReportsPage selectedDepotFilter={globalDepot} />
+            ))}
 
           {activePage === 'settings' &&
             (renderSettingsPage ? (

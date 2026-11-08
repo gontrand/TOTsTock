@@ -135,8 +135,8 @@ describe('Prompt v48 — LOT 1 : Préférences utilisateur en base (core_user_pr
 
   it('1.1 déclare userPreferences dans TABLES, le script 12 dans SQL_STEPS (après 11 et avant 07), et met à jour les versions', () => {
     expect(TABLES.userPreferences).toBe('core_user_preferences');
-    expect(APP_VERSION).toBe('5.9.1');
-    expect(EXPECTED_SCHEMA_VERSION).toBe('2.4.1');
+    expect(APP_VERSION).toBe('5.13.0');
+    expect(EXPECTED_SCHEMA_VERSION).toBe('2.7.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
@@ -206,6 +206,7 @@ describe('Prompt v48 — LOT 1 : Préférences utilisateur en base (core_user_pr
         '12_user_preferences.sql',
         '13_transfer_stock_batch.sql',
         '14_mailing.sql',
+        '15_search_orders_movements.sql',
         '07_app_compat.sql',
       ];
       for (const s of scripts) {

@@ -2,10 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import DOMPurify from 'dompurify';
 import { useApp } from '../context/AppContext';
-import { formatDate } from '../utils/crypto';
 import { getClientSupabase } from '../services/clientSupabase';
 import { getResolvedEdgeFunctionName } from '../constants/edgeFunctions';
 import { extractEdgeFunctionError } from '../services/mailingService';
+import {
+  buildDepartmentProjectsReport,
+  buildLowStockReport,
+  buildOutOfStockReport,
+  buildWeeklyUserRecapReport,
+} from '../services/reportsService';
+import {
+  canViewStockLevelsReport,
+  mapStockLevelsReportRowsToProducts,
+} from '../services/transferService';
+import { StockLevelsReportRow } from '../types';
 import {
   X,
   Mail,
@@ -32,9 +42,17 @@ export const EmailReportsModal: React.FC = () => {
     projects,
     users,
     roles,
+    supabaseUrl,
+    supabaseKey,
+    userHasPermission,
     language,
     t,
   } = useApp();
+
+  const canViewStockLevels = canViewStockLevelsReport(
+    currentUser,
+    userHasPermission('perm_report_stock_levels')
+  );
 
   const [previewData, setPreviewData] = useState<{
     title: string;
@@ -63,214 +81,108 @@ export const EmailReportsModal: React.FC = () => {
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  // 1. Weekly User Recap
+  const loadStockLevelProductsFromRpcOrLocal = async () => {
+    const url = (supabaseUrl || localStorage.getItem('tot_inv_supabase_url') || '').trim();
+    const key = (supabaseKey || localStorage.getItem('tot_inv_supabase_key') || '').trim();
+    const client = getClientSupabase(url, key);
+    if (client && typeof (client as any).rpc === 'function') {
+      try {
+        const { data, error } = await (client as any).rpc('get_stock_levels_report', {
+          p_depot: null,
+          p_only_low: true,
+        });
+        if (!error && Array.isArray(data)) {
+          const rows: StockLevelsReportRow[] = data.map((r: Record<string, unknown>) => ({
+            product_id: String(r.product_id ?? ''),
+            reference: String(r.reference ?? ''),
+            brand: String(r.brand ?? ''),
+            model: String(r.model ?? ''),
+            sub_category_id:
+              r.sub_category_id !== null && r.sub_category_id !== undefined
+                ? Number(r.sub_category_id)
+                : null,
+            depot_name: String(r.depot_name ?? 'Dépôt Principal'),
+            rack_location: String(r.rack_location ?? ''),
+            quantity: Number(r.quantity ?? 0),
+            min_stock_alert: Number(r.min_stock_alert ?? 0),
+            unit_price: Number(r.unit_price ?? 0),
+            total_value: Number(r.total_value ?? 0),
+            in_transit_qty: Number(r.in_transit_qty ?? 0),
+            is_low_stock: Boolean(r.is_low_stock),
+            is_out_of_stock: Boolean(r.is_out_of_stock),
+          }));
+          return mapStockLevelsReportRowsToProducts(rows, products);
+        }
+      } catch {
+        // Fallback to local products
+      }
+    }
+    return products;
+  };
+
+  // 1. Weekly User Recap (shared generator from reportsService)
   const generateWeeklyRecap = () => {
     if (!currentUser || !currentUser.email) {
       alert(
-        tr(language, "⚠️ L'utilisateur connecté n'a pas d'adresse e-mail configurée.", '⚠️ The logged-in user does not have an email address configured.')
+        tr(
+          language,
+          "⚠️ L'utilisateur connecté n'a pas d'adresse e-mail configurée.",
+          '⚠️ The logged-in user does not have an email address configured.'
+        )
       );
       return;
     }
 
-    const now = new Date();
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(now.getDate() - 7);
-
-    const userOuts = movements.filter((m) => {
-      if (String(m.user_id) !== String(currentUser.id)) return false;
-      if (m.movement_type !== 'OUT') return false;
-      if (!m.created_at) return false;
-      return new Date(m.created_at) >= sevenDaysAgo;
-    });
-
-    const rows = userOuts.map((m) => {
-      const d = formatDate(m.created_at);
-      return `
-        <tr>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${d}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1; font-weight:bold;">${m.product_ref || ''}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1; color:#ef4444; font-weight:bold;">-${m.quantity_changed}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${m.site_number || 'N/A'}</td>
-        </tr>
-      `;
-    });
-
-    const html = `
-      <div style="font-family:Arial, sans-serif; color:#0f172a; max-width:600px; margin:0 auto; border:1px solid #cbd5e1; border-radius:12px; padding:20px;">
-        <h2 style="color:#ea580c; margin-top:0;">📊 ${tr(language, 'Récapitulatif Hebdomadaire des Sorties', 'Weekly Outflow Summary')}</h2>
-        <p>${tr(language, 'Bonjour', 'Hello')} <strong>${currentUser.name}</strong>,</p>
-        <p>${tr(language, 'Voici le bilan de vos sorties de stock effectuées au cours des 7 derniers jours :', 'Here is the summary of your stock outflows over the last 7 days:')}</p>
-        <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:13px;">
-          <thead>
-            <tr style="background:#f8fafc; text-align:left;">
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Date', 'Date')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Référence', 'Reference')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Quantité', 'Quantity')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Chantier', 'Site / Project')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.join('') || `<tr><td colspan="4" style="padding:10px; text-align:center;">${tr(language, 'Aucune sortie au cours des 7 derniers jours.', 'No outflows in the last 7 days.')}</td></tr>`}
-          </tbody>
-        </table>
-        <p style="font-size:11px; color:#64748b; margin-top:20px;">${tr(language, 'Généré automatiquement par TOT - Inventory & Scan Pro.', 'Generated automatically by TOT - Inventory & Scan Pro.')}</p>
-      </div>
-    `;
-
+    const report = buildWeeklyUserRecapReport(currentUser, movements, products, language);
     setPreviewData({
-      title: tr(language, 'Mon Récap Hebdomadaire Sorties', 'My Weekly Outflow Summary'),
-      recipient: currentUser.email,
-      subject: tr(language, '[TOT] Votre récapitulatif hebdomadaire des sorties de stock', '[TOT] Your weekly inventory outflow summary'),
-      htmlContent: html,
+      title: report.title,
+      recipient: report.defaultRecipient,
+      subject: report.subject,
+      htmlContent: report.htmlContent,
     });
   };
 
-  // 2. Daily Low Stock Recap
-  const generateLowStockRecap = () => {
-    const managers = users.filter((u) => {
-      const r = roles.find((role) => Number(role.id) === Number(u.role_id));
-      return (r?.name.includes('Responsable') || r?.name.includes('Admin')) && u.email;
-    });
-
-    const targetEmail = managers.length > 0 ? managers[0].email! : currentUser?.email || 'admin@entreprise.com';
-    const lowStockItems = products.filter(
-      (p) => (p.quantity || 0) > 0 && (p.quantity || 0) <= (p.min_stock_alert || 2)
-    );
-
-    const rows = lowStockItems.map(
-      (p) => `
-        <tr>
-          <td style="padding:8px; border:1px solid #cbd5e1;"><strong>${p.brand} ${p.model}</strong> (${p.reference})</td>
-          <td style="padding:8px; border:1px solid #cbd5e1; color:#d97706; font-weight:bold;">${p.quantity}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${p.min_stock_alert}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${p.store_name} &gt; ${p.shelf_name}</td>
-        </tr>
-      `
-    );
-
-    const html = `
-      <div style="font-family:Arial, sans-serif; color:#0f172a; max-width:600px; margin:0 auto; border:1px solid #cbd5e1; border-radius:12px; padding:20px;">
-        <h2 style="color:#d97706; margin-top:0;">⚠️ ${tr(language, `Alerte Journalière : Stocks Faibles (${lowStockItems.length})`, `Daily Alert: Low Stock (${lowStockItems.length})`)}</h2>
-        <p>${tr(language, 'Bonjour,', 'Hello,')}</p>
-        <p>${tr(language, "Les références suivantes ont franchi leur seuil d'alerte critique :", 'The following items have reached or breached their critical low threshold:')}</p>
-        <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:13px;">
-          <thead>
-            <tr style="background:#f8fafc; text-align:left;">
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Produit', 'Product')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Stock Actuel', 'Current Stock')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Seuil Min', 'Min Threshold')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Emplacement', 'Location')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.join('') || `<tr><td colspan="4" style="padding:10px; text-align:center;">${tr(language, 'Aucun produit en stock faible.', 'No low stock items.')}</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    `;
-
+  // 2. Daily Low Stock Recap (shared generator from reportsService)
+  const generateLowStockRecap = async () => {
+    if (!canViewStockLevels) return;
+    const stockProducts = await loadStockLevelProductsFromRpcOrLocal();
+    const report = buildLowStockReport(stockProducts, users, roles, currentUser, language);
     setPreviewData({
-      title: tr(language, 'Alerte Journalière : Stocks Faibles', 'Daily Alert: Low Stock'),
-      recipient: targetEmail,
-      subject: tr(language, '[TOT Alerte] Produits en stock critique à réapprovisionner', '[TOT Alert] Critical low stock items to restock'),
-      htmlContent: html,
+      title: report.title,
+      recipient: report.defaultRecipient,
+      subject: report.subject,
+      htmlContent: report.htmlContent,
     });
   };
 
-  // 3. Daily Out of Stock Recap
-  const generateOutStockRecap = () => {
-    const targetEmail = currentUser?.email || 'responsable.stock@entreprise.com';
-    const outItems = products.filter((p) => (p.quantity || 0) === 0);
-
-    const rows = outItems.map(
-      (p) => `
-        <tr>
-          <td style="padding:8px; border:1px solid #cbd5e1;"><strong>${p.brand} ${p.model}</strong> (${p.reference})</td>
-          <td style="padding:8px; border:1px solid #cbd5e1; color:#ef4444; font-weight:bold;">0 (${tr(language, 'RUPTURE', 'OUT')})</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${p.supplier_1_name || 'N/A'}</td>
-        </tr>
-      `
-    );
-
-    const html = `
-      <div style="font-family:Arial, sans-serif; color:#0f172a; max-width:600px; margin:0 auto; border:1px solid #cbd5e1; border-radius:12px; padding:20px;">
-        <h2 style="color:#ef4444; margin-top:0;">🚨 ${tr(language, `Alerte Urgente : Ruptures Totales de Stock (${outItems.length})`, `Urgent Alert: Out of Stock (${outItems.length})`)}</h2>
-        <p>${tr(language, 'Les articles ci-dessous sont actuellement épuisés en rayon :', 'The following items are currently out of stock:')}</p>
-        <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:13px;">
-          <thead>
-            <tr style="background:#f8fafc; text-align:left;">
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Produit', 'Product')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Statut', 'Status')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Fournisseur habituel', 'Supplier')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.join('') || `<tr><td colspan="3" style="padding:10px; text-align:center;">${tr(language, 'Aucun produit en rupture.', 'No items out of stock.')}</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    `;
-
+  // 3. Daily Out of Stock Recap (shared generator from reportsService)
+  const generateOutStockRecap = async () => {
+    if (!canViewStockLevels) return;
+    const stockProducts = await loadStockLevelProductsFromRpcOrLocal();
+    const report = buildOutOfStockReport(stockProducts, currentUser, language);
     setPreviewData({
-      title: tr(language, 'Alerte Ruptures de Stock', 'Out of Stock Alert'),
-      recipient: targetEmail,
-      subject: tr(language, '[TOT URGENT] Alerte ruptures de stock immédiates', '[TOT URGENT] Immediate out-of-stock alert'),
-      htmlContent: html,
+      title: report.title,
+      recipient: report.defaultRecipient,
+      subject: report.subject,
+      htmlContent: report.htmlContent,
     });
   };
 
-  // 4. Department Project Recap
+  // 4. Department Project Recap (shared generator from reportsService)
   const generateDepProjectRecap = () => {
-    const userDep = currentUser?.department || 'Plomberie';
-    const depProjects = projects.filter((p) => {
-      const d = departments.find((dept) => dept.id === p.department_id);
-      return d?.name.toLowerCase() === userDep.toLowerCase();
-    });
-
-    const projectNumbers = depProjects.map((p) => p.project_number.toLowerCase());
-    const projMovements = movements.filter(
-      (m) => m.site_number && projectNumbers.includes(m.site_number.toLowerCase())
+    const report = buildDepartmentProjectsReport(
+      currentUser,
+      departments,
+      projects,
+      movements,
+      products,
+      language
     );
-
-    const rows = projMovements.slice(0, 10).map((m) => {
-      const isOut = m.movement_type === 'OUT';
-      return `
-        <tr>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${formatDate(m.created_at)}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1; font-weight:bold; color:${isOut ? '#ef4444' : '#10b981'};">${isOut ? (tr(language, 'SORTIE', 'OUT')) : (tr(language, 'ENTRÉE', 'IN'))}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${m.site_number}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${m.product_ref}</td>
-          <td style="padding:8px; border:1px solid #cbd5e1;">${m.quantity_changed}</td>
-        </tr>
-      `;
-    });
-
-    const html = `
-      <div style="font-family:Arial, sans-serif; color:#0f172a; max-width:600px; margin:0 auto; border:1px solid #cbd5e1; border-radius:12px; padding:20px;">
-        <h2 style="color:#0284c7; margin-top:0;">🏢 ${tr(language, `Bilan Projets & Chantiers - Département ${userDep}`, `Site Projects Summary - Department ${userDep}`)}</h2>
-        <p>${tr(language, 'Synthèse des flux récents sur les chantiers rattachés à votre département :', 'Recent movement summary for projects linked to your department:')}</p>
-        <table style="width:100%; border-collapse:collapse; margin-top:15px; font-size:13px;">
-          <thead>
-            <tr style="background:#f8fafc; text-align:left;">
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Date', 'Date')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Sens', 'Type')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Projet', 'Project')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Réf', 'Ref')}</th>
-              <th style="padding:8px; border:1px solid #cbd5e1;">${tr(language, 'Quantité', 'Quantity')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.join('') || `<tr><td colspan="5" style="padding:10px; text-align:center;">${tr(language, 'Aucun mouvement récent sur ce département.', 'No recent movements for this department.')}</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    `;
-
     setPreviewData({
-      title: tr(language, `Récapitulatif Projets - Département ${userDep}`, `Projects Summary - Department ${userDep}`),
-      recipient: currentUser?.email || 'responsable.departement@entreprise.com',
-      subject: tr(language, `[TOT] Flux projets récents - Département ${userDep}`, `[TOT] Recent project flows - Department ${userDep}`),
-      htmlContent: html,
+      title: report.title,
+      recipient: report.defaultRecipient,
+      subject: report.subject,
+      htmlContent: report.htmlContent,
     });
   };
 
@@ -278,15 +190,6 @@ export const EmailReportsModal: React.FC = () => {
 
   const handleSimulatedSend = async () => {
     if (!previewData) return;
-
-    let smtpConfig: any = null;
-    try {
-      const saved = localStorage.getItem('tot_inv_smtp_config');
-      if (saved) smtpConfig = JSON.parse(saved);
-    } catch {}
-
-    const senderEmail = (smtpConfig?.from_email || currentUser?.email || '').trim();
-    const senderName = (smtpConfig?.from_name || 'TOT Stock Pro - Alertes').trim();
 
     setIsSending(true);
     try {
@@ -305,7 +208,9 @@ export const EmailReportsModal: React.FC = () => {
             to: previewData.recipient,
             subject: previewData.subject,
             htmlContent: previewData.htmlContent,
-            user_permissions: ['perm_report_view'],
+            user_permissions: canViewStockLevels
+              ? ['perm_report_view', 'perm_report_stock_levels']
+              : ['perm_report_view'],
           },
         });
 
@@ -317,10 +222,16 @@ export const EmailReportsModal: React.FC = () => {
         } else if (data?.configured === false || data?.status === 'non configuré') {
           try {
             localStorage.setItem('tot_email_service_configured', 'false');
-            window.dispatchEvent(new CustomEvent('tot-email-service-status', { detail: { configured: false } }));
+            window.dispatchEvent(
+              new CustomEvent('tot-email-service-status', { detail: { configured: false } })
+            );
           } catch {}
           showToast(
-            tr(language, 'ℹ️ Envoi d\'e-mails non configuré (facultatif). La section Rapports e-mail est masquée tant qu\'aucun secret e-mail n\'est défini.', 'ℹ️ Email service not configured (optional). Email reports are hidden until configured.')
+            tr(
+              language,
+              "ℹ️ Envoi d'e-mails non configuré (facultatif). La section Rapports e-mail est masquée tant qu'aucun secret e-mail n'est défini.",
+              'ℹ️ Email service not configured (optional). Email reports are hidden until configured.'
+            )
           );
           setPreviewData(null);
           setEmailReportsModalOpen(false);
@@ -328,7 +239,9 @@ export const EmailReportsModal: React.FC = () => {
         } else if (data?.success) {
           try {
             localStorage.setItem('tot_email_service_configured', 'true');
-            window.dispatchEvent(new CustomEvent('tot-email-service-status', { detail: { configured: true } }));
+            window.dispatchEvent(
+              new CustomEvent('tot-email-service-status', { detail: { configured: true } })
+            );
           } catch {}
           success = true;
         } else {
@@ -336,7 +249,9 @@ export const EmailReportsModal: React.FC = () => {
         }
       } else {
         // Fallback HTTP call to function endpoint
-        const endpoint = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/${sendEmailFn}` : '/api/send-report-email';
+        const endpoint = supabaseUrl
+          ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/${sendEmailFn}`
+          : '/api/send-report-email';
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: {
@@ -348,7 +263,9 @@ export const EmailReportsModal: React.FC = () => {
             to: previewData.recipient,
             subject: previewData.subject,
             htmlContent: previewData.htmlContent,
-            user_permissions: ['perm_report_view'],
+            user_permissions: canViewStockLevels
+              ? ['perm_report_view', 'perm_report_stock_levels']
+              : ['perm_report_view'],
           }),
         });
 
@@ -356,10 +273,16 @@ export const EmailReportsModal: React.FC = () => {
         if (resData?.configured === false || resData?.status === 'non configuré') {
           try {
             localStorage.setItem('tot_email_service_configured', 'false');
-            window.dispatchEvent(new CustomEvent('tot-email-service-status', { detail: { configured: false } }));
+            window.dispatchEvent(
+              new CustomEvent('tot-email-service-status', { detail: { configured: false } })
+            );
           } catch {}
           showToast(
-            tr(language, 'ℹ️ Envoi d\'e-mails non configuré (facultatif).', 'ℹ️ Email service not configured (optional).')
+            tr(
+              language,
+              "ℹ️ Envoi d'e-mails non configuré (facultatif).",
+              'ℹ️ Email service not configured (optional).'
+            )
           );
           setPreviewData(null);
           setEmailReportsModalOpen(false);
@@ -373,13 +296,15 @@ export const EmailReportsModal: React.FC = () => {
 
       if (success) {
         showToast(
-          `🚀 ${
-            tr(language, 'Rapport expédié avec succès via l\'Edge Function sécurisée à', 'Report sent successfully via secure Edge Function to')
-          } ${previewData.recipient} !`
+          `🚀 ${tr(
+            language,
+            "Rapport expédié avec succès via l'Edge Function sécurisée à",
+            'Report sent successfully via secure Edge Function to'
+          )} ${previewData.recipient} !`
         );
         setPreviewData(null);
       } else {
-        showToast(`⚠️ ${errorMsg || 'Erreur lors de l\'envoi du rapport'}`);
+        showToast(`⚠️ ${errorMsg || "Erreur lors de l'envoi du rapport"}`);
       }
     } catch (e: any) {
       showToast(`⚠️ ${e.message || 'Erreur de communication serveur'}`);
@@ -409,7 +334,11 @@ export const EmailReportsModal: React.FC = () => {
                 {t('email_reports_title')}
               </h2>
               <p className="text-[11px] text-slate-400">
-                {tr(language, "Génération et expédition d'états de stock", 'Stock status generation and transmission')}
+                {tr(
+                  language,
+                  "Génération et expédition d'états de stock",
+                  'Stock status generation and transmission'
+                )}
               </p>
             </div>
           </div>
@@ -475,45 +404,59 @@ export const EmailReportsModal: React.FC = () => {
             </button>
           </div>
 
-          {/* Card 2 */}
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
-            <div>
-              <h4 className="font-extrabold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5" />
-                {t('email_stock_alerts_title')}
-              </h4>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                {t('email_stock_alerts_desc')}
-              </p>
-            </div>
-            <button
-              onClick={generateLowStockRecap}
-              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold flex items-center gap-1 shadow-sm shrink-0"
+          {/* Card 2 (Stock levels: LOW_STOCK) */}
+          {canViewStockLevels && (
+            <div
+              data-testid="email-report-card-low-stock"
+              className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3"
             >
-              <Eye className="w-3.5 h-3.5" />
-              <span>{tr(language, 'Générer', 'Generate')}</span>
-            </button>
-          </div>
+              <div>
+                <h4 className="font-extrabold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {t('email_stock_alerts_title')}
+                </h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {t('email_stock_alerts_desc')}
+                </p>
+              </div>
+              <button
+                onClick={generateLowStockRecap}
+                className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold flex items-center gap-1 shadow-sm shrink-0"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>{tr(language, 'Générer', 'Generate')}</span>
+              </button>
+            </div>
+          )}
 
-          {/* Card 3 */}
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
-            <div>
-              <h4 className="font-extrabold text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
-                <AlertOctagon className="w-3.5 h-3.5" />
-                {tr(language, 'Alertes Ruptures de Stock', 'Out of Stock Alerts')}
-              </h4>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                {tr(language, 'Alerte urgente pour articles avec stock = 0', 'Urgent alert for zero-stock catalog items')}
-              </p>
-            </div>
-            <button
-              onClick={generateOutStockRecap}
-              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold flex items-center gap-1 shadow-sm shrink-0"
+          {/* Card 3 (Stock levels: OUT_OF_STOCK) */}
+          {canViewStockLevels && (
+            <div
+              data-testid="email-report-card-out-of-stock"
+              className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3"
             >
-              <Eye className="w-3.5 h-3.5" />
-              <span>{tr(language, 'Générer', 'Generate')}</span>
-            </button>
-          </div>
+              <div>
+                <h4 className="font-extrabold text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                  <AlertOctagon className="w-3.5 h-3.5" />
+                  {tr(language, 'Alertes Ruptures de Stock', 'Out of Stock Alerts')}
+                </h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {tr(
+                    language,
+                    'Alerte urgente pour articles avec stock = 0',
+                    'Urgent alert for zero-stock catalog items'
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={generateOutStockRecap}
+                className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold flex items-center gap-1 shadow-sm shrink-0"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>{tr(language, 'Générer', 'Generate')}</span>
+              </button>
+            </div>
+          )}
 
           {/* Card 4 */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
@@ -523,7 +466,11 @@ export const EmailReportsModal: React.FC = () => {
                 {tr(language, 'Récap Projets & Chantiers', 'Site Projects Summary')}
               </h4>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                {tr(language, `Flux affectés au département ${currentUser?.department || 'Général'}`, `Outflows assigned to ${currentUser?.department || 'General'}`)}
+                {tr(
+                  language,
+                  `Flux affectés au département ${currentUser?.department || 'Général'}`,
+                  `Outflows assigned to ${currentUser?.department || 'General'}`
+                )}
               </p>
             </div>
             <button
@@ -547,7 +494,8 @@ export const EmailReportsModal: React.FC = () => {
                     {previewData.title}
                   </h3>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    {tr(language, 'Destinataire :', 'Recipient:')} <strong>{previewData.recipient}</strong>
+                    {tr(language, 'Destinataire :', 'Recipient:')}{' '}
+                    <strong>{previewData.recipient}</strong>
                   </div>
                 </div>
                 <button

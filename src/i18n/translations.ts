@@ -888,6 +888,20 @@ export const translations = {
       'Crée les tables core_mail_accounts (dont Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) et core_mail_log, les RPC sécurisées Vault (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) et migre automatiquement la configuration Brevo existante. À lancer après le script 13 et avant le script 07.',
     sql_script_14_copy_btn: 'Copier le script 14_mailing.sql',
     sql_script_14_copied_btn: 'Script 14 Copié !',
+    // v52 — Script 15 (schéma 2.5.0 : recherche serveur paginée commandes & mouvements)
+    sql_script_15_title: 'Script 15 — Recherche serveur Commandes & Mouvements (15_search_orders_movements.sql)',
+    sql_script_15_badge: 'Schéma 2.5.0 • Recherche Serveur & Rapports',
+    sql_script_15_desc:
+      'Crée les RPC paginées public.search_material_orders et public.search_stock_movements (avec total_count et row_data, respectant les droits utilisateur et les restrictions de dépôt). À lancer après le script 14 et avant le script 16.',
+    sql_script_15_copy_btn: 'Copier le script 15_search_orders_movements.sql',
+    sql_script_15_copied_btn: 'Script 15 Copié !',
+    // v53 — Script 16 (schéma 2.6.0 : journal d'audit serveur immuable & triggers automatiques)
+    sql_script_16_title: 'Script 16 — Journal d’audit serveur complet & immuable (16_audit_trail.sql)',
+    sql_script_16_badge: 'Schéma 2.6.0 • Audit Serveur Immuable',
+    sql_script_16_desc:
+      'Harmonise core_audit_logs et core_login_logs, bloque tout UPDATE/DELETE direct (immuabilité), installe les triggers automatiques avec masquage des secrets (***) sur 13 tables sensibles et crée les RPC log_audit_event, log_login_event, log_login_failure, search_audit_logs, search_login_logs et purge_audit_logs (>= 90 j, rôle 0). À lancer après le script 15 et avant le script 07.',
+    sql_script_16_copy_btn: 'Copier le script 16_audit_trail.sql',
+    sql_script_16_copied_btn: 'Script 16 Copié !',
     desktop_export_csv: 'Exporter en CSV',
     desktop_new_movement: 'Nouveau mouvement',
     desktop_new_order: 'Nouvelle commande',
@@ -1769,6 +1783,20 @@ export const translations = {
       'Creates tables core_mail_accounts (including Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) and core_mail_log, Vault-backed RPCs (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) and migrates legacy Brevo configuration automatically. Run after script 13 and before script 07.',
     sql_script_14_copy_btn: 'Copy 14_mailing.sql',
     sql_script_14_copied_btn: 'Script 14 Copied!',
+    // v52 — Script 15 (schema 2.5.0: paginated server search for orders & movements)
+    sql_script_15_title: 'Script 15 — Server Search for Orders & Movements (15_search_orders_movements.sql)',
+    sql_script_15_badge: 'Schema 2.5.0 • Server Search & Reports',
+    sql_script_15_desc:
+      'Creates paginated RPCs public.search_material_orders and public.search_stock_movements (returning total_count and row_data, enforcing user permissions and depot restrictions). Run after script 14 and before script 16.',
+    sql_script_15_copy_btn: 'Copy 15_search_orders_movements.sql',
+    sql_script_15_copied_btn: 'Script 15 Copied!',
+    // v53 — Script 16 (schema 2.6.0: immutable server audit trail & automatic triggers)
+    sql_script_16_title: 'Script 16 — Complete Immutable Server Audit Trail (16_audit_trail.sql)',
+    sql_script_16_badge: 'Schema 2.6.0 • Immutable Server Audit',
+    sql_script_16_desc:
+      'Harmonizes core_audit_logs and core_login_logs, blocks direct UPDATE/DELETE (append-only immutability), attaches automatic row-diff triggers with secret masking (***) on 13 sensitive tables, and creates RPCs log_audit_event, log_login_event, log_login_failure, search_audit_logs, search_login_logs, and purge_audit_logs (>= 90d, role 0). Run after script 15 and before script 07.',
+    sql_script_16_copy_btn: 'Copy 16_audit_trail.sql',
+    sql_script_16_copied_btn: 'Script 16 Copied!',
     desktop_export_csv: 'Export CSV',
     desktop_new_movement: 'New movement',
     desktop_new_order: 'New order',
@@ -2650,6 +2678,20 @@ export const translations = {
       'Maakt de tabellen core_mail_accounts (incl. Microsoft 365 Graph), core_mail_senders (stk, hab, rpt, tools) en core_mail_log aan, beveiligde Vault-RPC’s (set_mail_account_secret, mail_account_has_secret, get_mail_config, purge_mail_log) en migreert automatisch bestaande Brevo-instellingen. Uitvoeren na script 13 en vóór script 07.',
     sql_script_14_copy_btn: 'Script 14_mailing.sql kopiëren',
     sql_script_14_copied_btn: 'Script 14 Gekopieerd!',
+    // v52 — Script 15 (schema 2.5.0: gepagineerde serverzoekopdracht bestellingen & bewegingen)
+    sql_script_15_title: 'Script 15 — Serverzoekopdracht Bestellingen & Bewegingen (15_search_orders_movements.sql)',
+    sql_script_15_badge: 'Schema 2.5.0 • Serverzoekopdracht & Rapporten',
+    sql_script_15_desc:
+      'Maakt gepagineerde RPC’s public.search_material_orders en public.search_stock_movements aan (met total_count en row_data, met inachtneming van gebruikersrechten en depotbeperkingen). Uitvoeren na script 14 en vóór script 16.',
+    sql_script_15_copy_btn: 'Script 15_search_orders_movements.sql kopiëren',
+    sql_script_15_copied_btn: 'Script 15 Gekopieerd!',
+    // v53 — Script 16 (schema 2.6.0: onveranderlijk serverauditlogboek & automatische triggers)
+    sql_script_16_title: 'Script 16 — Volledig onveranderlijk serverauditlogboek (16_audit_trail.sql)',
+    sql_script_16_badge: 'Schema 2.6.0 • Onveranderlijke Serveraudit',
+    sql_script_16_desc:
+      'Harmoniseert core_audit_logs en core_login_logs, blokkeert directe UPDATE/DELETE (onveranderlijk), installeert automatische triggers met geheimmaskering (***) op 13 gevoelige tabellen en maakt de RPC’s log_audit_event, log_login_event, log_login_failure, search_audit_logs, search_login_logs en purge_audit_logs (>= 90d, rol 0). Uitvoeren na script 15 en vóór script 07.',
+    sql_script_16_copy_btn: 'Script 16_audit_trail.sql kopiëren',
+    sql_script_16_copied_btn: 'Script 16 Gekopieerd!',
     desktop_export_csv: 'CSV exporteren',
     desktop_new_movement: 'Nieuwe beweging',
     desktop_new_order: 'Nieuwe bestelling',

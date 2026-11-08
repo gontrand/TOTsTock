@@ -20,6 +20,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { tr } from '../../i18n/dutchTranslator';
 import { formatCurrency, playScanBeep } from '../../utils/crypto';
+import { SearchableSelect } from '../../components/SearchableSelect';
 import {
   getClientSupabase,
   fetchInventoryAuditsFromSupabase,
@@ -791,9 +792,9 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                 />
               </div>
 
-              <select
+              <SearchableSelect
                 value={matrixCategory}
-                onChange={(e) => setMatrixCategory(e.target.value)}
+                onChange={(val) => setMatrixCategory(val)}
                 className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
               >
                 <option value="ALL">
@@ -804,11 +805,11 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                     {sc.name}
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
 
-              <select
+              <SearchableSelect
                 value={matrixBrand}
-                onChange={(e) => setMatrixBrand(e.target.value)}
+                onChange={(val) => setMatrixBrand(val)}
                 className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
               >
                 <option value="ALL">
@@ -819,7 +820,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                     {b}
                   </option>
                 ))}
-              </select>
+              </SearchableSelect>
 
               <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold cursor-pointer">
                 <input
@@ -1057,9 +1058,10 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                   <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
                     {tr(language, 'Dépôt audité', 'Audited depot', 'Geaudit depot')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={selectedDepot}
-                    onChange={(e) => setSelectedDepot(e.target.value)}
+                    onChange={(val) => setSelectedDepot(val)}
+                    recentKey="depots"
                     className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold"
                   >
                     {allowedDepots.map((d) => (
@@ -1070,16 +1072,16 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                     <option value="ALL">
                       {tr(language, 'Tous les dépôts', 'All depots', 'Alle depots')}
                     </option>
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div>
                   <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
                     {tr(language, 'Catégorie', 'Category', 'Categorie')}
                   </label>
-                  <select
+                  <SearchableSelect
                     value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    onChange={(val) => setSelectedCategory(val)}
                     className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
                   >
                     <option value="ALL">
@@ -1090,7 +1092,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                         {sc.name}
                       </option>
                     ))}
-                  </select>
+                  </SearchableSelect>
                 </div>
 
                 <div>

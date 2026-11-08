@@ -8,7 +8,13 @@ import {
 import { RECENT_CHANGELOG } from '../data/changelog';
 import { useApp } from '../context/AppContext';
 import { tr } from '../i18n/dutchTranslator';
-import { PLAN_LABELS, normalizePlanType, getPlanMaxReferences } from '../services/licenseService';
+import {
+  PLAN_LABELS,
+  normalizePlanType,
+  getPlanMaxReferences,
+  getSavedLicense,
+  enforceSignedLicenseQuotasSync,
+} from '../services/licenseService';
 import { getLocalCryptoMode, CryptoProviderMode } from '../services/localCrypto';
 import { isDesktopApp, openExternalUrl } from '../services/desktopBridge';
 import { getClientSupabase } from '../services/clientSupabase';
@@ -45,7 +51,33 @@ import {
   ExternalLink,
 } from 'lucide-react';
 
-export const APP_BUILD_DATE = '2026-11-07';
+export const APP_BUILD_DATE = '2026-11-08';
+
+export function computeAboutLicenseSnapshot() {
+  const lic = getSavedLicense();
+  const q = enforceSignedLicenseQuotasSync(lic);
+  const planLabel = PLAN_LABELS[q.plan];
+  const maxRefs = q.max_references;
+  const maxDepots = q.max_depots;
+  const rawSignedToken: unknown = lic.signed_token;
+  const signedTokenPresent = Boolean(
+    typeof rawSignedToken === 'string'
+      ? rawSignedToken.trim().length > 0
+      : rawSignedToken &&
+          typeof rawSignedToken === 'object' &&
+          Object.keys(rawSignedToken as Record<string, unknown>).length > 0
+  );
+  const expiresAt = lic.expires_at ?? null;
+
+  return {
+    canonicalPlan: q.plan,
+    planLabel,
+    maxRefs,
+    maxDepots,
+    signedTokenPresent,
+    expiresAt,
+  };
+}
 
 export type SchemaVersionState = 'up_to_date' | 'tolerated' | 'outdated' | 'unknown';
 
@@ -245,35 +277,29 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
     MIN_SUPPORTED_SCHEMA_VERSION
   );
 
-  // Lecture non sensible de l'état de licence en cache local
-  const licenseSnapshot = React.useMemo(() => {
-    let planCode = 'free';
-    let maxDepots = 1;
-    let signedTokenPresent = false;
-    let expiresAt: string | null = null;
-    try {
-      const rawLic = localStorage.getItem('tot_stock_license_status_v1');
-      if (rawLic) {
-        const parsed = JSON.parse(rawLic);
-        if (parsed?.plan_type) planCode = normalizePlanType(parsed.plan_type);
-        if (parsed?.max_depots) maxDepots = Number(parsed.max_depots);
-        if (parsed?.signed_token || parsed?.token_verified) signedTokenPresent = true;
-        if (parsed?.expires_at) expiresAt = String(parsed.expires_at);
-      }
-    } catch {
-      // Ignorer
-    }
-    const canonical = normalizePlanType(planCode);
-    const maxRefs = getPlanMaxReferences(canonical);
-    return {
-      canonicalPlan: canonical,
-      planLabel: PLAN_LABELS[canonical] || canonical.toUpperCase(),
-      maxRefs,
-      maxDepots: maxDepots || 1,
-      signedTokenPresent,
-      expiresAt,
-    };
-  }, []);
+  // Lecture de l'état de licence via getSavedLicense() + enforceSignedLicenseQuotasSync(lic)
+  const lic = getSavedLicense();
+  const q = enforceSignedLicenseQuotasSync(lic);
+  const planLabel = PLAN_LABELS[q.plan];
+  const maxRefs = q.max_references;
+  const maxDepots = q.max_depots;
+  const rawSignedToken: unknown = lic.signed_token;
+  const signedTokenPresent = Boolean(
+    typeof rawSignedToken === 'string'
+      ? rawSignedToken.trim().length > 0
+      : rawSignedToken &&
+          typeof rawSignedToken === 'object' &&
+          Object.keys(rawSignedToken as Record<string, unknown>).length > 0
+  );
+  const expiresAt = lic.expires_at;
+  const licenseSnapshot = {
+    canonicalPlan: q.plan,
+    planLabel,
+    maxRefs,
+    maxDepots,
+    signedTokenPresent,
+    expiresAt,
+  };
 
   const activeDepotsCount = depots.filter((d) => d.is_active !== false).length;
   const pendingOfflineCount = countPendingOfflineOperationsSafe();
@@ -492,9 +518,9 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
               <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">
                 {tr(
                   language,
-                  'Exécutez les scripts SQL (jusqu’au script 14 puis 07) pour mettre la base à niveau.',
-                  'Run the SQL scripts (up to script 14 then 07) to upgrade the database.',
-                  'Voer de SQL-scripts uit (tot script 14 en daarna 07) om de database bij te werken.'
+                  'Exécutez les scripts SQL (jusqu’au script 17 puis 07) pour mettre la base à niveau.',
+                  'Run the SQL scripts (up to script 17 then 07) to upgrade the database.',
+                  'Voer de SQL-scripts uit (tot script 17 en daarna 07) om de database bij te werken.'
                 )}
               </span>
               <button
@@ -844,6 +870,50 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
             )}
           </p>
         </div>
+      </div>
+
+      {/* 7. JOURNAL D'AUDIT SERVEUR & TRANSFERTS VALIDÉS (v53 / v54) */}
+      <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2">
+        <div className="flex items-center gap-1.5 font-black text-slate-900 dark:text-white">
+          <ShieldCheck className="w-4 h-4 text-orange-600" />
+          <span>
+            {tr(
+              language,
+              `Journal d’audit serveur immuable, Transferts validés & Confidentialité (Schéma ${EXPECTED_SCHEMA_VERSION})`,
+              `Immutable Server Audit Trail, Validated Transfers & Privacy (Schema ${EXPECTED_SCHEMA_VERSION})`,
+              `Onveranderlijk Serverauditlogboek, Gevalideerde Overdrachten & Privacy (Schema ${EXPECTED_SCHEMA_VERSION})`
+            )}
+          </span>
+        </div>
+        <ul className="list-disc pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+          <li>
+            <strong>{tr(language, 'Événements journalisés :', 'Logged events:', 'Gelogde gebeurtenissen:')}</strong>{' '}
+            {tr(
+              language,
+              'modifications automatiques par triggers PostgreSQL sur 13 tables sensibles (utilisateurs, rôles, départements, chantiers, dépôts, articles, catégories, paramètres, licence, mailing), mouvements de stock, commandes, transferts validés à la réception (stk_transfers & stk_depot_holders), actions d’administration des comptes (Edge admin-users), connexions/déconnexions/échecs et exports CSV/PDF/e-mail.',
+              'automatic PostgreSQL triggers on 13 sensitive tables (users, roles, departments, projects, depots, products, categories, settings, license, mailing), stock movements, orders, validated stock transfers (stk_transfers & stk_depot_holders), user admin actions (Edge admin-users), logins/logouts/failures, and CSV/PDF/email exports.',
+              'automatische PostgreSQL-triggers op 13 gevoelige tabellen (gebruikers, rollen, afdelingen, projecten, depots, artikelen, categorieën, instellingen, licentie, mailing), voorraadbewegingen, bestellingen, gevalideerde overdrachten (stk_transfers & stk_depot_holders), gebruikersbeheer (Edge admin-users), aan-/afmeldingen en CSV/PDF/e-mail-exports.'
+            )}
+          </li>
+          <li>
+            <strong>{tr(language, 'Immuabilité & Rétention :', 'Immutability & Retention:', 'Onveranderlijkheid & Bewaring:')}</strong>{' '}
+            {tr(
+              language,
+              'les tables core_audit_logs et core_login_logs sont protégées en ajout seul (tout UPDATE ou DELETE direct est bloqué par trigger). Seul le Super Administrateur (rôle 0) peut purger les entrées de plus de 90 jours via purge_audit_logs(p_older_than_days >= 90), et cette purge est elle-même journalisée.',
+              'core_audit_logs and core_login_logs are strictly append-only (direct UPDATE or DELETE is blocked by trigger). Only the Super Administrator (role 0) can purge entries older than 90 days via purge_audit_logs(p_older_than_days >= 90), and the purge itself is logged.',
+              'core_audit_logs en core_login_logs zijn strikt append-only (directe UPDATE of DELETE wordt geblokkeerd door een trigger). Alleen de Super Administrator (rol 0) kan items ouder dan 90 dagen wissen via purge_audit_logs(p_older_than_days >= 90), en deze actie wordt zelf gelogd.'
+            )}
+          </li>
+          <li>
+            <strong>{tr(language, 'Confidentialité des secrets :', 'Secret privacy:', 'Geheimhouding:')}</strong>{' '}
+            {tr(
+              language,
+              'aucun mot de passe, code PIN, clé API, secret SMTP/Graph, jeton signé ou contenu brut de lignes exportées n’est jamais enregistré ; les champs sensibles sont systématiquement remplacés par « *** ».',
+              'no password, PIN code, API key, SMTP/Graph secret, signed token, or raw exported row data is ever stored; sensitive fields are systematically masked as "***".',
+              'geen wachtwoord, pincode, API-sleutel, SMTP/Graph-geheim, getekend token of ruwe geëxporteerde rijgegevens worden ooit opgeslagen; gevoelige velden worden systematisch gemaskeerd als "***".'
+            )}
+          </li>
+        </ul>
       </div>
     </div>
   );
