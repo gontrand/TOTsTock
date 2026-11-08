@@ -4,10 +4,10 @@
 -- Étape 07 : Table app_compat, is_active_admin(), diagnostic_installation() et durcissement final anon
 -- =========================================================================
 -- TOT STOCK - SCRIPT 07 : COMPATIBILITÉ APPLICATION, SCHÉMA & DIAGNOSTIC (07_app_compat.sql)
--- Description : Définit is_active_admin(), la table singleton public.core_app_compat (schema_version 2.7.0,
---   min_schema_version 1.0.0, latest_version 5.13.0), la fonction RPC public.diagnostic_installation()
+-- Description : Définit is_active_admin(), la table singleton public.core_app_compat (schema_version 2.10.0,
+--   min_schema_version 1.0.0, latest_version 5.16.0), la fonction RPC public.diagnostic_installation()
 --   (17 contrôles, réservée aux rôles 0, 1 et 5) et le durcissement final des fonctions SECURITY DEFINER.
--- Dépendances : Scripts 00, 09, 01 (01b), 02, 03, 04, 05, 06, 08, 11, 12, 13, 14, 15, 16 et 17.
+-- Dépendances : Scripts 00, 09, 01 (01b), 02, 03, 04, 05, 06, 08, 11, 12, 13, 14, 15, 16, 17 et 18.
 -- Ordre d'exécution : Toujours exécuté EN DERNIER.
 -- Rejouable : oui (idempotent)
 -- =========================================================================
@@ -73,7 +73,7 @@ GRANT EXECUTE ON FUNCTION public.is_active_admin() TO authenticated;
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS public.core_app_compat (
   id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-  schema_version     TEXT NOT NULL DEFAULT '2.7.0',
+  schema_version     TEXT NOT NULL DEFAULT '2.10.0',
   min_schema_version TEXT NOT NULL DEFAULT '1.0.0',
   min_app_version    TEXT NOT NULL DEFAULT '1.0.0',
   latest_version     TEXT,                          -- Optionnel : notification MAJ non bloquante
@@ -145,11 +145,11 @@ CREATE TRIGGER trg_app_compat_updated_at
 CREATE UNIQUE INDEX IF NOT EXISTS uq_core_app_compat_id ON public.core_app_compat (id);
 
 INSERT INTO public.core_app_compat (id, schema_version, min_schema_version, min_app_version, latest_version, message)
-VALUES (1, '2.7.0', '1.0.0', '1.0.0', '5.13.0', NULL)
+VALUES (1, '2.10.0', '1.0.0', '1.0.0', '5.16.0', NULL)
 ON CONFLICT (id) DO UPDATE
-SET schema_version = '2.7.0',
+SET schema_version = '2.10.0',
     min_schema_version = COALESCE(NULLIF(TRIM(public.core_app_compat.min_schema_version), ''), '1.0.0'),
-    latest_version = '5.13.0';
+    latest_version = '5.16.0';
 
 -- =========================================================================
 -- 3. DIAGNOSTIC D'INSTALLATION (Point 7, v37, v40, v41, v42)
@@ -246,7 +246,8 @@ DECLARE
     'log_login_event',
     'purge_audit_logs',
     'search_audit_logs',
-    'search_login_logs'
+    'search_login_logs',
+    'purge_expired_password_resets'
   ];
   v_print_rpc_funcs TEXT[] := ARRAY[
     'register_print_station',
@@ -340,7 +341,7 @@ BEGIN
   -- Contrôle 2 : anon n'a aucun droit sur les tables sensibles ni sur les vues de compatibilité
   -- -----------------------------------------------------------------------
   FOREACH v_tbl IN ARRAY ARRAY[
-    'core_users', 'core_user_preferences', 'core_license_config',
+    'core_users', 'core_user_preferences', 'core_license_config', 'core_password_resets',
     'core_mail_accounts', 'core_mail_senders', 'core_mail_log',
     'stk_movements', 'stk_products', 'stk_stock_levels',
     'stk_print_stations', 'stk_print_jobs', 'stk_inventory_audits', 'stk_inventory_audit_items'
@@ -434,7 +435,7 @@ BEGIN
     WHERE n.nspname = 'public'
       AND c.relkind = 'r'
       AND c.relrowsecurity = true
-      AND c.relname NOT IN ('stk_print_stations', 'stk_print_jobs')
+      AND c.relname NOT IN ('stk_print_stations', 'stk_print_jobs', 'core_password_resets')
       AND c.relname NOT LIKE '%\_backup\_ids' ESCAPE '\'
       AND NOT EXISTS (
         SELECT 1 FROM pg_policies p
@@ -639,7 +640,7 @@ BEGIN
       'edge_functions_deployed'::TEXT,
       'Fonctions Edge déployées'::TEXT,
       'OK'::TEXT,
-      format('Fonctions déployées (APP_TOT-Stock_admin-users, APP_TOT-Stock_licenses_sync-license, APP_TOT-Stock_send-report-email) — %s', v_edge_meta)::TEXT;
+      format('Fonctions déployées (APP_TOT-Stock_admin-users, APP_TOT-Stock_licenses_sync-license, APP_TOT-Stock_send-report-email, APP_TOT-Stock_password-reset) — %s', v_edge_meta)::TEXT;
   ELSIF v_has_email_secret_fn THEN
     RETURN QUERY SELECT
       'edge_functions_deployed'::TEXT,
@@ -1041,7 +1042,8 @@ BEGIN
         'get_mail_config',
         '_tot_write_mail_vault_secret',
         '_tot_read_mail_vault_secret',
-        'sync_verified_license_token'
+        'sync_verified_license_token',
+        'purge_expired_password_resets'
       ) THEN
         EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM authenticated', r.sig);
         EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', r.sig);

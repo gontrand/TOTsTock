@@ -111,6 +111,24 @@ export const SQL_STEPS = [
     label: 'Transferts validés à la réception, responsables de dépôt (stk_depot_holders, stk_transfers) & droits fins (17_transferts_valides.sql)',
   },
   {
+    step: '18',
+    sourceRel: 'supabase-client/18_password_reset.sql',
+    migrationName: '20261005069980_18_password_reset.sql',
+    label: 'Réinitialisation du mot de passe par code à 6 chiffres à usage unique (core_password_resets & purge_expired_password_resets)',
+  },
+  {
+    step: '19',
+    sourceRel: 'supabase-client/19_order_trace.sql',
+    migrationName: '20261005069990_19_order_trace.sql',
+    label: 'Traçabilité des commandes : demandeur, préparateur, enleveur, retrait transféré (trigger trg_order_trace & get_order_trace)',
+  },
+  {
+    step: '20',
+    sourceRel: 'supabase-client/20_notification_reads.sql',
+    migrationName: '20261005069995_20_notification_reads.sql',
+    label: 'Notifications lues par utilisateur (core_notification_dismissals, dismiss_notifications, clear_my_dismissals)',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',
@@ -130,6 +148,7 @@ export const CREATE_TABLE_SOURCE_FILES = [
   'supabase-client/14_mailing.sql',
   'supabase-client/16_audit_trail.sql',
   'supabase-client/17_transferts_valides.sql',
+  'supabase-client/18_password_reset.sql',
 ];
 
 const AUTO_COLUMNS_START_MARKER = '-- [BEGIN AUTO_GENERATED_ADD_COLUMNS]';
