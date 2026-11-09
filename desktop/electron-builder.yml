@@ -22,8 +22,8 @@ extraResources:
 asar: true
 
 win:
-  icon: build/icon.ico
-  signAndEditExecutable: false
+  icon: build/icon.png
+  signAndEditExecutable: true
   target:
     - target: nsis
       arch:
@@ -48,7 +48,8 @@ mac:
   target:
     - target: dmg
       arch:
-        - universal
+        - arm64
+        - x64
 
 dmg:
   sign: false
