@@ -202,6 +202,7 @@ const MainLayout: React.FC = () => {
         {activeProductId && <ProductDetailModal />}
         {batchCartModalOpen && <BatchCartModal />}
         {diagnosticModalOpen && <DiagnosticModal />}
+        {qrConfigGenModalOpen && <QrConfigGenModal />}
         {stockTransferModal?.open && <StockTransferModal />}
         {transfersModalOpen && (
           <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">

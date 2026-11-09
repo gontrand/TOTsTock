@@ -64,6 +64,7 @@ export const BottomNav: React.FC = () => {
   return (
     <nav className="fixed bottom-0 left-0 right-0 max-w-[480px] mx-auto z-40 bg-white/95 dark:bg-[#1e293b]/95 backdrop-blur-md text-slate-700 dark:text-slate-300 flex items-center justify-around h-[calc(60px+env(safe-area-inset-bottom,0px))] pb-[env(safe-area-inset-bottom,0px)] border-t border-slate-200/90 dark:border-slate-800 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] dark:shadow-[0_-4px_20px_rgba(0,0,0,0.35)] select-none transition-colors duration-200 overflow-visible">
       {/* Home Tab */}
+      {!canHomeTab && <div className="flex-1 min-w-0" aria-hidden="true" />}
       {canHomeTab && (
         <button
           type="button"
@@ -82,6 +83,7 @@ export const BottomNav: React.FC = () => {
       )}
 
       {/* Search / Inventory Tab */}
+      {!canSearchTab && <div className="flex-1 min-w-0" aria-hidden="true" />}
       {canSearchTab && (
         <button
           type="button"
@@ -144,6 +146,7 @@ export const BottomNav: React.FC = () => {
       )}
 
       {/* Movements Tab */}
+      {!canMovementsTab && <div className="flex-1 min-w-0" aria-hidden="true" />}
       {canMovementsTab && (
         <button
           type="button"

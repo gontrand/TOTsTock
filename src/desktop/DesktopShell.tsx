@@ -89,6 +89,7 @@ import {
   Info,
   AlertCircle,
   ClipboardCheck,
+  QrCode,
   X,
 } from 'lucide-react';
 
@@ -174,6 +175,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     resetMyNotificationDismissals,
     isSupabaseConnected,
     hasAuthSession,
+    setQrConfigGenModalOpen,
   } = useApp();
 
   // Persisted sidebar collapse state
@@ -509,6 +511,8 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     userHasPermission('perm_report_view') ||
     Number(currentUser?.role_id) === 0 ||
     Number(currentUser?.role_id) === 1;
+  // V60 : menu « QR code entreprise » (même droit que le menu mobile : perm_menu_qr_config ou perm_config_db)
+  const canQrConfig = userHasPermission('perm_menu_qr_config') || userHasPermission('perm_config_db');
   const canAuditLog =
     userHasPermission('perm_audit_view') ||
     Number(currentUser?.role_id) === 0 ||
@@ -890,6 +894,23 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                   <span className="truncate">{t('desktop_nav_settings')}</span>
                 )}
               </button>
+
+              {canQrConfig && (
+                <button
+                  type="button"
+                  data-testid="desktop-nav-qr-company"
+                  onClick={() => setQrConfigGenModalOpen(true)}
+                  title={tr(language, 'QR code entreprise', 'Company QR code', 'Bedrijfs-QR-code')}
+                  className="w-full px-2.5 py-2 rounded-xl font-semibold flex items-center gap-2.5 transition cursor-pointer text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <QrCode className="w-4 h-4 shrink-0" />
+                  {!sidebarCollapsed && (
+                    <span className="truncate flex-1 text-left">
+                      {tr(language, 'QR code entreprise', 'Company QR code', 'Bedrijfs-QR-code')}
+                    </span>
+                  )}
+                </button>
+              )}
 
               {canAuditLog && (
                 <button
