@@ -631,6 +631,12 @@ BEGIN
     END IF;
   END IF;
 
+  -- 4b. v61 : sortie directe sur dépôt FIXE réservée à la Logistique / magasiniers / administrateurs
+  --     (contrôle défini dans le script 22 ; ignoré tant que ce script n'est pas installé)
+  IF v_mov_type = 'OUT' AND to_regprocedure('public._tot_assert_direct_out_allowed(text,text)') IS NOT NULL THEN
+    PERFORM public._tot_assert_direct_out_allowed(v_source_depot, v_mov_type);
+  END IF;
+
   -- 5. Verrouillage FOR UPDATE de l'article dans public.stk_products
   SELECT reference, unit_price, COALESCE(quantity, 0), COALESCE(NULLIF(TRIM(store_name), ''), 'Dépôt Principal')
   INTO v_product_ref, v_unit_price, v_prod_initial_qty, v_prod_store_name

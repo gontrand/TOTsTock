@@ -206,6 +206,17 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
   const [scanInput, setScanInput] = useState('');
   const [scanStep, setScanStep] = useState<number>(1);
   const [scanMode, setScanMode] = useState<'ADD' | 'SET'>('ADD');
+  // V61 : saisie manuelle de la quantité après chaque scan
+  const [manualAfterScan, setManualAfterScan] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('tot_audit_manual_after_scan') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [pendingManualRow, setPendingManualRow] = useState<AuditCountingRow | null>(null);
+  const [manualQty, setManualQty] = useState<string>('');
+  const manualQtyInputRef = useRef<HTMLInputElement | null>(null);
   const [scanFeedback, setScanFeedback] = useState<{
     type: 'success' | 'warning' | 'error';
     text: string;
@@ -307,9 +318,41 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
       return;
     }
 
+    if (manualAfterScan) {
+      playScanBeep(true);
+      setPendingManualRow(matched);
+      const prevCount = counts[matched.productId];
+      setManualQty(prevCount !== undefined && prevCount !== null && scanMode === 'SET' ? String(prevCount) : '');
+      setScanInput('');
+      setTimeout(() => manualQtyInputRef.current?.focus(), 60);
+      return;
+    }
+
     recordCount(matched, scanStep, scanMode === 'ADD');
     setScanInput('');
     scanInputRef.current?.focus();
+  };
+
+  const confirmManualQty = () => {
+    if (!pendingManualRow) return;
+    const n = Number(String(manualQty).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return;
+    recordCount(pendingManualRow, Math.round(n), scanMode === 'ADD');
+    setPendingManualRow(null);
+    setManualQty('');
+    setTimeout(() => scanInputRef.current?.focus(), 60);
+  };
+
+  const toggleManualAfterScan = () => {
+    const next = !manualAfterScan;
+    setManualAfterScan(next);
+    try {
+      localStorage.setItem('tot_audit_manual_after_scan', next ? '1' : '0');
+    } catch {}
+    if (!next) {
+      setPendingManualRow(null);
+      setManualQty('');
+    }
   };
 
   const handleResetSession = () => {
@@ -1159,6 +1202,25 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                     </button>
                   </div>
 
+                  <button
+                    type="button"
+                    data-testid="audit-manual-after-scan"
+                    onClick={toggleManualAfterScan}
+                    title={tr(
+                      language,
+                      'Après chaque scan, saisir la quantité comptée au clavier',
+                      'After each scan, type the counted quantity',
+                      'Typ na elke scan de getelde hoeveelheid'
+                    )}
+                    className={`px-2 py-1 rounded-lg text-[11px] font-black cursor-pointer border ${
+                      manualAfterScan
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-transparent'
+                    }`}
+                  >
+                    ⌨ {tr(language, 'Saisir la quantité', 'Enter quantity', 'Hoeveelheid invoeren')}
+                  </button>
+
                   <div className="flex items-center gap-1">
                     {[1, 5, 10].map((step) => (
                       <button
@@ -1203,6 +1265,61 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                   {tr(language, 'Valider scan', 'Submit scan', 'Scan bevestigen')}
                 </button>
               </form>
+
+              {pendingManualRow && (
+                <div className="p-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 flex flex-wrap items-center gap-3 text-xs">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-extrabold text-slate-800 dark:text-slate-100 truncate">
+                      {pendingManualRow.reference} • {pendingManualRow.depotName}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {tr(language, 'Théorique', 'Theoretical', 'Theoretisch')} : <strong>{pendingManualRow.theoreticalQty}</strong>
+                      {counts[pendingManualRow.productId] !== undefined && counts[pendingManualRow.productId] !== null && (
+                        <> • {tr(language, 'Déjà compté', 'Already counted', 'Reeds geteld')} : <strong>{counts[pendingManualRow.productId]}</strong></>
+                      )}
+                      {' • '}
+                      {scanMode === 'ADD'
+                        ? tr(language, 'la quantité saisie s’ajoute', 'typed quantity is added', 'ingevoerde hoeveelheid wordt opgeteld')
+                        : tr(language, 'la quantité saisie remplace', 'typed quantity replaces', 'ingevoerde hoeveelheid vervangt')}
+                    </div>
+                  </div>
+                  <input
+                    ref={manualQtyInputRef}
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={manualQty}
+                    onChange={(e) => setManualQty(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        confirmManualQty();
+                      }
+                    }}
+                    placeholder={tr(language, 'Quantité comptée', 'Counted quantity', 'Getelde hoeveelheid')}
+                    className="w-40 px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 font-mono font-black text-center outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={confirmManualQty}
+                    disabled={manualQty.trim() === ''}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-extrabold cursor-pointer"
+                  >
+                    {tr(language, 'Valider', 'Confirm', 'Bevestigen')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingManualRow(null);
+                      setManualQty('');
+                      scanInputRef.current?.focus();
+                    }}
+                    className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold cursor-pointer"
+                  >
+                    {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+                  </button>
+                </div>
+              )}
 
               {scanFeedback && (
                 <div

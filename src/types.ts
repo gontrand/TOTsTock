@@ -84,6 +84,7 @@ export interface Department {
   deputy_manager_ids?: (string | number)[];
   allow_global_kpis?: boolean;
   is_preparer_dept?: boolean; // Option Préparateurs: allows assigning preparer role to users
+  is_logistics_dept?: boolean; // V61 : le personnel du département peut faire des sorties directes sur les dépôts fixes
   require_order_approval?: boolean; // Validation hiérarchique débrayable
   order_approval_threshold?: number; // Seuil en € déclenchant la validation (ex: 300 €)
 }

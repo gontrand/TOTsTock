@@ -204,6 +204,28 @@ export function isUserProjectManagerForDepotDepartment(
 /**
  * Checks if a user belongs to Logistics or Executive Management (Logistique / Direction)
  */
+/**
+ * V61 — Sortie directe depuis un dépôt FIXE (magasin central) : réservée aux administrateurs, magasiniers,
+ * responsables logistique / magasin, préparateurs et au personnel d'un département coché « Logistique ».
+ * Si la liste des départements est inconnue, on ne bloque pas côté application (le serveur applique la règle).
+ */
+export function canUserDirectOutFromFixedDepot(
+  user: User | null | undefined,
+  departments?: Department[] | null
+): boolean {
+  if (!user) return false;
+  if (Number(user.id) === 0) return true;
+  const role = Number(user.role_id);
+  if ([0, 1, 2, 6, 7].includes(role)) return true;
+  if ((user as any).is_preparer) return true;
+  if (!departments || departments.length === 0) return true;
+  const userDept = (user.department || '').trim().toLowerCase();
+  if (!userDept) return false;
+  return departments.some(
+    (d) => d.is_logistics_dept === true && (d.name || '').trim().toLowerCase() === userDept
+  );
+}
+
 export function isUserInLogisticsOrDirection(user?: User | { department?: string } | null): boolean {
   if (!user?.department) return false;
   const dept = user.department.toLowerCase().trim();
@@ -417,6 +439,18 @@ export function canUserBorrowFromDepot(
         lang === 'fr'
           ? `🚫 Emprunt interdit : Seul le titulaire (${holderName}), ses binômes ou les responsables du département/chantier sont autorisés à prélever du matériel dans « ${depot.name} ».`
           : `🚫 Borrowing prohibited: Only assigned holder (${holderName}), binômes, or department/project managers are authorized to borrow items from "${depot.name}".`,
+    };
+  }
+
+  // V61 : dépôt fixe — la sortie directe est réservée à la Logistique / magasiniers / administrateurs
+  if (!canUserDirectOutFromFixedDepot(user, departments)) {
+    return {
+      allowed: false,
+      depot,
+      reason:
+        lang === 'fr'
+          ? `🚫 Sortie directe interdite sur le dépôt fixe « ${depotName || 'Dépôt principal'} » : passez par une commande (préparée par le magasin) ou demandez au personnel Logistique.`
+          : `🚫 Direct withdrawal not allowed from fixed depot "${depotName || 'Main'}": place an order (prepared by the warehouse) or ask Logistics staff.`,
     };
   }
 

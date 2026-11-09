@@ -46,6 +46,7 @@ import {
   filterVisibleDepotsForUser,
   formatDepotNameForDisplay,
 } from '../../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct } from '../../utils/stockOutDepots';
 import {
   filterProjectsForSelection,
   formatProjectOptionLabel,
@@ -82,6 +83,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     supabaseUrl,
     supabaseKey,
     userHasPermission,
+    stockLevels,
     confirmBatchMovements,
     canTransferBetweenDepots,
     openStockTransferModal,
@@ -505,6 +507,13 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
 
   const [movError, setMovError] = useState<string | null>(null);
 
+  // V61 : pour une SORTIE, ne proposer que les magasins où l'article est en stock et autorisés pour l'utilisateur
+  const outDepotOptions = useMemo(() => {
+    const prod = movProductId ? productById.get(movProductId) : undefined;
+    if (movType !== 'OUT' || !prod) return null;
+    return getEligibleStockOutDepotsForProduct(prod, stockLevels, depots, currentUser, language, departments, users);
+  }, [movType, movProductId, productById, stockLevels, depots, currentUser, language, departments, users]);
+
   const performQuickMovementSave = async (): Promise<boolean> => {
     if (!movProductId || movQuantity <= 0) return false;
     const targetProd = productById.get(movProductId);
@@ -520,13 +529,28 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     setSubmitting(true);
     try {
       const depotName = movDepot || targetProd.store_name || depots[0]?.name || 'Dépôt Principal';
+      if (movType === 'OUT' && outDepotOptions) {
+        const row = outDepotOptions.find(
+          (o) => o.depotName.trim().toLowerCase() === depotName.trim().toLowerCase()
+        );
+        if (!row) {
+          setMovError(
+            tr(
+              language,
+              `Sortie impossible : aucun stock autorisé de cet article dans le magasin « ${depotName} ».`,
+              `Withdrawal impossible: no authorized stock of this item in depot "${depotName}".`
+            )
+          );
+          return false;
+        }
+      }
       const productWithDepot: Product = {
         ...targetProd,
         store_name: depotName,
       };
       const res = await confirmBatchMovements(
         movSiteNumber || undefined,
-        [{ product: productWithDepot, qtyActual: movQuantity }],
+        [{ product: productWithDepot, qtyActual: movQuantity, targetDepotName: depotName }],
         movType
       );
       if (res.success) {
@@ -1373,6 +1397,12 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                     setMovProductId(val);
                     const p = productById.get(val);
                     if (p?.store_name) setMovDepot(p.store_name);
+                    if (movType === 'OUT' && p) {
+                      const opts = getEligibleStockOutDepotsForProduct(p, stockLevels, depots, currentUser, language, departments, users);
+                      if (opts.length > 0 && !opts.some((o) => o.depotName.trim().toLowerCase() === (p.store_name || '').trim().toLowerCase())) {
+                        setMovDepot(opts[0].depotName);
+                      }
+                    }
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-semibold"
                 >
@@ -1413,11 +1443,23 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                     recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                   >
-                    {visibleDepots.map((d) => (
-                      <option key={d.id} value={d.name}>
-                        {d.name}
-                      </option>
-                    ))}
+                    {movType === 'OUT' && outDepotOptions
+                      ? outDepotOptions.length === 0
+                        ? (
+                            <option value={movDepot}>
+                              {tr(language, 'Aucun magasin avec du stock', 'No depot with stock', 'Geen depot met voorraad')}
+                            </option>
+                          )
+                        : outDepotOptions.map((o) => (
+                            <option key={o.depotName} value={o.depotName}>
+                              {o.depotName} ({tr(language, 'en stock', 'in stock', 'op voorraad')} : {o.currentQty})
+                            </option>
+                          ))
+                      : visibleDepots.map((d) => (
+                          <option key={d.id} value={d.name}>
+                            {d.name}
+                          </option>
+                        ))}
                   </SearchableSelect>
                 </div>
               </div>

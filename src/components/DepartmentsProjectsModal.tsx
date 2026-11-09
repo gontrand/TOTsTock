@@ -85,6 +85,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
   const [selectedDepDeputyToAdd, setSelectedDepDeputyToAdd] = useState<string>('');
   const [depAllowGlobalKpis, setDepAllowGlobalKpis] = useState<boolean>(false);
   const [depIsPreparerDept, setDepIsPreparerDept] = useState<boolean>(false);
+  const [depIsLogisticsDept, setDepIsLogisticsDept] = useState<boolean>(false);
   const [depRequireOrderApproval, setDepRequireOrderApproval] = useState<boolean>(false);
   const [depOrderApprovalThreshold, setDepOrderApprovalThreshold] = useState<string>('0');
   const [depSearch, setDepSearch] = useState('');
@@ -263,6 +264,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setSelectedDepDeputyToAdd('');
     setDepAllowGlobalKpis(false);
     setDepIsPreparerDept(false);
+    setDepIsLogisticsDept(false);
     setDepRequireOrderApproval(false);
     setDepOrderApprovalThreshold('0');
   };
@@ -286,6 +288,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
       deputy_manager_ids: depDeputyIds,
       allow_global_kpis: depAllowGlobalKpis,
       is_preparer_dept: depIsPreparerDept,
+      is_logistics_dept: depIsLogisticsDept,
       require_order_approval: depRequireOrderApproval,
       order_approval_threshold: depRequireOrderApproval ? parseFloat(depOrderApprovalThreshold) || 0 : undefined,
     });
@@ -361,6 +364,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setDepDeputyIds(Array.isArray(dep.deputy_manager_ids) ? dep.deputy_manager_ids.map(String) : []);
     setDepAllowGlobalKpis(Boolean(dep.allow_global_kpis));
     setDepIsPreparerDept(Boolean(dep.is_preparer_dept));
+    setDepIsLogisticsDept(Boolean(dep.is_logistics_dept));
     setDepRequireOrderApproval(Boolean(dep.require_order_approval));
     setDepOrderApprovalThreshold(dep.order_approval_threshold !== undefined ? String(dep.order_approval_threshold) : '0');
     setSelectedDepDeputyToAdd('');
@@ -660,6 +664,24 @@ export const DepartmentsProjectsModal: React.FC = () => {
                       </div>
                       <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">
                         {tr(language, 'Si cette case est cochée, les utilisateurs rattachés à ce département pourront être définis comme « Préparateurs » pour recevoir et gérer les commandes de matériel.', 'When checked, members of this department can be designated as "Preparers" to manage and pick orders.')}
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* V61 : Option Logistique — sortie directe sur les dépôts fixes */}
+                  <label className="flex items-start gap-2.5 p-2.5 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/80 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={depIsLogisticsDept}
+                      onChange={(e) => setDepIsLogisticsDept(e.target.checked)}
+                      className="mt-0.5 accent-emerald-600 rounded"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 text-[11px]">
+                        <span>🚚 {tr(language, 'Option « Logistique » (sortie directe sur les dépôts fixes)', 'Logistics option (direct withdrawal from fixed depots)')}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">
+                        {tr(language, 'Le personnel de ce département peut sortir du matériel directement du magasin central. Les autres utilisateurs passent par une commande. Les camionnettes et conteneurs ne sont pas concernés.', 'Members of this department can withdraw items directly from the central store. Other users must place an order. Vehicles and containers are not affected.')}
                       </div>
                     </div>
                   </label>

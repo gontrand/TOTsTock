@@ -484,6 +484,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   const [deptManagerId, setDeptManagerId] = useState<string>('');
   const [deptDeputyIds, setDeptDeputyIds] = useState<string[]>([]);
   const [deptIsPreparer, setDeptIsPreparer] = useState(false);
+  const [deptIsLogistics, setDeptIsLogistics] = useState(false);
   const [deptRequireApproval, setDeptRequireApproval] = useState(false);
   const [deptApprovalThreshold, setDeptApprovalThreshold] = useState('300');
 
@@ -736,6 +737,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setDeptManagerId('');
     setDeptDeputyIds([]);
     setDeptIsPreparer(false);
+    setDeptIsLogistics(false);
     setDeptRequireApproval(false);
     setDeptApprovalThreshold('300');
   };
@@ -748,6 +750,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     );
     setDeptDeputyIds((d.deputy_manager_ids || []).map((id) => String(id)));
     setDeptIsPreparer(Boolean(d.is_preparer_dept));
+    setDeptIsLogistics(Boolean(d.is_logistics_dept));
     setDeptRequireApproval(Boolean(d.require_order_approval));
     setDeptApprovalThreshold(String(d.order_approval_threshold ?? 300));
     scrollToAndFocusForm(deptFormRef.current, deptNameInputRef.current);
@@ -955,6 +958,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
       manager_id: deptManagerId || null,
       deputy_manager_ids: deptDeputyIds,
       is_preparer_dept: deptIsPreparer,
+      is_logistics_dept: deptIsLogistics,
+      // Conserver l'option KPI globaux (ce formulaire ne la modifie pas : elle était remise à « non » à chaque enregistrement)
+      allow_global_kpis: Boolean(
+        editingDeptId !== null && departments.find((x) => x.id === editingDeptId)?.allow_global_kpis
+      ),
       require_order_approval: deptRequireApproval,
       order_approval_threshold: Math.max(0, Number(deptApprovalThreshold) || 0),
     });
@@ -3825,6 +3833,22 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       />
                       <span>Service Préparateurs Magasin</span>
                     </label>
+                  </div>
+
+                  <div className="col-span-12 flex items-start gap-2">
+                    <label className="flex items-center gap-2 font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        data-testid="dept-is-logistics"
+                        checked={deptIsLogistics}
+                        onChange={(e) => setDeptIsLogistics(e.target.checked)}
+                        className="rounded text-orange-600"
+                      />
+                      <span>🚚 {tr(language, 'Logistique : sortie directe sur les dépôts fixes', 'Logistics: direct withdrawal from fixed depots', 'Logistiek: rechtstreekse uitgifte uit vaste depots')}</span>
+                    </label>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                      {tr(language, 'Les autres utilisateurs passent par une commande. Camionnettes et conteneurs inchangés.', 'Other users must place an order. Vehicles and containers unchanged.', 'Andere gebruikers plaatsen een bestelling. Bestelwagens en containers ongewijzigd.')}
+                    </span>
                   </div>
 
                   <div className="col-span-5 flex items-center gap-2">

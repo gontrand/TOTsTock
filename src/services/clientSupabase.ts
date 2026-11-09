@@ -2780,7 +2780,13 @@ export async function upsertDepartmentToSupabase(
       require_order_approval: Boolean(dep.require_order_approval),
       order_approval_threshold: dep.order_approval_threshold !== undefined ? Number(dep.order_approval_threshold) : 0,
     };
-    const { error } = await client.from(depTable).upsert([payload]);
+    // V61 : colonne is_logistics_dept (script 22). Si elle n'existe pas encore, on réessaie sans elle.
+    let { error } = await client
+      .from(depTable)
+      .upsert([{ ...payload, is_logistics_dept: Boolean(dep.is_logistics_dept) }]);
+    if (error) {
+      ({ error } = await client.from(depTable).upsert([payload]));
+    }
     if (error) {
       // Fallback for legacy schemas missing require_order_approval or order_approval_threshold
       const legacyDep1 = {

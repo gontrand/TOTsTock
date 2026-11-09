@@ -14,6 +14,7 @@ import {
   getDefaultStockInDepotForProduct,
   getEligibleStockInDepotsForProduct,
 } from '../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct, resolveStockOutDepot } from '../utils/stockOutDepots';
 import {
   X,
   ShoppingCart,
@@ -120,7 +121,11 @@ export const BatchCartModal: React.FC = () => {
 
     if (isOut) {
       for (const item of batchCart) {
-        const borrowCheck = canUserBorrowFromDepot(currentUser, item.product.store_name, depots, language, departments, users);
+        const outDepot = resolveStockOutDepot(
+          item,
+          getEligibleStockOutDepotsForProduct(item.product, stockLevels, depots, currentUser, language, departments, users)
+        );
+        const borrowCheck = canUserBorrowFromDepot(currentUser, outDepot, depots, language, departments, users);
         if (!borrowCheck.allowed) {
           setErrorMsg(borrowCheck.reason || (tr(language, 'Sortie interdite sur ce dépôt.', 'Withdrawal not allowed.')));
           return;
@@ -360,6 +365,13 @@ export const BatchCartModal: React.FC = () => {
                     users
                   )
                 : [];
+              const eligibleOutDepots = isOut
+                ? getEligibleStockOutDepotsForProduct(p, stockLevels, depots, currentUser, language, departments, users)
+                : [];
+              const selectedOutDepot = isOut ? resolveStockOutDepot(item, eligibleOutDepots) : '';
+              const selectedOutRow = isOut
+                ? eligibleOutDepots.find((r) => r.depotName.trim().toLowerCase() === selectedOutDepot.trim().toLowerCase())
+                : undefined;
               const selectedTargetDepot = !isOut
                 ? item.targetDepotName ||
                   getDefaultStockInDepotForProduct(
@@ -371,7 +383,7 @@ export const BatchCartModal: React.FC = () => {
                     departments,
                     users
                   )
-                : p.store_name || tr(language, 'Dépôt Principal', 'Main Depot');
+                : selectedOutDepot || p.store_name || tr(language, 'Dépôt Principal', 'Main Depot');
               const selectedInDepotRow = !isOut
                 ? eligibleInDepots.find(
                     (r) =>
@@ -379,13 +391,16 @@ export const BatchCartModal: React.FC = () => {
                       selectedTargetDepot.trim().toLowerCase()
                   )
                 : undefined;
-              const displayedQty = !isOut && selectedInDepotRow !== undefined
+              const outDepotQty = isOut ? (selectedOutRow ? selectedOutRow.currentQty : 0) : p.quantity;
+              const displayedQty = isOut
+                ? outDepotQty
+                : selectedInDepotRow !== undefined
                 ? selectedInDepotRow.currentQty
                 : p.quantity;
 
-              const hasEnough = !isOut || item.qtyActual <= p.quantity;
+              const hasEnough = !isOut || item.qtyActual <= outDepotQty;
               const borrowCheck = isOut
-                ? canUserBorrowFromDepot(currentUser, p.store_name, depots, language, departments, users)
+                ? canUserBorrowFromDepot(currentUser, selectedOutDepot || p.store_name, depots, language, departments, users)
                 : { allowed: true };
               const entryCheck = !isOut
                 ? canUserEnterStockInDepot(currentUser, selectedTargetDepot, depots, hasGeneralStockIn, language, departments, users)
@@ -422,8 +437,33 @@ export const BatchCartModal: React.FC = () => {
                         </span>
                       </div>
                       {isOut ? (
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 font-medium">
-                          <span>📍 {p.store_name || tr(language, 'Dépôt Principal', 'Main Depot')}</span>
+                        <div className="mt-2 space-y-1">
+                          <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                            📍 {tr(language, 'Magasin de sortie', 'Withdrawal depot', 'Uitgiftedepot')}
+                          </label>
+                          {eligibleOutDepots.length === 0 ? (
+                            <div className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                              {tr(
+                                language,
+                                'Aucun magasin autorisé avec du stock pour cet article.',
+                                'No authorized depot with stock for this item.'
+                              )}
+                            </div>
+                          ) : (
+                            <SearchableSelect
+                              value={selectedOutDepot}
+                              onChange={(val) => updateCartItemDepot(p.id, val)}
+                              aria-label={tr(language, 'Magasin de sortie', 'Withdrawal depot')}
+                              className="w-full p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                            >
+                              {eligibleOutDepots.map((row) => (
+                                <option key={row.depotName} value={row.depotName}>
+                                  {row.depotName} ({tr(language, 'en stock', 'in stock')} : {row.currentQty}
+                                  {row.rackLocation ? ` • ${row.rackLocation}` : ''})
+                                </option>
+                              ))}
+                            </SearchableSelect>
+                          )}
                         </div>
                       ) : (
                         <div className="mt-2 space-y-1">
@@ -505,7 +545,7 @@ export const BatchCartModal: React.FC = () => {
 
                   {!hasEnough && (
                     <div className="text-[10px] font-bold text-rose-600 dark:text-rose-400 mt-1">
-                      ⚠️ {tr(language, `La quantité demandée dépasse le stock actuel (${p.quantity}).`, `Requested quantity exceeds current stock (${p.quantity}).`)}
+                      ⚠️ {tr(language, `La quantité demandée dépasse le stock de ce magasin (${displayedQty}).`, `Requested quantity exceeds this depot's stock (${displayedQty}).`)}
                     </div>
                   )}
                 </div>
@@ -536,8 +576,11 @@ export const BatchCartModal: React.FC = () => {
                 batchCart.length === 0 ||
                 batchCart.some((i) => {
                   if (isOut) {
-                    if (i.qtyActual > i.product.quantity) return true;
-                    return !canUserBorrowFromDepot(currentUser, i.product.store_name, depots, language, departments, users).allowed;
+                    const eligOut = getEligibleStockOutDepotsForProduct(i.product, stockLevels, depots, currentUser, language, departments, users);
+                    const outDepot = resolveStockOutDepot(i, eligOut);
+                    const outRow = eligOut.find((r) => r.depotName.trim().toLowerCase() === outDepot.trim().toLowerCase());
+                    if (!outRow || i.qtyActual > outRow.currentQty) return true;
+                    return !canUserBorrowFromDepot(currentUser, outDepot, depots, language, departments, users).allowed;
                   } else {
                     const targetDepot =
                       i.targetDepotName ||

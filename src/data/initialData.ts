@@ -225,7 +225,7 @@ export const INITIAL_USERS: User[] = [
 
 export const INITIAL_DEPARTMENTS: Department[] = [
   { id: 1, name: 'Plomberie', manager_id: 2, is_preparer_dept: false },
-  { id: 2, name: 'Logistique', manager_id: 3, is_preparer_dept: true },
+  { id: 2, name: 'Logistique', manager_id: 3, is_preparer_dept: true, is_logistics_dept: true },
   { id: 3, name: 'Électricité', manager_id: 4, is_preparer_dept: false },
   { id: 4, name: 'Direction', manager_id: 2, is_preparer_dept: false },
 ];

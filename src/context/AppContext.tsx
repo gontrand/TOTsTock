@@ -252,6 +252,7 @@ import {
   hasSenderUnresolvedOverdueTransfers,
 } from '../services/transferService';
 import { getDefaultStockInDepotForProduct } from '../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct, resolveStockOutDepot } from '../utils/stockOutDepots';
 import {
   verifyDevicePinWithLockout,
   wipeDeviceLocalData,
@@ -4317,6 +4318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       const resolvedTargetDepot =
         explicitTargetDepot ||
+        (scanState.mode === 'OUT' ? product.store_name || undefined : undefined) ||
         getDefaultStockInDepotForProduct(
           product,
           currentUser,
@@ -4433,7 +4435,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Validate stock availability, closed depot check, and depot authorization for OUT
       if (mode === 'OUT') {
         for (const item of cartItems) {
-          const targetDepot = item.product.store_name || 'Dépôt Principal';
+          // V61 : magasin de sortie choisi dans le panier (sinon dépôt par défaut de l'article)
+          const targetDepot = resolveStockOutDepot(
+            item,
+            getEligibleStockOutDepotsForProduct(item.product, stockLevels, depots, currentUser, language, departments, users)
+          );
           // 1. Strict check: closed / inactive depot
           if (isDepotClosed(depots, targetDepot)) {
             return {
@@ -4560,7 +4566,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const targetDepot =
           mode === 'IN'
             ? (item.targetDepotName || item.product.store_name || latestProd.store_name || 'Dépôt Principal').trim()
-            : item.product.store_name || latestProd.store_name || 'Dépôt Principal';
+            : resolveStockOutDepot(
+                item,
+                getEligibleStockOutDepotsForProduct(latestProd, stockLevels, depots, currentUser, language, departments, users)
+              );
         const prevDepotLevel = stockLevels.find(
           (sl) =>
             String(sl.product_id) === String(latestProd.id) &&

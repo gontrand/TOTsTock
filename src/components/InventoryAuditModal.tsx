@@ -105,6 +105,17 @@ export const InventoryAuditModal: React.FC = () => {
   const [scanInput, setScanInput] = useState('');
   const [scanStep, setScanStep] = useState<number>(1);
   const [scanMode, setScanMode] = useState<'ADD' | 'SET'>('ADD');
+  // V61 : saisie manuelle de la quantité après chaque scan (au lieu d'un incrément automatique)
+  const [manualAfterScan, setManualAfterScan] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('tot_audit_manual_after_scan') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [pendingManual, setPendingManual] = useState<Product | null>(null);
+  const [manualQty, setManualQty] = useState<string>('');
+  const manualQtyInputRef = useRef<HTMLInputElement | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [lastScannedProduct, setLastScannedProduct] = useState<{
     product: Product;
@@ -283,11 +294,49 @@ export const InventoryAuditModal: React.FC = () => {
         return;
       }
 
+      if (manualAfterScan) {
+        // Même article déjà en cours de saisie (caméra qui le redétecte) : on ne réinitialise pas la saisie.
+        if (pendingManual && String(pendingManual.id) === String(matched.id)) {
+          setScanInput('');
+          return;
+        }
+        playScanBeep(true);
+        setPendingManual(matched);
+        const prevCount = counts[matched.id];
+        setManualQty(prevCount !== undefined && prevCount !== null && scanMode === 'SET' ? String(prevCount) : '');
+        setScanInput('');
+        setTimeout(() => manualQtyInputRef.current?.focus(), 60);
+        return;
+      }
+
       recordCount(matched, scanStep, scanMode === 'ADD');
       setScanInput('');
     },
-    [scopeProducts, recordCount, scanStep, scanMode]
+    [scopeProducts, recordCount, scanStep, scanMode, manualAfterScan, pendingManual, counts]
   );
+
+  const confirmManualQty = useCallback(() => {
+    if (!pendingManual) return;
+    const n = Number(String(manualQty).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return;
+    recordCount(pendingManual, Math.round(n), scanMode === 'ADD');
+    setPendingManual(null);
+    setManualQty('');
+  }, [pendingManual, manualQty, recordCount, scanMode]);
+
+  const toggleManualAfterScan = useCallback(() => {
+    setManualAfterScan((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem('tot_audit_manual_after_scan', next ? '1' : '0');
+      } catch {}
+      if (!next) {
+        setPendingManual(null);
+        setManualQty('');
+      }
+      return next;
+    });
+  }, []);
 
   const handleScannedCodeRef = useRef(handleScannedCode);
   useEffect(() => {
@@ -644,6 +693,20 @@ export const InventoryAuditModal: React.FC = () => {
                     </button>
                   </div>
 
+                  {/* V61 : saisie manuelle de la quantité après scan */}
+                  <button
+                    type="button"
+                    onClick={toggleManualAfterScan}
+                    title="Après chaque scan, saisir la quantité comptée au clavier"
+                    className={`px-2 py-1 rounded-lg text-[10px] font-extrabold transition cursor-pointer border ${
+                      manualAfterScan
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    ⌨ Saisir la quantité
+                  </button>
+
                   {/* Step Buttons */}
                   <div className="flex items-center gap-1">
                     {[1, 5, 10].map((step) => (
@@ -740,6 +803,61 @@ export const InventoryAuditModal: React.FC = () => {
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
                   )}
                   <span>{scanFeedbackMsg.text}</span>
+                </div>
+              )}
+
+              {/* V61 : saisie de la quantité après scan */}
+              {pendingManual && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/30 rounded-xl border border-amber-300 dark:border-amber-700 space-y-2 text-xs">
+                  <div className="font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
+                    <span>{pendingManual.reference}</span>
+                    <span className="truncate">• {pendingManual.brand} {pendingManual.model}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 flex items-center gap-3 flex-wrap">
+                    <span>📍 {pendingManual.store_name}</span>
+                    <span>Théorique : <strong>{pendingManual.quantity}</strong></span>
+                    {counts[pendingManual.id] !== undefined && counts[pendingManual.id] !== null && (
+                      <span>Déjà compté : <strong>{counts[pendingManual.id]}</strong></span>
+                    )}
+                    <span>{scanMode === 'ADD' ? '(la quantité saisie s’ajoute)' : '(la quantité saisie remplace)'}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={manualQtyInputRef}
+                      type="number"
+                      inputMode="numeric"
+                      min="0"
+                      step="1"
+                      value={manualQty}
+                      onChange={(e) => setManualQty(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          confirmManualQty();
+                        }
+                      }}
+                      placeholder="Quantité comptée"
+                      className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-base font-black text-center outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={confirmManualQty}
+                      disabled={manualQty.trim() === ''}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-extrabold cursor-pointer"
+                    >
+                      Valider
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingManual(null);
+                        setManualQty('');
+                      }}
+                      className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold cursor-pointer"
+                    >
+                      Annuler
+                    </button>
+                  </div>
                 </div>
               )}
 

@@ -135,6 +135,12 @@ export const SQL_STEPS = [
     label: 'Visibilité véhicules/conteneurs par département, cohérence attribution, retour des transferts de plus de 7 jours',
   },
   {
+    step: '22',
+    sourceRel: 'supabase-client/22_departement_logistique.sql',
+    migrationName: '20261005069998_22_departement_logistique.sql',
+    label: 'Case « Logistique » sur les départements et sortie directe sur dépôt fixe réservée (camions et conteneurs inchangés)',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',
