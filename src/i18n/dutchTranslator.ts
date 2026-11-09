@@ -1669,6 +1669,7 @@ export const EXACT_NL_DICTIONARY: Record<string, string> = {
   '1. Licence & Abonnement': '1. Licentie & Abonnement',
   '2. Connexion Base SQL Supabase (BYOD)': '2. Supabase SQL-databaseverbinding (BYOD)',
   '3. Scripts SQL (01 à 12) & Diagnostic': '3. SQL-scripts (01 t/m 12) & Diagnose',
+  '3. Scripts SQL (01 à 21) & Diagnostic': '3. SQL-scripts (01 t/m 21) & Diagnose',
   '4. Fonctions Edge': '4. Edge Functions',
   "Licence & Formule d'abonnement TOT Stock": 'TOT Stock Licentie & Abonnementsformule',
   "Vérification cryptographique Ed25519 • Quotas appliqués depuis le jeton signé de l'éditeur":
@@ -1716,10 +1717,13 @@ export const EXACT_NL_DICTIONARY: Record<string, string> = {
   'Clé': 'Sleutel',
   'Détails': 'Details',
   'Scripts SQL Officiels Supabase (01 à 12)': 'Officiële Supabase SQL-scripts (01 t/m 12)',
+  'Scripts SQL Officiels Supabase (01 à 21)': 'Officiële Supabase SQL-scripts (01 t/m 21)',
   'Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base':
     'Kopieer en voer deze scripts uit in de Supabase SQL Editor om uw database te installeren of bij te werken',
   'Copier tout le pack SQL (01 à 12)': 'Volledig SQL-pakket kopiëren (01 t/m 12)',
+  'Copier tout le pack SQL (01 à 21)': 'Volledig SQL-pakket kopiëren (01 t/m 21)',
   'Script complet 01–12 copié !': 'Volledig script 01–12 gekopieerd!',
+  'Script complet 01–21 copié !': 'Volledig script 01–21 gekopieerd!',
   "Documentation & Guides d'exploitation": 'Documentatie & Gebruikshandleidingen',
   "Solution de gestion de stock multi-dépôts, préparation de commandes par scan et impression d'étiquettes.":
     'Oplossing voor voorraadbeheer met meerdere depots, orderpicken via scan en etiketten afdrukken.',
@@ -2127,6 +2131,7 @@ const EXACT_EN_DICTIONARY: Record<string, string> = {
   '1. Licence & Abonnement': '1. License & Subscription',
   '2. Connexion Base SQL Supabase (BYOD)': '2. Supabase SQL Database Connection (BYOD)',
   '3. Scripts SQL (01 à 12) & Diagnostic': '3. SQL Scripts (01 to 12) & Diagnostic',
+  '3. Scripts SQL (01 à 21) & Diagnostic': '3. SQL Scripts (01 to 21) & Diagnostic',
   '4. Fonctions Edge': '4. Edge Functions',
   "Licence & Formule d'abonnement TOT Stock": 'TOT Stock License & Subscription Plan',
   "Vérification cryptographique Ed25519 • Quotas appliqués depuis le jeton signé de l'éditeur":
@@ -2174,10 +2179,13 @@ const EXACT_EN_DICTIONARY: Record<string, string> = {
   'Clé': 'Key',
   'Détails': 'Details',
   'Scripts SQL Officiels Supabase (01 à 12)': 'Official Supabase SQL Scripts (01 to 12)',
+  'Scripts SQL Officiels Supabase (01 à 21)': 'Official Supabase SQL Scripts (01 to 21)',
   'Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base':
     'Copy and run these scripts in the Supabase SQL Editor to install or update your database',
   'Copier tout le pack SQL (01 à 12)': 'Copy full SQL pack (01 to 12)',
+  'Copier tout le pack SQL (01 à 21)': 'Copy full SQL pack (01 to 21)',
   'Script complet 01–12 copié !': 'Full script 01–12 copied!',
+  'Script complet 01–21 copié !': 'Full script 01–21 copied!',
   "Documentation & Guides d'exploitation": 'Documentation & Operations Guides',
   "Solution de gestion de stock multi-dépôts, préparation de commandes par scan et impression d'étiquettes.":
     'Multi-depot inventory management, scan-based order picking, and label printing solution.',

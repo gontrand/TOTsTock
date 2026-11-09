@@ -215,6 +215,10 @@ export function sanitizeAuditMeta(
     if (FORBIDDEN_EXPORT_CONTENT_KEYS.has(lowerKey)) {
       continue;
     }
+    if (lowerKey === 'signature_data' || (typeof val === 'string' && val.trim().startsWith('data:image/'))) {
+      out[key] = val && String(val).trim().length > 0 ? 'signature présente' : null;
+      continue;
+    }
     if (isSensitiveAuditKey(key) || isKeyLikeStringValue(val)) {
       out[key] = '***';
     } else if (val && typeof val === 'object' && !Array.isArray(val)) {
@@ -225,6 +229,8 @@ export function sanitizeAuditMeta(
           ? sanitizeAuditMeta(item)
           : isKeyLikeStringValue(item)
           ? '***'
+          : typeof item === 'string' && item.trim().startsWith('data:image/')
+          ? 'signature présente'
           : item
       );
     } else {

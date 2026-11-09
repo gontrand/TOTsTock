@@ -1,5 +1,6 @@
-import { Depot, Product, StockLevel, SubCategory, User } from '../types';
+import { Department, Depot, Product, Project, StockLevel, SubCategory, User } from '../types';
 import { isUserAllowedForDepot } from '../utils/crypto';
+import { canUserViewDepot } from '../utils/depotPermissions';
 import { compareRackLocationsNatural } from './orderPickingLogic';
 
 export type InventoryStockStatusFilter = 'ALL' | 'LOW' | 'OUT';
@@ -21,6 +22,10 @@ export interface InventoryFilterOptions {
   stockLevels?: StockLevel[];
   currentUser?: User | null;
   expandMultiDepotOnSearch?: boolean;
+  depots?: Depot[];
+  departments?: Department[];
+  allUsers?: User[];
+  projects?: Project[];
 }
 
 export interface ProductDepotStockRow {
@@ -33,7 +38,7 @@ export interface ProductDepotStockRow {
 }
 
 export interface ProductDepotBreakdown {
-  /** Lignes de stock par dépôt visibles pour l'utilisateur courant (selon allowed_depots) */
+  /** Lignes de stock par dépôt visibles pour l'utilisateur courant (selon allowed_depots et canUserViewDepot) */
   depotRows: ProductDepotStockRow[];
   /** Toutes les lignes de stock par dépôt (tous dépôts confondus) */
   allDepotRows: ProductDepotStockRow[];
@@ -53,12 +58,17 @@ export interface ProductDepotBreakdown {
 
 /**
  * Calcule la répartition exacte du stock par dépôt d'une référence à partir de `stock_levels`,
- * filtre selon `allowed_depots` de l'utilisateur, et détecte tout écart de cohérence avec `products.quantity`.
+ * filtre selon `allowed_depots` et `canUserViewDepot` (véhicules/conteneurs du département),
+ * et détecte tout écart de cohérence avec `products.quantity`.
  */
 export function getProductDepotBreakdown(
   product: Product | null | undefined,
   stockLevels: StockLevel[] = [],
-  currentUser?: User | null
+  currentUser?: User | null,
+  depots?: Depot[],
+  departments: Department[] | User[] = [],
+  allUsers: User[] | Department[] = [],
+  projects: Project[] = []
 ): ProductDepotBreakdown {
   if (!product) {
     return {
@@ -107,8 +117,25 @@ export function getProductDepotBreakdown(
         },
       ];
 
+  const isRowVisibleForUser = (depotName: string): boolean => {
+    if (!currentUser) return true;
+    if (!isUserAllowedForDepot(currentUser, depotName)) return false;
+    if (Array.isArray(depots) && depots.length > 0) {
+      const clean = (depotName || '').trim().toLowerCase();
+      const depotObj = depots.find(
+        (d) =>
+          (d.name || '').trim().toLowerCase() === clean ||
+          String(d.id).trim().toLowerCase() === clean
+      );
+      if (depotObj && !canUserViewDepot(currentUser, depotObj, departments, allUsers, projects)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   const depotRows = currentUser
-    ? allDepotRows.filter((row) => isUserAllowedForDepot(currentUser, row.depotName))
+    ? allDepotRows.filter((row) => isRowVisibleForUser(row.depotName))
     : allDepotRows;
 
   const sumOfStockLevels = allDepotRows.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
@@ -246,6 +273,25 @@ export function filterInventoryProducts(
       return false;
     }
     const lower = clean.toLowerCase();
+    if (currentUser && clean && Array.isArray(options.depots) && options.depots.length > 0) {
+      const depotObj = options.depots.find(
+        (d) =>
+          (d.name || '').trim().toLowerCase() === lower ||
+          String(d.id).trim().toLowerCase() === lower
+      );
+      if (
+        depotObj &&
+        !canUserViewDepot(
+          currentUser,
+          depotObj,
+          options.departments || [],
+          options.allUsers || [],
+          options.projects || []
+        )
+      ) {
+        return false;
+      }
+    }
     const isDepotClosed = Boolean(clean && options.closedDepotNames.has(lower));
     if (options.isLambdaUser && isDepotClosed) return false;
     if (!options.isLambdaUser && isDepotClosed && !options.includeClosedDepots) return false;
@@ -379,11 +425,13 @@ export function filterInventoryProducts(
         continue;
       }
 
-      // Sinon : 1 ligne globale pour la référence (somme des dépôts autorisés si restriction, ou quantité totale)
+      // Sinon : 1 ligne globale pour la référence (somme des dépôts autorisés si restriction ou si des véhicules/conteneurs ont été exclus)
+      const hasHiddenDepots = visibleLevels.length < pLevels.length;
       const isRestrictedUser = Boolean(
-        currentUser?.allowed_depots &&
-          currentUser.allowed_depots.length > 0 &&
-          !currentUser.allowed_depots.includes('*')
+        hasHiddenDepots ||
+          (currentUser?.allowed_depots &&
+            currentUser.allowed_depots.length > 0 &&
+            !currentUser.allowed_depots.includes('*'))
       );
       const effectiveQty = isRestrictedUser
         ? visibleLevels.reduce((acc, sl) => acc + (Number(sl.quantity) || 0), 0)

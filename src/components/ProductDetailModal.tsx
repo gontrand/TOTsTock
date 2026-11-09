@@ -51,6 +51,11 @@ import {
   buildProductStockLevelsSignature,
   computeDefaultAddDepotTarget,
 } from '../hooks/useProductDetailController';
+import {
+  canUserViewDepot,
+  formatDepotNameForDisplay,
+  getEligibleStockInDepotsForProduct,
+} from '../utils/depotPermissions';
 
 export const ProductDetailModal: React.FC = () => {
   const {
@@ -145,10 +150,13 @@ export const ProductDetailModal: React.FC = () => {
       getProductDepotBreakdown(
         latestDataRef.current.rawProduct,
         latestDataRef.current.stockLevels,
-        latestDataRef.current.currentUser
+        latestDataRef.current.currentUser,
+        latestDataRef.current.depots,
+        latestDataRef.current.users,
+        departments
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [productSignature, stockLevelsSignature, availableDepotsSignature]
+    [productSignature, stockLevelsSignature, availableDepotsSignature, departments]
   );
 
   const availableDepotsForAdd = useMemo(
@@ -156,10 +164,16 @@ export const ProductDetailModal: React.FC = () => {
       (latestDataRef.current.depots || []).filter(
         (d) =>
           d.is_active !== false &&
-          isUserAllowedForDepot(latestDataRef.current.currentUser, d.name)
+          isUserAllowedForDepot(latestDataRef.current.currentUser, d.name) &&
+          canUserViewDepot(
+            d,
+            latestDataRef.current.currentUser,
+            latestDataRef.current.users,
+            departments
+          )
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [availableDepotsSignature]
+    [availableDepotsSignature, departments]
   );
 
   // 1. Réinitialisation uniquement au changement de fiche produit
@@ -204,12 +218,25 @@ export const ProductDetailModal: React.FC = () => {
   const borrowCheck = canUserBorrowFromDepot(currentUser, product?.store_name, depots, language, departments, users);
   const hasGeneralStockIn = userHasPermission('perm_stock_in');
   const entryCheck = canUserEnterStockInDepot(currentUser, product?.store_name, depots, hasGeneralStockIn, language, departments, users);
+  const eligibleStockInDepots = useMemo(
+    () =>
+      getEligibleStockInDepotsForProduct(
+        product,
+        stockLevels,
+        depots,
+        currentUser,
+        hasGeneralStockIn,
+        departments,
+        users
+      ),
+    [product, stockLevels, depots, currentUser, hasGeneralStockIn, departments, users]
+  );
 
   const canEditProduct = userHasPermission('perm_prod_edit');
   const hasFinancePerm = userHasPermission('perm_dash_finance');
   const canViewPrices = userHasPermission('perm_prod_view_price');
   const canOut = userHasPermission('perm_mov_out') && borrowCheck.allowed;
-  const canIn = entryCheck.allowed;
+  const canIn = entryCheck.allowed || eligibleStockInDepots.length > 0;
   const canDelete = userHasPermission('perm_prod_delete');
 
   useEffect(() => {
@@ -337,12 +364,18 @@ export const ProductDetailModal: React.FC = () => {
       alert(borrowCheck.reason || (tr(language, 'Sortie interdite sur ce dépôt.', 'Withdrawal not allowed.')));
       return;
     }
-    if (type === 'IN' && !entryCheck.allowed) {
+    if (type === 'IN' && !entryCheck.allowed && eligibleStockInDepots.length === 0) {
       alert(entryCheck.reason || (tr(language, 'Entrée interdite sur ce dépôt.', 'Stock entry not allowed.')));
       return;
     }
+    const defaultTargetDepot =
+      type === 'IN'
+        ? entryCheck.allowed && product.store_name
+          ? product.store_name
+          : eligibleStockInDepots[0]?.name || product.store_name
+        : product.store_name;
     setScanState({ open: false, mode: type });
-    addToCart(product, 1);
+    addToCart(product, 1, defaultTargetDepot);
     setBatchCartModalOpen(true);
     setActiveProductId(null);
   };
@@ -909,10 +942,14 @@ export const ProductDetailModal: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {depotBreakdown.depotRows.map((row) => (
+                  {depotBreakdown.depotRows.map((row) => {
+                    const matchedDepot = depots.find(
+                      (d) => d.name.trim().toLowerCase() === row.depotName.trim().toLowerCase()
+                    );
+                    return (
                     <tr key={row.depotName}>
                       <td className="py-1.5 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                        {row.depotName}
+                        {matchedDepot ? formatDepotNameForDisplay(matchedDepot, users) : row.depotName}
                       </td>
                       <td className="py-1.5 px-2 font-mono text-slate-500">
                         {row.rackLocation || '—'}
@@ -932,7 +969,8 @@ export const ProductDetailModal: React.FC = () => {
                         {row.quantity}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
                 <tfoot className="bg-slate-50 dark:bg-slate-800/70 font-bold border-t border-slate-200 dark:border-slate-800">
                   <tr>

@@ -21,7 +21,25 @@ import {
   UserCheck,
   Users,
   Lock,
+  Archive,
+  RotateCcw,
+  AlertTriangle,
+  ExternalLink,
 } from 'lucide-react';
+import {
+  canUserManageProjectStatus,
+  filterProjectsByStatusTab,
+  formatClosedProjectBadgeText,
+  getNonFinalOrdersForProject,
+  isProjectClosed,
+} from '../services/projectStatusService';
+import { NO_AUTH_SESSION_BANNER_MESSAGE } from '../services/clientSupabase';
+import { MaterialOrder } from '../types';
+import {
+  canUserViewDepot,
+  formatDepotNameForDisplay,
+  resolveDepotDepartmentName,
+} from '../utils/depotPermissions';
 
 export const DepartmentsProjectsModal: React.FC = () => {
   const {
@@ -29,14 +47,21 @@ export const DepartmentsProjectsModal: React.FC = () => {
     setDepartmentsProjectsModal,
     departments,
     projects,
+    depots,
     users,
+    orders,
     saveDepartment,
     deleteDepartment,
     saveProject,
     deleteProject,
+    closeProject,
+    reopenProject,
+    setOrderCartModalOpen,
     userHasPermission,
     currentUser,
     canViewCrossDepartment,
+    isSupabaseConnected,
+    hasAuthSession,
     language,
     t,
   } = useApp();
@@ -75,6 +100,16 @@ export const DepartmentsProjectsModal: React.FC = () => {
   const [projDeputyIds, setProjDeputyIds] = useState<(string | number)[]>([]);
   const [selectedProjDeputyToAdd, setSelectedProjDeputyToAdd] = useState<string>('');
   const [projSearch, setProjSearch] = useState('');
+  const [projStatusTab, setProjStatusTab] = useState<'IN_PROGRESS' | 'CLOSED' | 'ALL'>('IN_PROGRESS');
+  const [projectStatusModal, setProjectStatusModal] = useState<{
+    project: Project;
+    mode: 'CLOSE' | 'REOPEN';
+    note: string;
+    loading: boolean;
+    errorMessage: string | null;
+    blockingOrders: MaterialOrder[];
+  } | null>(null);
+  const writeDisabledNoSession = Boolean(isSupabaseConnected && !hasAuthSession);
 
   // Form DOM Refs for direct auto-scrolling on edit click
   const depFormRef = useRef<HTMLFormElement | null>(null);
@@ -144,12 +179,52 @@ export const DepartmentsProjectsModal: React.FC = () => {
 
   const filteredProjects = useMemo(() => {
     const q = projSearch.toLowerCase().trim();
-    return (projects || []).filter(
+    const statusFiltered = filterProjectsByStatusTab(projects || [], projStatusTab);
+    return statusFiltered.filter(
       (p) =>
         (p?.project_number || '').toLowerCase().includes(q) ||
         (p?.project_name || '').toLowerCase().includes(q)
     );
-  }, [projects, projSearch]);
+  }, [projects, projSearch, projStatusTab]);
+
+  const handleConfirmProjectStatusChange = async () => {
+    if (!projectStatusModal) return;
+    const { project, mode, note } = projectStatusModal;
+    setProjectStatusModal((prev) => (prev ? { ...prev, loading: true, errorMessage: null } : null));
+
+    if (mode === 'CLOSE') {
+      const res = await closeProject(project.project_number, note);
+      if (!res.success) {
+        setProjectStatusModal((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                errorMessage: res.error || 'Fermeture refusée.',
+                blockingOrders: res.blockingOrders || getNonFinalOrdersForProject(orders, project.project_number),
+              }
+            : null
+        );
+        return;
+      }
+      setProjectStatusModal(null);
+    } else {
+      const res = await reopenProject(project.project_number, note);
+      if (!res.success) {
+        setProjectStatusModal((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                errorMessage: res.error || 'Réouverture refusée.',
+              }
+            : null
+        );
+        return;
+      }
+      setProjectStatusModal(null);
+    }
+  };
 
   // Available users for department deputy selector (exclude principal manager & already added deputies)
   const availableDepDeputyUsers = useMemo(() => {
@@ -711,6 +786,41 @@ export const DepartmentsProjectsModal: React.FC = () => {
                             </span>
                           </div>
                         )}
+
+                        {(() => {
+                          const depNameNorm = (d.name || '').trim().toLowerCase();
+                          const attachedDepots = (depots || []).filter((dep) => {
+                            if (!canUserViewDepot(dep, currentUser, users, departments)) return false;
+                            if (dep.department_id !== undefined && dep.department_id !== null && String(dep.department_id) === String(d.id)) {
+                              return true;
+                            }
+                            const resolved = resolveDepotDepartmentName(dep, users);
+                            return Boolean(resolved && resolved.trim().toLowerCase() === depNameNorm);
+                          });
+                          if (attachedDepots.length === 0) return null;
+                          return (
+                            <div className="pt-1.5 mt-1 border-t border-slate-100 dark:border-slate-800 flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                                {tr(language, 'Dépôts rattachés :', 'Attached depots:')}
+                              </span>
+                              {attachedDepots.map((dep) => (
+                                <span
+                                  key={String(dep.id)}
+                                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${
+                                    dep.type === 'VEHICLE'
+                                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
+                                      : dep.type === 'CONTAINER'
+                                        ? 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
+                                        : 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800'
+                                  }`}
+                                >
+                                  {dep.type === 'VEHICLE' ? '🚚 ' : dep.type === 'CONTAINER' ? '📦 ' : '🏢 '}
+                                  {formatDepotNameForDisplay(dep, users)}
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">
@@ -997,15 +1107,38 @@ export const DepartmentsProjectsModal: React.FC = () => {
                   </div>
                 )}
 
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="search"
-                    value={projSearch}
-                    onChange={(e) => setProjSearch(e.target.value)}
-                    placeholder={t('proj_search_placeholder')}
-                    className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
-                  />
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700">
+                    {([
+                      { id: 'IN_PROGRESS', label: tr(language, 'En cours', 'In progress') },
+                      { id: 'CLOSED', label: tr(language, 'Terminés', 'Closed') },
+                      { id: 'ALL', label: tr(language, 'Tous', 'All') },
+                    ] as const).map((tabItem) => (
+                      <button
+                        key={tabItem.id}
+                        type="button"
+                        onClick={() => setProjStatusTab(tabItem.id)}
+                        className={`px-3 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                          projStatusTab === tabItem.id
+                            ? 'bg-orange-600 text-white shadow-2xs'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+                        }`}
+                      >
+                        {tabItem.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="search"
+                      value={projSearch}
+                      onChange={(e) => setProjSearch(e.target.value)}
+                      placeholder={t('proj_search_placeholder')}
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
+                    />
+                  </div>
                 </div>
 
                 {filteredProjects.map((p) => {
@@ -1014,21 +1147,42 @@ export const DepartmentsProjectsModal: React.FC = () => {
                   const deputies = (p.deputy_manager_ids || []).map((depId) =>
                     (users || []).find((u) => String(u.id) === String(depId))
                   ).filter(Boolean);
+                  const closed = isProjectClosed(p);
+                  const closedBadgeText = formatClosedProjectBadgeText(p);
+                  const canManageStatus = canUserManageProjectStatus(currentUser, p, departments);
 
                   return (
                     <div
                       key={p.id}
-                      className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-start justify-between shadow-2xs gap-2"
+                      className={`p-3 bg-white dark:bg-slate-900 border rounded-2xl flex items-start justify-between shadow-2xs gap-2 ${
+                        closed
+                          ? 'border-slate-300 dark:border-slate-700 opacity-90 bg-slate-50/60 dark:bg-slate-900/60'
+                          : 'border-slate-200 dark:border-slate-800'
+                      }`}
                     >
                       <div className="space-y-1 min-w-0 flex-1">
                         <div className="font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
                           <span className="text-orange-600 font-bold">[{p.project_number}]</span>
                           <span>{p.project_name}</span>
+                          {closed && closedBadgeText ? (
+                            <span className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold">
+                              {closedBadgeText}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                              {tr(language, 'En cours', 'In progress')}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400">
                           {t('dep_tab_deps')} : <strong>{dep?.name || 'N/A'}</strong> •{' '}
                           {t('proj_manager_label')} : {mgr?.name || (tr(language, 'Aucun', 'None'))}
                         </div>
+                        {p.close_note && closed && (
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 italic">
+                            Note de clôture : {p.close_note}
+                          </div>
+                        )}
                         {deputies.length > 0 && (
                           <div className="text-[10px] text-orange-600 dark:text-orange-400 flex items-center gap-1 font-medium">
                             <UserCheck className="w-3 h-3 shrink-0" />
@@ -1039,26 +1193,71 @@ export const DepartmentsProjectsModal: React.FC = () => {
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex items-center gap-1 shrink-0 flex-wrap justify-end">
+                        {canManageStatus && (
+                          closed ? (
+                            <button
+                              type="button"
+                              disabled={writeDisabledNoSession}
+                              title={writeDisabledNoSession ? NO_AUTH_SESSION_BANNER_MESSAGE : 'Rouvrir le projet'}
+                              onClick={() =>
+                                setProjectStatusModal({
+                                  project: p,
+                                  mode: 'REOPEN',
+                                  note: '',
+                                  loading: false,
+                                  errorMessage: null,
+                                  blockingOrders: [],
+                                })
+                              }
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>{tr(language, 'Rouvrir le projet', 'Reopen project')}</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={writeDisabledNoSession}
+                              title={writeDisabledNoSession ? NO_AUTH_SESSION_BANNER_MESSAGE : 'Terminer le projet'}
+                              onClick={() =>
+                                setProjectStatusModal({
+                                  project: p,
+                                  mode: 'CLOSE',
+                                  note: '',
+                                  loading: false,
+                                  errorMessage: null,
+                                  blockingOrders: getNonFinalOrdersForProject(orders, p.project_number),
+                                })
+                              }
+                              className="px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 text-amber-800 dark:text-amber-300 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>{tr(language, 'Terminer le projet', 'Close project')}</span>
+                            </button>
+                          )
+                        )}
                         {canEditProj && (
                           <button
                             onClick={() => handleEditProj(p)}
-                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300"
-                            title={t('product_edit')}
+                            disabled={writeDisabledNoSession}
+                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 disabled:opacity-50"
+                            title={writeDisabledNoSession ? NO_AUTH_SESSION_BANNER_MESSAGE : t('product_edit')}
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                         {canDeleteProj && (
                           <button
+                            disabled={writeDisabledNoSession}
                             onClick={() => {
                               const confirmMsg = t('proj_delete_confirm').replace('{number}', p.project_number || '');
                               if (safeConfirm(confirmMsg)) {
                                 deleteProject(p.id);
                               }
                             }}
-                            className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 text-rose-600 transition cursor-pointer"
-                            title={t('common_delete')}
+                            className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 text-rose-600 transition cursor-pointer disabled:opacity-50"
+                            title={writeDisabledNoSession ? NO_AUTH_SESSION_BANNER_MESSAGE : t('common_delete')}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1093,7 +1292,7 @@ export const DepartmentsProjectsModal: React.FC = () => {
           <span className="text-[11px] font-semibold text-slate-400">
             {activeTab === 'deps'
               ? `${departments.length} ${tr(language, 'département(s)', 'department(s)')}`
-              : `${projects.length} ${tr(language, 'chantier(s)', 'project(s)')}`}
+              : `${filteredProjects.length} / ${projects.length} ${tr(language, 'chantier(s)', 'project(s)')}`}
           </span>
           <button
             type="button"
@@ -1108,6 +1307,136 @@ export const DepartmentsProjectsModal: React.FC = () => {
             <span>{tr(language, 'Fermer / Annuler', 'Close / Cancel')}</span>
           </button>
         </div>
+
+        {/* Modale de confirmation Terminer / Rouvrir le projet */}
+        {projectStatusModal && (
+          <div className="fixed inset-0 z-110 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                <h4 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  {projectStatusModal.mode === 'CLOSE' ? (
+                    <>
+                      <Archive className="w-4 h-4 text-amber-600" />
+                      <span>Terminer le projet [{projectStatusModal.project.project_number}]</span>
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw className="w-4 h-4 text-emerald-600" />
+                      <span>Rouvrir le projet [{projectStatusModal.project.project_number}]</span>
+                    </>
+                  )}
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setProjectStatusModal(null)}
+                  className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="text-xs text-slate-600 dark:text-slate-300 space-y-2">
+                <p>
+                  <strong>{projectStatusModal.project.project_name}</strong>
+                </p>
+                {projectStatusModal.mode === 'CLOSE' ? (
+                  <p>
+                    Une fois terminé, aucune nouvelle commande ni sortie de stock ne sera autorisée sur ce projet (les retours en stock restent possibles).
+                  </p>
+                ) : (
+                  <p>
+                    La réouverture permettra de nouveau les commandes et sorties de matériel sur ce chantier.
+                  </p>
+                )}
+              </div>
+
+              {projectStatusModal.errorMessage && (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 space-y-2">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{projectStatusModal.errorMessage}</span>
+                  </div>
+                </div>
+              )}
+
+              {projectStatusModal.mode === 'CLOSE' && projectStatusModal.blockingOrders.length > 0 && (
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-2">
+                  <div className="font-bold">
+                    Commandes non terminées sur ce projet ({projectStatusModal.blockingOrders.length}) :
+                  </div>
+                  <ul className="space-y-1 max-h-36 overflow-y-auto">
+                    {projectStatusModal.blockingOrders.map((bo) => (
+                      <li key={bo.id} className="flex items-center justify-between gap-2 bg-white/80 dark:bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-amber-200/70 dark:border-amber-800/70">
+                        <span className="font-semibold truncate">
+                          #{String(bo.id).slice(-6)} — {bo.requester_name} ({bo.status})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProjectStatusModal(null);
+                            setDepartmentsProjectsModal({ open: false, tab: activeTab });
+                            setOrderCartModalOpen(true);
+                          }}
+                          className="text-orange-600 dark:text-orange-400 font-bold flex items-center gap-1 shrink-0 hover:underline cursor-pointer"
+                        >
+                          <span>Voir</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                  Note (optionnelle)
+                </label>
+                <textarea
+                  value={projectStatusModal.note}
+                  onChange={(e) =>
+                    setProjectStatusModal((prev) =>
+                      prev ? { ...prev, note: e.target.value } : null
+                    )
+                  }
+                  rows={2}
+                  placeholder={
+                    projectStatusModal.mode === 'CLOSE'
+                      ? 'Ex: Fin de chantier, réception client validée...'
+                      : 'Ex: Travaux supplémentaires demandés...'
+                  }
+                  className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setProjectStatusModal(null)}
+                  className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  disabled={projectStatusModal.loading}
+                  onClick={handleConfirmProjectStatusChange}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold text-white shadow-sm cursor-pointer disabled:opacity-50 ${
+                    projectStatusModal.mode === 'CLOSE'
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  {projectStatusModal.loading
+                    ? 'Traitement...'
+                    : projectStatusModal.mode === 'CLOSE'
+                    ? 'Confirmer la clôture'
+                    : 'Confirmer la réouverture'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

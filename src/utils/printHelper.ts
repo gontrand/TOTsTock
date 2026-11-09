@@ -110,39 +110,81 @@ export function printHtmlViaIframe(htmlContent: string): void {
 /**
  * Generate Printable HTML for Standard Order Slip (Bon de Retrait A4 / A5)
  */
-export function generateOrderSlipHtml(params: {
-  orderNumber: string;
-  siteNumber: string;
-  requesterName: string;
-  pickupZone: string;
-  depotName: string;
-  preparerName?: string | null;
-  items: Array<{
-    product_name: string;
-    product_ref: string;
-    quantity: number;
-    unit?: string;
-    picked?: boolean;
-    unavailable?: boolean;
-    unavailable_comment?: string;
-    substituted?: boolean;
-    substituted_with_ref?: string;
-    substituted_with_name?: string;
-  }>;
-  qrCodeDataUrl?: string | null;
-  notes?: string;
-}): string {
-  const {
-    orderNumber,
-    siteNumber,
-    requesterName,
-    pickupZone,
-    depotName,
-    preparerName,
-    items,
-    qrCodeDataUrl,
-    notes,
-  } = params;
+export function generateOrderSlipHtml(
+  paramsOrOrder:
+    | {
+        orderNumber: string;
+        siteNumber: string;
+        requesterName: string;
+        pickupZone: string;
+        depotName: string;
+        preparerName?: string | null;
+        items: Array<{
+          product_name: string;
+          product_ref: string;
+          quantity: number;
+          unit?: string;
+          picked?: boolean;
+          unavailable?: boolean;
+          unavailable_comment?: string;
+          substituted?: boolean;
+          substituted_with_ref?: string;
+          substituted_with_name?: string;
+        }>;
+        qrCodeDataUrl?: string | null;
+        notes?: string;
+        signatureDataUrl?: string | null;
+        signedByName?: string | null;
+        signedAt?: string | null;
+        canIncludeSignature?: boolean;
+      }
+    | Record<string, any>,
+  _companyName?: string,
+  _currency?: string,
+  _logo?: string,
+  maybeOptions?: { canIncludeSignature?: boolean }
+): string {
+  const isMaterialOrder =
+    paramsOrOrder &&
+    typeof paramsOrOrder === 'object' &&
+    'order_number' in paramsOrOrder &&
+    !('orderNumber' in paramsOrOrder);
+
+  const orderNumber = isMaterialOrder
+    ? String(paramsOrOrder.order_number || '')
+    : String(paramsOrOrder.orderNumber || '');
+  const siteNumber = isMaterialOrder
+    ? String(paramsOrOrder.site_number || '')
+    : String(paramsOrOrder.siteNumber || '');
+  const requesterName = isMaterialOrder
+    ? String(paramsOrOrder.requester_name || '')
+    : String(paramsOrOrder.requesterName || '');
+  const pickupZone = isMaterialOrder
+    ? String(paramsOrOrder.pickup_zone || 'RETRAIT')
+    : String(paramsOrOrder.pickupZone || '');
+  const depotName = isMaterialOrder
+    ? String(paramsOrOrder.depot_name || 'Dépôt Principal')
+    : String(paramsOrOrder.depotName || '');
+  const preparerName = isMaterialOrder
+    ? paramsOrOrder.preparer_name || null
+    : paramsOrOrder.preparerName || null;
+  const items = Array.isArray(paramsOrOrder.items) ? paramsOrOrder.items : [];
+  const qrCodeDataUrl = isMaterialOrder
+    ? paramsOrOrder.qrCodeDataUrl || null
+    : paramsOrOrder.qrCodeDataUrl || null;
+  const notes = paramsOrOrder.notes;
+  const signatureDataUrl = isMaterialOrder
+    ? paramsOrOrder.signature_data || null
+    : paramsOrOrder.signatureDataUrl || null;
+  const signedByName = isMaterialOrder
+    ? paramsOrOrder.collected_by || paramsOrOrder.requester_name || null
+    : paramsOrOrder.signedByName || null;
+  const signedAt = isMaterialOrder
+    ? paramsOrOrder.collected_at || null
+    : paramsOrOrder.signedAt || null;
+  const canIncludeSignature = isMaterialOrder
+    ? Boolean(maybeOptions?.canIncludeSignature ?? paramsOrOrder.canIncludeSignature)
+    : Boolean(paramsOrOrder.canIncludeSignature);
 
   const nowFormatted = new Date().toLocaleString('fr-FR', {
     dateStyle: 'full',
@@ -392,6 +434,44 @@ export function generateOrderSlipHtml(params: {
         .join('')}
     </tbody>
   </table>
+
+  ${
+    signatureDataUrl && String(signatureDataUrl).trim().length > 0
+      ? canIncludeSignature
+        ? `
+  <div style="margin-top: 16px; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; text-align: center;">
+    <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; color: #334155; margin-bottom: 6px;">
+      Preuve de retrait signée
+    </div>
+    <img src="${signatureDataUrl}" alt="Signature de retrait" style="max-height: 90px; max-width: 260px; object-fit: contain; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px;" />
+    <div style="font-size: 11px; font-weight: 700; color: #0f172a; margin-top: 6px;">
+      Signé par ${signedByName || requesterName}${
+          signedAt
+            ? ` le ${new Date(signedAt).toLocaleString('fr-FR', {
+                dateStyle: 'short',
+                timeStyle: 'short',
+              })}`
+            : ''
+        }
+    </div>
+  </div>`
+        : `
+  <div style="margin-top: 16px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; text-align: center; font-size: 12px; font-weight: 800; color: #0f172a;">
+    Retrait signé${
+      signedByName
+        ? ` — Signé par ${signedByName}${
+            signedAt
+              ? ` le ${new Date(signedAt).toLocaleString('fr-FR', {
+                  dateStyle: 'short',
+                  timeStyle: 'short',
+                })}`
+              : ''
+          }`
+        : ''
+    }
+  </div>`
+      : ''
+  }
 
   <div class="qr-container">
     ${

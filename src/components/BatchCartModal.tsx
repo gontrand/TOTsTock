@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 import {
   formatCurrency,
   isUserAllowedForDepot,
@@ -9,6 +10,10 @@ import {
   canUserBorrowFromDepot,
   canUserEnterStockInDepot,
 } from '../utils/crypto';
+import {
+  getDefaultStockInDepotForProduct,
+  getEligibleStockInDepotsForProduct,
+} from '../utils/depotPermissions';
 import {
   X,
   ShoppingCart,
@@ -25,6 +30,11 @@ import {
   ArrowUp,
   ArrowDown,
 } from 'lucide-react';
+import {
+  filterProjectsForSelection,
+  formatProjectOptionLabel,
+  validateProjectForOutflowOrOrder,
+} from '../services/projectStatusService';
 
 export const BatchCartModal: React.FC = () => {
   const {
@@ -32,6 +42,7 @@ export const BatchCartModal: React.FC = () => {
     setBatchCartModalOpen,
     batchCart,
     updateCartQty,
+    updateCartItemDepot,
     removeFromCart,
     clearCart,
     confirmBatchMovements,
@@ -40,6 +51,7 @@ export const BatchCartModal: React.FC = () => {
     projects,
     departments,
     depots,
+    stockLevels,
     users,
     currentUser,
     userHasPermission,
@@ -49,8 +61,13 @@ export const BatchCartModal: React.FC = () => {
 
   const isOut = scanState.mode === 'OUT';
   const hasGeneralStockIn = userHasPermission('perm_stock_in');
+  const selectableProjects = React.useMemo(
+    () => filterProjectsForSelection(projects, isOut ? 'OUT' : 'IN'),
+    [projects, isOut]
+  );
   const [selectedSiteNumber, setSelectedSiteNumber] = useState<string>(() => {
-    return projects.length > 0 ? projects[0].project_number : '';
+    const openProjs = filterProjectsForSelection(projects, isOut ? 'OUT' : 'IN');
+    return openProjs.length > 0 ? openProjs[0].project_number : '';
   });
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -59,10 +76,15 @@ export const BatchCartModal: React.FC = () => {
 
   // Auto-sync project selection if projects list updates
   React.useEffect(() => {
-    if (projects.length > 0 && (!selectedSiteNumber || !projects.some((p) => p.project_number === selectedSiteNumber))) {
-      setSelectedSiteNumber(projects[0].project_number);
+    if (
+      isOut &&
+      selectableProjects.length > 0 &&
+      (!selectedSiteNumber ||
+        !selectableProjects.some((p) => p.project_number === selectedSiteNumber))
+    ) {
+      setSelectedSiteNumber(selectableProjects[0].project_number);
     }
-  }, [projects, selectedSiteNumber]);
+  }, [selectableProjects, selectedSiteNumber, isOut]);
 
   // Keyboard shortcut: close on Escape
   React.useEffect(() => {
@@ -88,6 +110,14 @@ export const BatchCartModal: React.FC = () => {
       return;
     }
 
+    if (isOut && selectedSiteNumber) {
+      const projValidation = validateProjectForOutflowOrOrder(projects, selectedSiteNumber);
+      if (!projValidation.allowed) {
+        setErrorMsg(projValidation.errorMessage || projValidation.message || '');
+        return;
+      }
+    }
+
     if (isOut) {
       for (const item of batchCart) {
         const borrowCheck = canUserBorrowFromDepot(currentUser, item.product.store_name, depots, language, departments, users);
@@ -98,9 +128,31 @@ export const BatchCartModal: React.FC = () => {
       }
     } else {
       for (const item of batchCart) {
-        const entryCheck = canUserEnterStockInDepot(currentUser, item.product.store_name, depots, hasGeneralStockIn, language, departments, users);
+        const targetDepot =
+          item.targetDepotName ||
+          getDefaultStockInDepotForProduct(
+            item.product,
+            currentUser,
+            depots,
+            stockLevels,
+            hasGeneralStockIn,
+            departments,
+            users
+          );
+        const entryCheck = canUserEnterStockInDepot(
+          currentUser,
+          targetDepot,
+          depots,
+          hasGeneralStockIn,
+          language,
+          departments,
+          users
+        );
         if (!entryCheck.allowed) {
-          setErrorMsg(entryCheck.reason || (tr(language, 'Entrée interdite sur ce dépôt.', 'Stock entry not allowed.')));
+          setErrorMsg(
+            entryCheck.reason ||
+              tr(language, 'Entrée interdite sur ce dépôt.', 'Stock entry not allowed.')
+          );
           return;
         }
       }
@@ -109,7 +161,7 @@ export const BatchCartModal: React.FC = () => {
     setErrorMsg('');
     setLoading(true);
     try {
-      const res = await confirmBatchMovements(isOut ? selectedSiteNumber : undefined);
+      const res = await confirmBatchMovements(selectedSiteNumber || undefined);
       if (!res.success) {
         setErrorMsg(res.message || t('common_error'));
       }
@@ -217,33 +269,36 @@ export const BatchCartModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Project Selector for OUT operations */}
-        {isOut && (
-          <div className="pt-3">
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5 text-orange-500" />
-              {t('cart_project_label')}
-            </label>
-            <SearchableSelect
-              value={selectedSiteNumber}
-              onChange={(val) => setSelectedSiteNumber(val)}
-              className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium outline-none focus:ring-2 focus:ring-orange-500"
-            >
-              {projects.length === 0 ? (
-                <option value="">{tr(language, 'Aucun projet enregistré', 'No project recorded')}</option>
-              ) : (
-                projects.map((p) => {
-                  const dep = departments.find((d) => d.id === p.department_id);
-                  return (
-                    <option key={p.id} value={p.project_number}>
-                      [{p.project_number}] {p.project_name} ({dep?.name || t('common_main_depot')})
-                    </option>
-                  );
-                })
-              )}
-            </SearchableSelect>
-          </div>
-        )}
+        {/* Project Selector for OUT and IN (returns) operations */}
+        <div className="pt-3">
+          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1.5">
+            <Building2 className="w-3.5 h-3.5 text-orange-500" />
+            {isOut ? t('cart_project_label') : tr(language, 'Chantier (optionnel — retour en stock)', 'Project (optional — stock return)')}
+          </label>
+          <SearchableSelect
+            value={selectedSiteNumber}
+            onChange={(val) => setSelectedSiteNumber(val)}
+            className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium outline-none focus:ring-2 focus:ring-orange-500"
+          >
+            {!isOut && (
+              <option value="">
+                {tr(language, '— Entrée générale (sans chantier) —', '— General stock entry —')}
+              </option>
+            )}
+            {selectableProjects.length === 0 ? (
+              <option value="">{tr(language, 'Aucun projet en cours enregistré', 'No active project recorded')}</option>
+            ) : (
+              selectableProjects.map((p) => {
+                const dep = departments.find((d) => d.id === p.department_id);
+                return (
+                  <option key={p.id} value={p.project_number}>
+                    {formatProjectOptionLabel(p, isOut ? 'OUT' : 'IN')} ({dep?.name || t('common_main_depot')})
+                  </option>
+                );
+              })
+            )}
+          </SearchableSelect>
+        </div>
 
         {errorMsg && (
           <div className="mt-3 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 flex items-center gap-2 text-xs font-bold text-rose-600 dark:text-rose-400">
@@ -294,12 +349,46 @@ export const BatchCartModal: React.FC = () => {
           ) : (
             batchCart.map((item) => {
               const p = item.product;
+              const eligibleInDepots = !isOut
+                ? getEligibleStockInDepotsForProduct(
+                    p,
+                    currentUser,
+                    depots,
+                    stockLevels,
+                    hasGeneralStockIn,
+                    departments,
+                    users
+                  )
+                : [];
+              const selectedTargetDepot = !isOut
+                ? item.targetDepotName ||
+                  getDefaultStockInDepotForProduct(
+                    p,
+                    currentUser,
+                    depots,
+                    stockLevels,
+                    hasGeneralStockIn,
+                    departments,
+                    users
+                  )
+                : p.store_name || tr(language, 'Dépôt Principal', 'Main Depot');
+              const selectedInDepotRow = !isOut
+                ? eligibleInDepots.find(
+                    (r) =>
+                      r.depotName.trim().toLowerCase() ===
+                      selectedTargetDepot.trim().toLowerCase()
+                  )
+                : undefined;
+              const displayedQty = !isOut && selectedInDepotRow !== undefined
+                ? selectedInDepotRow.currentQty
+                : p.quantity;
+
               const hasEnough = !isOut || item.qtyActual <= p.quantity;
               const borrowCheck = isOut
                 ? canUserBorrowFromDepot(currentUser, p.store_name, depots, language, departments, users)
                 : { allowed: true };
               const entryCheck = !isOut
-                ? canUserEnterStockInDepot(currentUser, p.store_name, depots, hasGeneralStockIn, language, departments, users)
+                ? canUserEnterStockInDepot(currentUser, selectedTargetDepot, depots, hasGeneralStockIn, language, departments, users)
                 : { allowed: true };
               const isValid = hasEnough && (isOut ? borrowCheck.allowed : entryCheck.allowed);
               const permissionErrorMsg = isOut ? borrowCheck.reason : entryCheck.reason;
@@ -314,16 +403,54 @@ export const BatchCartModal: React.FC = () => {
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div>
+                    <div className="flex-1 min-w-0">
                       <h4 className="text-xs font-bold text-slate-900 dark:text-white leading-tight">
                         {p.brand} {p.model}
                       </h4>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        {tr(language, 'Réf', 'Ref')}: <span className="font-semibold text-orange-600">{p.reference}</span> • {tr(language, 'Stock disponible', 'Available stock')}: <strong className={p.quantity === 0 ? 'text-rose-500' : ''}>{p.quantity}</strong>
+                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1 flex-wrap">
+                        <span>{tr(language, 'Réf', 'Ref')}:</span>
+                        <ProductRefLink
+                          productId={p.id}
+                          reference={p.reference}
+                          className="text-[11px]"
+                        />
+                        <span>
+                          • {tr(language, 'Stock disponible', 'Available stock')}:{' '}
+                          <strong className={displayedQty === 0 ? 'text-rose-500' : ''}>
+                            {displayedQty}
+                          </strong>
+                        </span>
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 font-medium">
-                        <span>📍 {p.store_name || (tr(language, 'Dépôt Principal', 'Main Depot'))}</span>
-                      </div>
+                      {isOut ? (
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1 font-medium">
+                          <span>📍 {p.store_name || tr(language, 'Dépôt Principal', 'Main Depot')}</span>
+                        </div>
+                      ) : (
+                        <div className="mt-2 space-y-1">
+                          <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                            📍 {tr(language, 'Dépôt à alimenter', 'Depot to replenish', 'Depot om aan te vullen')}
+                          </label>
+                          <SearchableSelect
+                            value={selectedTargetDepot}
+                            onChange={(val) => updateCartItemDepot(p.id, val)}
+                            aria-label={tr(language, 'Dépôt à alimenter', 'Depot to replenish')}
+                            className="w-full p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                          >
+                            {eligibleInDepots.length === 0 ? (
+                              <option value={selectedTargetDepot}>
+                                {selectedTargetDepot} ({tr(language, 'stock actuel', 'current stock')} : {p.quantity})
+                              </option>
+                            ) : (
+                              eligibleInDepots.map((row) => (
+                                <option key={row.depotName} value={row.depotName}>
+                                  {row.depotName} ({tr(language, 'stock actuel', 'current stock')} : {row.currentQty}
+                                  {row.rackLocation ? ` • ${row.rackLocation}` : ''})
+                                </option>
+                              ))
+                            )}
+                          </SearchableSelect>
+                        </div>
+                      )}
                       {!isValid && permissionErrorMsg && (
                         <div className="text-[11px] text-rose-600 dark:text-rose-400 font-bold mt-1.5 flex items-start gap-1 p-2 rounded-xl bg-rose-100/60 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800">
                           <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -412,7 +539,18 @@ export const BatchCartModal: React.FC = () => {
                     if (i.qtyActual > i.product.quantity) return true;
                     return !canUserBorrowFromDepot(currentUser, i.product.store_name, depots, language, departments, users).allowed;
                   } else {
-                    return !canUserEnterStockInDepot(currentUser, i.product.store_name, depots, hasGeneralStockIn, language, departments, users).allowed;
+                    const targetDepot =
+                      i.targetDepotName ||
+                      getDefaultStockInDepotForProduct(
+                        i.product,
+                        currentUser,
+                        depots,
+                        stockLevels,
+                        hasGeneralStockIn,
+                        departments,
+                        users
+                      );
+                    return !canUserEnterStockInDepot(currentUser, targetDepot, depots, hasGeneralStockIn, language, departments, users).allowed;
                   }
                 })
               }

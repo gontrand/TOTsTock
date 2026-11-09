@@ -88,6 +88,8 @@ export interface Department {
   order_approval_threshold?: number; // Seuil en € déclenchant la validation (ex: 300 €)
 }
 
+export type ProjectStatus = 'IN_PROGRESS' | 'CLOSED';
+
 export interface Project {
   id: number;
   department_id: number;
@@ -95,6 +97,11 @@ export interface Project {
   project_name: string;
   manager_id?: string | number | null;
   deputy_manager_ids?: (string | number)[];
+  status?: ProjectStatus;
+  closed_at?: string | null;
+  closed_by?: string | number | null;
+  closed_by_name?: string | null;
+  close_note?: string | null;
 }
 
 export type CurrencyCode = 'EUR' | 'USD' | 'CHF' | 'GBP' | 'CAD' | 'XOF' | 'MAD' | 'DZD' | 'TND';
@@ -156,6 +163,7 @@ export interface AppSetting {
 export interface BatchCartItem {
   product: Product;
   qtyActual: number;
+  targetDepotName?: string;
 }
 
 export interface OrderBasket {
@@ -504,7 +512,8 @@ export type StockTransferStatus =
   | 'PARTIALLY_RECEIVED'
   | 'DISPUTED'
   | 'REJECTED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'RETURNED_TO_STOCK';
 
 export interface StockTransferLine {
   product_id: string;
@@ -568,6 +577,10 @@ export interface StockTransferRecord {
   resolved_at?: string | null;
   resolution_action?: 'RETURN_TO_SOURCE' | 'WRITE_OFF' | string | null;
   resolution_note?: string | null;
+  returned_by?: string | null;
+  returned_by_name?: string | null;
+  returned_at?: string | null;
+  return_comment?: string | null;
   comments?: StockTransferCommentEntry[];
   comments_history?: StockTransferCommentEntry[];
   created_at: string;

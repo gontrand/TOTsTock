@@ -1,5 +1,7 @@
-import { Depot, User, Department, Project } from '../types';
+import { Depot, User, Department, Project, Product, StockLevel } from '../types';
 import { isDepotClosed, isUserAllowedForDepot } from './crypto';
+
+export const RESTRICTED_VEHICLE_LABEL = 'Véhicule (accès restreint)';
 
 // String normalization helper (ignores case, spaces, and accents)
 export const normalizeDepotString = (str?: string | null): string => {
@@ -28,26 +30,175 @@ export function isDepotContainer(depot?: Depot | null): boolean {
   return depot.type === 'CONTAINER';
 }
 
+export interface ResolvedDepotDepartment {
+  id?: number;
+  name?: string;
+  manager_id?: number | null;
+  deputy_manager_ids?: (string | number)[];
+  allow_global_kpis?: boolean;
+  departmentId: string | number | null;
+  departmentName: string | null;
+}
+
 /**
- * Checks whether a user is the Site Manager / Conducteur de travaux or deputy for a project
+ * Resolves the Department associated with a depot (via department_id, department_name, driver's department, or attached project's department).
+ */
+export function resolveDepotDepartment(
+  depot: Depot | null | undefined,
+  departments?: Department[] | null,
+  allUsers?: User[] | null,
+  projects?: Project[] | null
+): ResolvedDepotDepartment {
+  if (!depot) {
+    return { departmentId: null, departmentName: null };
+  }
+
+  const depts = Array.isArray(departments) ? departments : [];
+  const usersList = Array.isArray(allUsers) ? allUsers : [];
+  const projectsList = Array.isArray(projects) ? projects : [];
+
+  // 1. Direct link via depot.department_id or depot.department_name
+  const direct = depts.find((d) => {
+    if (depot.department_id && String(d.id) === String(depot.department_id)) return true;
+    if (
+      depot.department_name &&
+      normalizeDepotString(d.name) === normalizeDepotString(depot.department_name)
+    ) {
+      return true;
+    }
+    return false;
+  });
+  if (direct) {
+    return {
+      ...direct,
+      departmentId: direct.id,
+      departmentName: direct.name,
+    };
+  }
+
+  // 2. Fallback: check department of the depot's vehicle manager / driver
+  if (depot.manager_id && usersList.length > 0) {
+    const chauffeur = usersList.find((u) => String(u.id) === String(depot.manager_id));
+    if (chauffeur?.department) {
+      const matched = depts.find(
+        (d) =>
+          normalizeDepotString(d.name) === normalizeDepotString(chauffeur.department) ||
+          String(d.id) === String(chauffeur.department)
+      );
+      if (matched) {
+        return {
+          ...matched,
+          departmentId: matched.id,
+          departmentName: matched.name,
+        };
+      }
+      return {
+        name: chauffeur.department,
+        departmentId: depot.department_id ?? null,
+        departmentName: chauffeur.department,
+      };
+    }
+  }
+
+  // 3. Fallback for container with project_number
+  if (depot.project_number && projectsList.length > 0) {
+    const proj = projectsList.find(
+      (p) => normalizeDepotString(p.project_number) === normalizeDepotString(depot.project_number)
+    );
+    if (proj?.department_id != null) {
+      const matched = depts.find((d) => String(d.id) === String(proj.department_id));
+      if (matched) {
+        return {
+          ...matched,
+          departmentId: matched.id,
+          departmentName: matched.name,
+        };
+      }
+      return {
+        departmentId: proj.department_id,
+        departmentName: depot.department_name ?? null,
+      };
+    }
+  }
+
+  return {
+    name: depot.department_name || undefined,
+    departmentId: depot.department_id ?? null,
+    departmentName: depot.department_name ?? null,
+  };
+}
+
+/**
+ * Returns the resolved department name (string | null) for a depot.
+ */
+export function resolveDepotDepartmentName(
+  depot: Depot | null | undefined,
+  allUsers?: User[] | null,
+  departments?: Department[] | null,
+  projects?: Project[] | null
+): string | null {
+  const res = resolveDepotDepartment(depot, departments, allUsers, projects);
+  return res.departmentName || null;
+}
+
+/**
+ * Checks whether a user is the Site Manager / Conducteur de travaux or deputy for a specific project_number
  */
 export function isUserProjectManagerOrDeputy(
   user: User | { id?: string | number } | null | undefined,
   projectNumber?: string | null,
   projects?: Project[] | null
 ): boolean {
-  if (!user || !projectNumber || !projects || projects.length === 0) return false;
+  if (!user || user.id === undefined || user.id === null || !projectNumber || !projects || projects.length === 0) {
+    return false;
+  }
   const userIdStr = String(user.id);
-  const targetProj = projects.find((p) => p.project_number === projectNumber);
+  const targetNumNorm = projectNumber.trim().toUpperCase();
+  const targetProj = projects.find(
+    (p) => (p.project_number || '').trim().toUpperCase() === targetNumNorm
+  );
   if (!targetProj) return false;
 
-  const isManager = targetProj.manager_id && String(targetProj.manager_id) === userIdStr;
+  const isManager = targetProj.manager_id !== undefined && targetProj.manager_id !== null && String(targetProj.manager_id) === userIdStr;
   const isDeputy =
-    targetProj.deputy_manager_ids &&
     Array.isArray(targetProj.deputy_manager_ids) &&
     targetProj.deputy_manager_ids.some((id) => String(id) === userIdStr);
 
   return Boolean(isManager || isDeputy);
+}
+
+/**
+ * Checks whether a user is a Project Manager (or deputy) of ANY project attached to the vehicle/container's department
+ * (`Project.department_id` matches the depot's department).
+ */
+export function isUserProjectManagerForDepotDepartment(
+  user: User | { id?: string | number } | null | undefined,
+  depot: Depot | null | undefined,
+  departments?: Department[] | null,
+  projects?: Project[] | null,
+  allUsers?: User[] | null
+): boolean {
+  if (!user || user.id === undefined || user.id === null || !depot || !projects || projects.length === 0) {
+    return false;
+  }
+  const userIdStr = String(user.id);
+  const targetDept = resolveDepotDepartment(depot, departments, allUsers, projects);
+  const deptIdStr = targetDept?.id !== undefined && targetDept?.id !== null
+    ? String(targetDept.id)
+    : depot.department_id !== undefined && depot.department_id !== null
+    ? String(depot.department_id)
+    : '';
+
+  if (!deptIdStr) return false;
+
+  return projects.some((p) => {
+    if (String(p.department_id) !== deptIdStr) return false;
+    const isMgr = p.manager_id !== undefined && p.manager_id !== null && String(p.manager_id) === userIdStr;
+    const isDep =
+      Array.isArray(p.deputy_manager_ids) &&
+      p.deputy_manager_ids.some((id) => String(id) === userIdStr);
+    return isMgr || isDep;
+  });
 }
 
 /**
@@ -68,30 +219,14 @@ export function isUserDeptManagerOrDeputyForDepot(
   departments?: Department[] | null,
   allUsers?: User[] | null
 ): boolean {
-  if (!user || !depot || !departments || departments.length === 0) return false;
-  const userIdStr = String(user.id);
-
-  // 1. Direct link via depot.department_id or depot.department_name
-  let targetDept = departments.find((d) => {
-    if (depot.department_id && String(d.id) === String(depot.department_id)) return true;
-    if (depot.department_name && d.name.toLowerCase().trim() === depot.department_name.toLowerCase().trim()) return true;
+  if (!user || user.id === undefined || user.id === null || !depot || !departments || departments.length === 0) {
     return false;
-  });
-
-  // 2. Fallback: check department of the depot's vehicle manager / driver
-  if (!targetDept && depot.manager_id && allUsers) {
-    const chauffeur = allUsers.find((u) => String(u.id) === String(depot.manager_id));
-    if (chauffeur?.department) {
-      targetDept = departments.find(
-        (d) => d.name.toLowerCase().trim() === chauffeur.department!.toLowerCase().trim()
-      );
-    }
   }
+  const userIdStr = String(user.id);
+  const targetDept = resolveDepotDepartment(depot, departments, allUsers);
+  if (!targetDept || targetDept.id === undefined) return false;
 
-  if (!targetDept) return false;
-
-  // Check if user is department manager or listed in deputy_manager_ids
-  const isManager = targetDept.manager_id && String(targetDept.manager_id) === userIdStr;
+  const isManager = targetDept.manager_id !== undefined && targetDept.manager_id !== null && String(targetDept.manager_id) === userIdStr;
   const isDeputy =
     targetDept.deputy_manager_ids &&
     Array.isArray(targetDept.deputy_manager_ids) &&
@@ -128,13 +263,13 @@ export function isDepotVehicle(depot?: Depot | null): boolean {
 }
 
 /**
- * Checks whether a user is the primary assigned driver/holder of the vehicle
+ * Checks whether a user is the primary assigned driver/holder of the vehicle or container
  */
 export function isUserVehicleHolder(
   user: User | { id?: string | number; name?: string; role_id?: number } | null | undefined,
   depot: Depot | null | undefined
 ): boolean {
-  if (!user || !depot || depot.type !== 'VEHICLE') return false;
+  if (!user || !depot || !isDepotVehicleOrContainer(depot)) return false;
 
   const userIdStr = String(user.id ?? '');
   const managerIdStr = String(depot.manager_id ?? '');
@@ -153,13 +288,13 @@ export function isUserVehicleHolder(
 }
 
 /**
- * Checks whether a user is an authorized binôme (team partner) for this vehicle
+ * Checks whether a user is an authorized binôme (team partner) for this vehicle or container
  */
 export function isUserVehicleBinome(
   user: User | { id?: string | number; name?: string; role_id?: number; binome_id?: string | number | null } | null | undefined,
   depot: Depot | null | undefined
 ): boolean {
-  if (!user || !depot || depot.type !== 'VEHICLE') return false;
+  if (!user || !depot || !isDepotVehicleOrContainer(depot)) return false;
 
   const userIdStr = String(user.id ?? '');
   const userNameNorm = normalizeDepotString(user.name);
@@ -185,7 +320,7 @@ export function isUserVehicleBinome(
 }
 
 /**
- * Checks whether a user is either the assigned holder OR one of the binômes of a vehicle depot
+ * Checks whether a user is either the assigned holder OR one of the binômes of a vehicle/container depot
  */
 export function isUserVehicleHolderOrBinome(
   user: User | { id?: string | number; name?: string; role_id?: number; binome_id?: string | number | null } | null | undefined,
@@ -196,14 +331,14 @@ export function isUserVehicleHolderOrBinome(
 }
 
 /**
- * Returns all vehicle depots assigned to the user (as holder or binôme)
+ * Returns all vehicle/container depots assigned to the user (as holder or binôme)
  */
 export function getUserVehicles(
   user: User | null | undefined,
   depots: Depot[] | null | undefined
 ): Depot[] {
   if (!user || !depots) return [];
-  return depots.filter((d) => d.type === 'VEHICLE' && isUserVehicleHolderOrBinome(user, d));
+  return depots.filter((d) => isDepotVehicleOrContainer(d) && isUserVehicleHolderOrBinome(user, d));
 }
 
 export interface DepotPermissionCheckResult {
@@ -256,10 +391,10 @@ export function canUserBorrowFromDepot(
     const isBinome = isUserVehicleBinome(user, depot);
     const isDeptManagerOrDeputy = isUserDeptManagerOrDeputyForDepot(user, depot, departments, allUsers);
     const isProjectManagerOrDeputy =
-      depot.type === 'CONTAINER' && isUserProjectManagerOrDeputy(user, depot.project_number, projects);
-    const isInLogisticsOrDirection = isUserInLogisticsOrDirection(user);
+      (depot.type === 'CONTAINER' && isUserProjectManagerOrDeputy(user, depot.project_number, projects)) ||
+      isUserProjectManagerForDepotDepartment(user, depot, departments, projects, allUsers);
 
-    // Rule: Department Managers & deputies, vehicle holders, binômes, and project managers on container
+    // Rule: Admins, Department Managers & deputies, vehicle holders, binômes, and project managers
     if (isSuperOrAdmin || isHolder || isBinome || isDeptManagerOrDeputy || isProjectManagerOrDeputy) {
       return {
         allowed: true,
@@ -267,21 +402,6 @@ export function canUserBorrowFromDepot(
         isVehicleHolder: isHolder,
         isVehicleBinome: isBinome,
         depot,
-      };
-    }
-
-    // Rule: Logistics and Executive Management can view all vehicle/containers but CANNOT perform actions!
-    if (isInLogisticsOrDirection) {
-      return {
-        allowed: false,
-        isVehicle: depot.type === 'VEHICLE',
-        isVehicleHolder: false,
-        isVehicleBinome: false,
-        depot,
-        reason:
-          lang === 'fr'
-            ? `🚫 Consultation seule : Le département « ${user.department} » peut consulter les stocks des camionnettes et conteneurs mais ne peut pas effectuer d'emprunt ou de sortie.`
-            : `🚫 View only: Department "${user.department}" has read-only access to vehicles and containers (no withdrawal allowed).`,
       };
     }
 
@@ -363,10 +483,10 @@ export function canUserEnterStockInDepot(
     const isBinome = isUserVehicleBinome(user, depot);
     const isDeptManagerOrDeputy = isUserDeptManagerOrDeputyForDepot(user, depot, departments, allUsers);
     const isProjectManagerOrDeputy =
-      depot.type === 'CONTAINER' && isUserProjectManagerOrDeputy(user, depot.project_number, projects);
-    const isInLogisticsOrDirection = isUserInLogisticsOrDirection(user);
+      (depot.type === 'CONTAINER' && isUserProjectManagerOrDeputy(user, depot.project_number, projects)) ||
+      isUserProjectManagerForDepotDepartment(user, depot, departments, projects, allUsers);
 
-    // Rule: Holder, Binôme, Department Managers/Deputies, and Project Managers on container
+    // Rule: Holder, Binôme, Department Managers/Deputies, and Project Managers
     if (isHolder || isBinome || isDeptManagerOrDeputy || isProjectManagerOrDeputy) {
       return {
         allowed: true,
@@ -375,24 +495,6 @@ export function canUserEnterStockInDepot(
         isVehicleBinome: isBinome,
         depot,
       };
-    }
-
-    // Rule: Logistics and Executive Management can view all vehicle/containers but CANNOT perform actions!
-    if (isInLogisticsOrDirection) {
-      return {
-        allowed: false,
-        isVehicle: depot.type === 'VEHICLE',
-        depot,
-        reason:
-          lang === 'fr'
-            ? `🚫 Consultation seule : Le département « ${user.department} » peut consulter les stocks des camionnettes et conteneurs mais ne peut pas y entrer du stock.`
-            : `🚫 View only: Department "${user.department}" has read-only access to vehicles and containers (no stock entry allowed).`,
-      };
-    }
-
-    // If someone else's vehicle:
-    if (hasGeneralStockInPerm && Number(user.role_id) === 2 && isUserAllowedForDepot(user, depotName)) {
-      return { allowed: true, isVehicle: depot.type === 'VEHICLE', depot };
     }
 
     return {
@@ -448,47 +550,339 @@ export function canUserEnterStockInDepot(
   return { allowed: true, depot };
 }
 
+function extractUsersDeptsProjects(args: unknown[]): {
+  depots?: Depot[];
+  departments?: Department[];
+  allUsers?: User[];
+  projects?: Project[];
+} {
+  let depots: Depot[] | undefined;
+  let departments: Department[] | undefined;
+  let allUsers: User[] | undefined;
+  let projects: Project[] | undefined;
+
+  for (const arr of args) {
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    const first = arr[0] as Record<string, unknown>;
+    if (!first || typeof first !== 'object') continue;
+    if ('project_number' in first || 'project_name' in first) {
+      projects = arr as Project[];
+    } else if ('trigram' in first || 'role_id' in first) {
+      allUsers = arr as User[];
+    } else if ('type' in first || 'pickup_zones' in first || 'license_plate' in first || 'is_active' in first) {
+      depots = arr as Depot[];
+    } else {
+      departments = arr as Department[];
+    }
+  }
+  return { depots, departments, allUsers, projects };
+}
+
+function isDepotLikeObject(val: unknown): val is Depot {
+  if (!val || typeof val !== 'object') return false;
+  const obj = val as Record<string, unknown>;
+  if ('trigram' in obj || 'role_id' in obj || 'allowed_depots' in obj) return false;
+  return 'type' in obj || 'manager_id' in obj || 'pickup_zones' in obj || 'is_active' in obj || 'name' in obj;
+}
+
 /**
- * Checks whether a user can view / consult the stock contents of a depot.
- * Rule:
- * - SuperAdmin / Admin: can view all.
- * - Logistics / Direction department: CAN VIEW all vehicle and container depots.
- * - Department managers & deputies: can view all vehicle and container depots of their department.
- * - Vehicle holder & binôme: can view their assigned vehicle.
- * - Project manager & deputies of associated project: can view their container depot.
- * - Fixed depots: according to allowed_depots.
+ * Checks whether a user can view / consult a depot (v59 §2).
+ * Accepts flexible calling orders:
+ * - `(user, depot, departments?, allUsers?, projects?)`
+ * - `(depot, user, allUsers?, departments?, projects?)`
+ * - `(depotName: string, user, depots?, allUsers?, departments?, projects?)`
  */
 export function canUserViewDepot(
-  user: User | { id?: string | number; role_id?: number; department?: string; allowed_depots?: string[] } | null | undefined,
-  depot: Depot | null | undefined,
-  departments?: Department[] | null,
-  allUsers?: User[] | null,
-  projects?: Project[] | null
+  arg1: any,
+  arg2: any,
+  arg3?: any,
+  arg4?: any,
+  arg5?: any,
+  arg6?: any
 ): boolean {
+  const { depots, departments, allUsers, projects } = extractUsersDeptsProjects([arg3, arg4, arg5, arg6]);
+
+  let user: User | null | undefined;
+  let depot: Depot | null | undefined;
+  let depotNameFallback = '';
+
+  if (typeof arg1 === 'string') {
+    depotNameFallback = arg1;
+    user = arg2 as User | null | undefined;
+    depot = findDepotByName(depots, arg1) || ({ id: arg1, name: arg1, type: 'FIXED' } as Depot);
+  } else if (isDepotLikeObject(arg1) && (!arg2 || !isDepotLikeObject(arg2))) {
+    depot = arg1;
+    user = arg2 as User | null | undefined;
+  } else {
+    user = arg1 as User | null | undefined;
+    depot = arg2 as Depot | null | undefined;
+  }
+
   if (!user || !depot) return false;
   if (Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1) return true;
 
   if (isDepotVehicleOrContainer(depot)) {
-    // 1. Logistics or Direction can view all vehicle and container depots!
-    if (isUserInLogisticsOrDirection(user)) {
-      return true;
-    }
-    // 2. Department manager or deputy can view their department's vehicles/containers
-    if (isUserDeptManagerOrDeputyForDepot(user, depot, departments, allUsers)) {
-      return true;
-    }
-    // 3. Vehicle holder or binôme
+    // 1. Le responsable (chauffeur) et son binôme
     if (isUserVehicleHolderOrBinome(user, depot)) {
       return true;
     }
-    // 4. Project manager or deputy of the associated site / project
+    // 2. Le responsable du département et ses suppléants
+    if (isUserDeptManagerOrDeputyForDepot(user, depot, departments, allUsers)) {
+      return true;
+    }
+    // 3. Les gestionnaires de projet (manager et suppléants) des projets rattachés au département du véhicule/conteneur
+    if (isUserProjectManagerForDepotDepartment(user, depot, departments, projects, allUsers)) {
+      return true;
+    }
+    // 4. Pour un conteneur, le conducteur de travaux (et suppléants) de son chantier
     if (depot.type === 'CONTAINER' && isUserProjectManagerOrDeputy(user, depot.project_number, projects)) {
       return true;
     }
-    // 5. If explicitly granted in allowed_depots
-    return isUserAllowedForDepot(user, depot.name);
+    return false;
   }
 
   // Standard fixed depot
-  return isUserAllowedForDepot(user, depot.name);
+  return isUserAllowedForDepot(user as User, depot.name || depotNameFallback);
 }
+
+/**
+ * Filters a list of depots to only those visible to `user` according to `canUserViewDepot`.
+ */
+export function filterVisibleDepotsForUser(
+  depots: Depot[] | null | undefined,
+  user: User | null | undefined,
+  arg3?: Department[] | User[] | null,
+  arg4?: User[] | Department[] | null,
+  arg5?: Project[] | null
+): Depot[] {
+  if (!depots || depots.length === 0) return [];
+  if (!user) return [];
+  const { departments, allUsers, projects } = extractUsersDeptsProjects([arg3, arg4, arg5]);
+  return depots.filter((d) => canUserViewDepot(user, d, departments, allUsers, projects));
+}
+
+/**
+ * Formats a depot name for display in movements, audit, or lists.
+ * Supports both:
+ * - `formatDepotNameForDisplay(depotName, depots, user, departments?, allUsers?, projects?)`
+ * - `formatDepotNameForDisplay(depotObj, allUsers?)`
+ */
+export function formatDepotNameForDisplay(
+  depotOrName: string | Depot | null | undefined,
+  depotsOrUsers?: Depot[] | User[] | null,
+  user?: User | null,
+  arg4?: Department[] | User[] | null,
+  arg5?: User[] | Department[] | null,
+  arg6?: Project[] | null
+): string {
+  if (depotOrName && typeof depotOrName === 'object') {
+    const d = depotOrName as Depot;
+    const baseName = (d.name || '').trim() || 'Dépôt Principal';
+    if (d.type === 'VEHICLE') {
+      const usersList = Array.isArray(depotsOrUsers) ? (depotsOrUsers as User[]) : [];
+      const holderName =
+        d.manager_name ||
+        (d.manager_id != null
+          ? usersList.find((u) => String(u.id) === String(d.manager_id))?.name
+          : undefined);
+      if (holderName && !baseName.toLowerCase().includes(holderName.toLowerCase())) {
+        return `${baseName} (${holderName})`;
+      }
+    }
+    return baseName;
+  }
+
+  const clean = (depotOrName || '').trim();
+  if (!clean) return 'Dépôt Principal';
+  const depots = Array.isArray(depotsOrUsers) ? (depotsOrUsers as Depot[]) : [];
+  if (depots.length === 0 || !user) return clean;
+
+  const { departments, allUsers, projects } = extractUsersDeptsProjects([arg4, arg5, arg6]);
+  const matched = findDepotByName(depots, clean);
+  if (matched && isDepotVehicleOrContainer(matched)) {
+    if (!canUserViewDepot(user, matched, departments, allUsers, projects)) {
+      return RESTRICTED_VEHICLE_LABEL;
+    }
+  }
+  return clean;
+}
+
+export interface EligibleStockInParams {
+  product?: Partial<Product> | null;
+  stockLevels?: StockLevel[];
+  depots?: Depot[];
+  user?: User | null;
+  hasGeneralStockInPerm: boolean;
+  departments?: Department[];
+  allUsers?: User[];
+  projects?: Project[];
+}
+
+function normalizeEligibleStockInParams(
+  arg1: any,
+  arg2?: any,
+  arg3?: any,
+  arg4?: any,
+  arg5?: any,
+  arg6?: any,
+  arg7?: any,
+  arg8?: any
+): EligibleStockInParams {
+  if (
+    arg1 &&
+    typeof arg1 === 'object' &&
+    ('hasGeneralStockInPerm' in arg1 || 'stockLevels' in arg1 || 'depots' in arg1 || 'user' in arg1)
+  ) {
+    return arg1 as EligibleStockInParams;
+  }
+  const { departments, allUsers, projects } = extractUsersDeptsProjects([arg6, arg7, arg8]);
+  return {
+    product: arg1 as Partial<Product> | null | undefined,
+    stockLevels: Array.isArray(arg2) ? arg2 : [],
+    depots: Array.isArray(arg3) ? arg3 : [],
+    user: arg4 as User | null | undefined,
+    hasGeneralStockInPerm: Boolean(arg5),
+    departments,
+    allUsers,
+    projects,
+  };
+}
+
+/**
+ * Retourne la liste des dépôts éligibles pour une ENTRÉE de stock (v59 §4).
+ * Supporte à la fois l'appel par objet `{ product, stockLevels, depots, user, hasGeneralStockInPerm, ... }`
+ * et l'appel positionnel `(product, stockLevels, depots, user, hasGeneralStockInPerm, departments, users, projects)`.
+ */
+export function getEligibleStockInDepotsForProduct(
+  params: EligibleStockInParams
+): string[];
+export function getEligibleStockInDepotsForProduct(
+  product: Partial<Product> | null | undefined,
+  stockLevels: StockLevel[] | undefined,
+  depots: Depot[] | undefined,
+  user: User | null | undefined,
+  hasGeneralStockInPerm: boolean,
+  departments?: Department[] | User[],
+  allUsers?: User[] | Department[],
+  projects?: Project[]
+): Depot[];
+export function getEligibleStockInDepotsForProduct(
+  arg1: any,
+  arg2?: any,
+  arg3?: any,
+  arg4?: any,
+  arg5?: any,
+  arg6?: any,
+  arg7?: any,
+  arg8?: any
+): any[] {
+  const isObjectCall =
+    arg1 &&
+    typeof arg1 === 'object' &&
+    ('hasGeneralStockInPerm' in arg1 || 'stockLevels' in arg1 || 'depots' in arg1 || 'user' in arg1);
+
+  const {
+    product,
+    stockLevels = [],
+    depots = [],
+    user,
+    hasGeneralStockInPerm,
+    departments = [],
+    allUsers = [],
+    projects = [],
+  } = normalizeEligibleStockInParams(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+
+  if (!user) return [];
+
+  const candidateNames = new Set<string>();
+  const pid = product?.id !== undefined && product?.id !== null ? String(product.id) : '';
+
+  // 1. Dépôts où l'article a déjà un niveau de stock
+  if (pid) {
+    for (const sl of stockLevels) {
+      if (String(sl.product_id) === pid && sl.depot_name && sl.depot_name.trim()) {
+        candidateNames.add(sl.depot_name.trim());
+      }
+    }
+  }
+  if (product?.store_name && product.store_name.trim()) {
+    candidateNames.add(product.store_name.trim());
+  }
+
+  // 2. Tous les dépôts actifs
+  for (const d of depots) {
+    if (d.is_active !== false && d.name && d.name.trim()) {
+      candidateNames.add(d.name.trim());
+    }
+  }
+
+  // Filtrer par canUserEnterStockInDepot + canUserViewDepot
+  const allowedNames: string[] = [];
+  for (const name of candidateNames) {
+    const check = canUserEnterStockInDepot(
+      user,
+      name,
+      depots,
+      hasGeneralStockInPerm,
+      'fr',
+      departments,
+      allUsers,
+      projects
+    );
+    if (!check.allowed) continue;
+    const depotObj = findDepotByName(depots, name);
+    if (depotObj && !canUserViewDepot(user, depotObj, departments, allUsers, projects)) {
+      continue;
+    }
+    allowedNames.push(name);
+  }
+
+  // Ordonner : d'abord le véhicule/conteneur de l'utilisateur s'il en a un, puis product.store_name, puis alphabétique
+  const userVehicleNames = new Set(
+    getUserVehicles(user, depots).map((v) => normalizeDepotString(v.name))
+  );
+  const prodStoreNorm = normalizeDepotString(product?.store_name);
+
+  const sortedNames = allowedNames.sort((a, b) => {
+    const aNorm = normalizeDepotString(a);
+    const bNorm = normalizeDepotString(b);
+    const aIsUserVeh = userVehicleNames.has(aNorm);
+    const bIsUserVeh = userVehicleNames.has(bNorm);
+    if (aIsUserVeh && !bIsUserVeh) return -1;
+    if (!aIsUserVeh && bIsUserVeh) return 1;
+    if (aNorm === prodStoreNorm && bNorm !== prodStoreNorm) return -1;
+    if (aNorm !== prodStoreNorm && bNorm === prodStoreNorm) return 1;
+    return a.localeCompare(b, 'fr', { sensitivity: 'base' });
+  });
+
+  if (isObjectCall) {
+    return sortedNames;
+  }
+
+  return sortedNames.map(
+    (name) => findDepotByName(depots, name) || ({ id: name, name, type: 'FIXED', is_active: true } as Depot)
+  );
+}
+
+/**
+ * Valeur par défaut du sélecteur « Dépôt à alimenter » lors d'une entrée de stock (v59 §4).
+ */
+export function getDefaultStockInDepotForProduct(params: EligibleStockInParams): string {
+  const eligible = getEligibleStockInDepotsForProduct(params);
+  const userVehicles = getUserVehicles(params.user, params.depots);
+  if (userVehicles.length > 0) {
+    const firstVeh = userVehicles.find((v) =>
+      eligible.some((e) => normalizeDepotString(e) === normalizeDepotString(v.name))
+    );
+    if (firstVeh) return firstVeh.name;
+  }
+  const prodStore = (params.product?.store_name || '').trim();
+  if (
+    prodStore &&
+    eligible.some((e) => normalizeDepotString(e) === normalizeDepotString(prodStore))
+  ) {
+    return prodStore;
+  }
+  return eligible[0] || prodStore || 'Dépôt Principal';
+}
+

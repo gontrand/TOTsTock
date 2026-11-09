@@ -226,10 +226,17 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
     const idx17 = stepNumbers.indexOf('17');
     const idx18 = stepNumbers.indexOf('18');
+    const idx19 = stepNumbers.indexOf('19');
+    const idx20 = stepNumbers.indexOf('20');
+    const idx21 = stepNumbers.indexOf('21');
     const idx07 = stepNumbers.indexOf('07');
     expect(idx17).toBeGreaterThan(0);
     expect(idx18).toBe(idx17 + 1);
-    expect(idx07).toBe(idx18 + 1);
+    // v56/v58 : 19 (traçabilité des commandes) et 20 (notifications lues) s'intercalent avant 07
+    expect(idx19).toBe(idx18 + 1);
+    expect(idx20).toBe(idx19 + 1);
+    expect(idx21).toBe(idx20 + 1);
+    expect(idx07).toBe(idx21 + 1);
 
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE TABLE IF NOT EXISTS public.core_password_resets');
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE OR REPLACE FUNCTION public.purge_expired_password_resets()');

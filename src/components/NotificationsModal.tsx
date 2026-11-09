@@ -11,6 +11,7 @@ import {
   shouldShowNotificationBanner,
   TargetedOrderNotificationItem,
 } from '../services/notificationService';
+import { getClosedProjectContainerAlertsForUser } from '../services/projectStatusService';
 import {
   X,
   Bell,
@@ -46,6 +47,7 @@ export const NotificationsModal: React.FC = () => {
     setOrderCartModalOpen,
     setPreparerOrdersModalOpen,
     setTransfersModalOpen,
+    setDepotsModalOpen,
     currentUser,
     dismissedNotificationKeys,
     dismissNotificationKeys,
@@ -126,9 +128,18 @@ export const NotificationsModal: React.FC = () => {
     dismissedKeys: dismissedNotificationKeys,
   });
 
+  const closedProjectAlerts = getClosedProjectContainerAlertsForUser(
+    currentUser,
+    projects,
+    depots,
+    departments,
+    dismissedNotificationKeys
+  );
+
   const allVisibleNotifKeys: string[] = [
     ...targetedOrders.map((item) => item.notifKey),
     ...targetedTransfers.map((trItem) => trItem.notifKey),
+    ...closedProjectAlerts.map((a) => a.notifKey),
     ...outOfStock.map((p) => buildNotificationKey('STOCK_LOW_ALERT', p.id, 'OUT')),
     ...lowStock.map((p) => buildNotificationKey('STOCK_LOW_ALERT', p.id, 'LOW')),
   ];
@@ -395,32 +406,89 @@ export const NotificationsModal: React.FC = () => {
               })}
 
               {targetedTransfers.map((trItem) => {
-                const { transfer, notifKey } = trItem;
+                const {
+                  transfer,
+                  notifKey,
+                  isOverdue7Days,
+                  isWarning5Days,
+                  ageDays,
+                  eventType,
+                } = trItem;
                 return (
                   <div
                     key={notifKey}
-                    data-testid={`notif-card-transfer-${transfer.id}`}
+                    data-testid={
+                      isOverdue7Days
+                        ? `notif-card-transfer-overdue-${transfer.id}`
+                        : `notif-card-transfer-${transfer.id}`
+                    }
                     onClick={() => {
-                      dismissNotificationKeys([notifKey]).catch(() => {});
+                      if (shouldAutoDismissOnCardClick(eventType)) {
+                        dismissNotificationKeys([notifKey]).catch(() => {});
+                      }
                       setNotificationsModalOpen(false);
                       setTransfersModalOpen(true);
                     }}
-                    className="p-3 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 hover:border-indigo-400 transition cursor-pointer flex items-center justify-between gap-2"
+                    className={`p-3 rounded-2xl border transition cursor-pointer flex items-center justify-between gap-2 ${
+                      isOverdue7Days
+                        ? 'bg-rose-50/85 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800/70 hover:border-rose-500'
+                        : isWarning5Days
+                        ? 'bg-amber-50/85 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800/70 hover:border-amber-500'
+                        : 'bg-indigo-50/70 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800/60 hover:border-indigo-400'
+                    }`}
                   >
                     <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                      <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                      <div
+                        className={`w-7 h-7 rounded-lg text-white flex items-center justify-center shrink-0 mt-0.5 ${
+                          isOverdue7Days
+                            ? 'bg-rose-600'
+                            : isWarning5Days
+                            ? 'bg-amber-500'
+                            : 'bg-indigo-600'
+                        }`}
+                      >
                         <Truck className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="font-extrabold text-indigo-950 dark:text-indigo-100 leading-tight">
-                          {tr(
-                            language,
-                            'Transfert inter-dépôts',
-                            'Inter-depot transfer',
-                            'Overdracht tussen depots'
-                          )}
+                        <div
+                          className={`font-extrabold leading-tight ${
+                            isOverdue7Days
+                              ? 'text-rose-950 dark:text-rose-100'
+                              : isWarning5Days
+                              ? 'text-amber-950 dark:text-amber-100'
+                              : 'text-indigo-950 dark:text-indigo-100'
+                          }`}
+                        >
+                          {isOverdue7Days
+                            ? tr(
+                                language,
+                                `Transfert non validé depuis ${Math.floor(ageDays || 7)}j — remise en stock requise`,
+                                `Transfer unvalidated for ${Math.floor(ageDays || 7)}d — return to stock required`,
+                                `Overdracht ${Math.floor(ageDays || 7)}d niet gevalideerd — terugboeking vereist`
+                              )
+                            : isWarning5Days
+                            ? tr(
+                                language,
+                                `Rappel : transfert en attente depuis ${Math.floor(ageDays || 5)} jours`,
+                                `Reminder: transfer pending for ${Math.floor(ageDays || 5)} days`,
+                                `Herinnering: overdracht ${Math.floor(ageDays || 5)} dagen in afwachting`
+                              )
+                            : tr(
+                                language,
+                                'Transfert inter-dépôts',
+                                'Inter-depot transfer',
+                                'Overdracht tussen depots'
+                              )}
                         </div>
-                        <div className="text-[11px] font-mono font-bold text-indigo-700 dark:text-indigo-300 mt-0.5">
+                        <div
+                          className={`text-[11px] font-mono font-bold mt-0.5 ${
+                            isOverdue7Days
+                              ? 'text-rose-700 dark:text-rose-300'
+                              : isWarning5Days
+                              ? 'text-amber-700 dark:text-amber-300'
+                              : 'text-indigo-700 dark:text-indigo-300'
+                          }`}
+                        >
                           {(transfer as any).transfer_number || `#${transfer.id}`}
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400">
@@ -458,6 +526,62 @@ export const NotificationsModal: React.FC = () => {
                   </div>
                 );
               })}
+
+              {closedProjectAlerts.map((alertItem) => (
+                <div
+                  key={alertItem.notifKey}
+                  data-testid={`notif-card-project-closed-${alertItem.project.project_number}`}
+                  onClick={() => {
+                    dismissNotificationKeys([alertItem.notifKey]).catch(() => {});
+                    setNotificationsModalOpen(false);
+                    setDepotsModalOpen(true);
+                  }}
+                  className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/70 hover:border-amber-500 transition cursor-pointer flex items-center justify-between gap-2"
+                >
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <div className="w-7 h-7 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0 mt-0.5">
+                      <AlertTriangle className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-extrabold text-amber-950 dark:text-amber-100 leading-tight">
+                        {alertItem.message}
+                      </div>
+                      <div className="text-[11px] font-mono font-bold text-amber-700 dark:text-amber-300 mt-0.5">
+                        [{alertItem.project.project_number}] {alertItem.project.project_name}
+                      </div>
+                      <div className="text-[10px] text-slate-600 dark:text-slate-400">
+                        Rattaché(s) : {alertItem.attachedDepots.map((d) => d.name).join(', ')}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      data-testid={`dismiss-notif-${alertItem.notifKey}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismissNotificationKeys([alertItem.notifKey]).catch(() => {});
+                      }}
+                      className="min-w-[44px] min-h-[44px] rounded-xl hover:bg-slate-900/10 dark:hover:bg-white/10 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white transition"
+                      title={tr(
+                        language,
+                        'Marquer comme lue',
+                        'Mark as read',
+                        'Markeren als gelezen'
+                      )}
+                      aria-label={tr(
+                        language,
+                        'Marquer comme lue',
+                        'Mark as read',
+                        'Markeren als gelezen'
+                      )}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  </div>
+                </div>
+              ))}
 
               {outOfStock.map((p) => {
                 const stockKey = buildNotificationKey('STOCK_LOW_ALERT', p.id, 'OUT');

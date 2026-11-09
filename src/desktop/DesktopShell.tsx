@@ -22,10 +22,15 @@ import {
   computeTargetedBellBadgeCount,
   getNotificationCardDescriptor,
   getTargetedOrderNotificationsForUser,
+  getTargetedTransferNotificationsForUser,
   isUserRecipientForStockAlert,
   shouldAutoDismissOnCardClick,
   shouldShowNotificationBanner,
 } from '../services/notificationService';
+import { getClosedProjectContainerAlertsForUser } from '../services/projectStatusService';
+import { NO_AUTH_SESSION_BANNER_MESSAGE } from '../services/clientSupabase';
+import { filterVisibleDepotsForUser } from '../utils/depotPermissions';
+import { ProductRefLink } from '../components/ProductRefLink';
 import {
   DesktopPageId,
   DesktopSettingsSection,
@@ -143,6 +148,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     projects,
     depotHolders,
     transfers,
+    transfersToReturn,
     products,
     subCategories,
     orders,
@@ -166,6 +172,8 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     dismissedNotificationKeys,
     dismissNotificationKeys,
     resetMyNotificationDismissals,
+    isSupabaseConnected,
+    hasAuthSession,
   } = useApp();
 
   // Persisted sidebar collapse state
@@ -536,6 +544,29 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           })
       )
     : [];
+  const closedProjectAlerts = getClosedProjectContainerAlertsForUser(
+    currentUser,
+    projects,
+    depots,
+    departments,
+    dismissedNotificationKeys
+  );
+  const targetedTransferNotifs = getTargetedTransferNotificationsForUser({
+    user: currentUser,
+    transfers,
+    depotHolders,
+    depots,
+    roles,
+    hasReceiveAllPerm: userHasPermission('perm_stock_receive_all'),
+    dismissedKeys: dismissedNotificationKeys,
+  });
+  const visibleGlobalDepots = filterVisibleDepotsForUser(
+    depots,
+    currentUser,
+    users,
+    departments,
+    roles
+  );
   const targetedBellCount = computeTargetedBellBadgeCount({
     user: currentUser,
     orders,
@@ -1087,7 +1118,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               <option value="ALL">
                 {tr(language, 'Tous les dépôts', 'All depots', 'Alle depots')}
               </option>
-              {depots.map((d) => (
+              {visibleGlobalDepots.map((d) => (
                 <option key={d.id} value={d.name}>
                   {d.name}
                   {d.is_active === false
@@ -1308,16 +1339,26 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                         data-testid="desktop-notifications-active-count"
                         className="ml-2 font-mono text-slate-400"
                       >
-                        ({targetedOrderNotifs.length + lowStockProducts.length})
+                        ({targetedOrderNotifs.length + targetedTransferNotifs.length + closedProjectAlerts.length + lowStockProducts.length})
                       </span>
                     </div>
                     <button
                       type="button"
                       data-testid="desktop-mark-all-notifications-read-btn"
-                      disabled={targetedOrderNotifs.length + lowStockProducts.length === 0}
+                      disabled={
+                        targetedOrderNotifs.length +
+                          targetedTransferNotifs.length +
+                          closedProjectAlerts.length +
+                          lowStockProducts.length ===
+                        0
+                      }
                       onClick={() => {
                         const allKeys = [
                           ...targetedOrderNotifs.map((n) => n.notifKey),
+                          ...targetedTransferNotifs
+                            .filter((tItem) => shouldAutoDismissOnCardClick(tItem.eventType))
+                            .map((tItem) => tItem.notifKey),
+                          ...closedProjectAlerts.map((a) => a.notifKey),
                           ...lowStockProducts.map((p) =>
                             buildNotificationKey(
                               'STOCK_LOW_ALERT',
@@ -1335,6 +1376,108 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                       {tr(language, 'Tout marquer comme lu', 'Mark all as read', 'Alles als gelezen')}
                     </button>
                   </div>
+
+                  {targetedTransferNotifs.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800 pb-1">
+                      {targetedTransferNotifs.map((trItem) => {
+                        const { transfer, notifKey, isOverdue7Days, isWarning5Days, ageDays, eventType } = trItem;
+                        return (
+                          <div
+                            key={notifKey}
+                            className="py-1.5 flex items-center justify-between gap-2"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (shouldAutoDismissOnCardClick(eventType)) {
+                                  dismissNotificationKeys([notifKey]).catch(() => {});
+                                }
+                                setNotificationsOpen(false);
+                                handleNavigatePage('transfers');
+                              }}
+                              className="flex-1 min-w-0 text-left hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg p-1 cursor-pointer"
+                            >
+                              <div
+                                className={`truncate font-bold ${
+                                  isOverdue7Days
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : isWarning5Days
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-indigo-600 dark:text-indigo-400'
+                                }`}
+                              >
+                                {isOverdue7Days
+                                  ? `Transfert en retard (${Math.floor(ageDays || 7)}j) — remise en stock requise`
+                                  : isWarning5Days
+                                  ? `Transfert en attente depuis ${Math.floor(ageDays || 5)} jours`
+                                  : 'Transfert inter-dépôts'}
+                              </div>
+                              <div className="text-[10px] text-slate-500 truncate">
+                                {(transfer as any).transfer_number || `#${transfer.id}`} •{' '}
+                                {(transfer as any).from_depot_name || transfer.source_depot || ''} →{' '}
+                                {(transfer as any).to_depot_name || transfer.dest_depot || ''}
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`desktop-dismiss-notif-${notifKey}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dismissNotificationKeys([notifKey]).catch(() => {});
+                              }}
+                              className="min-w-[44px] min-h-[44px] rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-800 dark:hover:text-white shrink-0 cursor-pointer"
+                              title={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                              aria-label={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {closedProjectAlerts.length > 0 && (
+                    <div className="divide-y divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800 pb-1">
+                      {closedProjectAlerts.map((alertItem) => (
+                        <div
+                          key={alertItem.notifKey}
+                          className="py-1.5 flex items-center justify-between gap-2"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              dismissNotificationKeys([alertItem.notifKey]).catch(() => {});
+                              setNotificationsOpen(false);
+                              handleNavigatePage('settings', 'depots');
+                            }}
+                            className="flex-1 min-w-0 text-left hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg p-1 cursor-pointer"
+                          >
+                            <div className="truncate font-bold text-amber-700 dark:text-amber-400">
+                              {alertItem.message}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate">
+                              [{alertItem.project.project_number}] •{' '}
+                              {alertItem.attachedDepots.map((d) => d.name).join(', ')}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`desktop-dismiss-notif-${alertItem.notifKey}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              dismissNotificationKeys([alertItem.notifKey]).catch(() => {});
+                            }}
+                            className="min-w-[44px] min-h-[44px] rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-800 dark:hover:text-white shrink-0 cursor-pointer"
+                            title={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                            aria-label={tr(language, 'Marquer comme lue', 'Mark as read', 'Markeren als gelezen')}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {targetedOrderNotifs.length > 0 && (
                     <div className="max-h-48 overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800 border-b border-slate-200 dark:border-slate-800 pb-1">
@@ -1644,6 +1787,51 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           </div>
         </header>
 
+        {/* Bandeau orange permanent si aucune session Supabase Auth active (v60 section 10) */}
+        {currentUser && isSupabaseConnected && !hasAuthSession && (
+          <div
+            role="alert"
+            data-testid="desktop-no-auth-session-banner"
+            className="px-5 py-2.5 bg-amber-600 text-white text-xs font-bold flex items-center justify-between gap-3 shrink-0 shadow-xs no-print"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{NO_AUTH_SESSION_BANNER_MESSAGE}</span>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="px-3 py-1 rounded-lg bg-white text-amber-900 hover:bg-amber-50 text-[11px] font-black shrink-0 cursor-pointer"
+            >
+              Se reconnecter
+            </button>
+          </div>
+        )}
+
+        {/* Bandeau rouge permanent si transferts en retard > 7 jours (v59 section 5) */}
+        {currentUser && transfersToReturn.length > 0 && (
+          <div
+            role="alert"
+            data-testid="desktop-overdue-transfers-banner"
+            className="px-5 py-2.5 bg-rose-600 text-white text-xs font-bold flex items-center justify-between gap-3 shrink-0 shadow-xs no-print"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                {transfersToReturn.length} transfert(s) non validé(s) depuis plus de 7 jours — remettez les produits en stock
+              </span>
+            </div>
+            <button
+              type="button"
+              data-testid="desktop-open-overdue-transfers-btn"
+              onClick={() => handleNavigatePage('transfers')}
+              className="px-3 py-1 rounded-lg bg-white text-rose-900 hover:bg-rose-50 text-[11px] font-black shrink-0 cursor-pointer"
+            >
+              Ouvrir les transferts
+            </button>
+          </div>
+        )}
+
         {/* Global Error / Server Rejection / SQL Readiness Notification Banner on Desktop */}
         {licenseNotification && (
           <div
@@ -1752,7 +1940,6 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               onNavigatePage={(p) => handleNavigatePage(p)}
               onOpenProductDetail={(prodId) => {
                 setActiveProductId(prodId);
-                handleNavigatePage('inventory');
               }}
             />
           )}
@@ -1825,7 +2012,6 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
         onNavigatePage={(p) => handleNavigatePage(p)}
         onSelectProduct={(prodId) => {
           setActiveProductId(prodId);
-          handleNavigatePage('inventory');
         }}
         onSelectOrder={(ordId) => {
           setSelectedOrderId(ordId);

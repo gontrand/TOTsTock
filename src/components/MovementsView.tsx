@@ -11,6 +11,8 @@ import {
   groupMovementsByTransferBatch,
 } from '../services/stockMovementService';
 import { logAuditEventServer } from '../services/auditService';
+import { ProductRefLink } from './ProductRefLink';
+import { canUserViewDepot, formatDepotNameForDisplay } from '../utils/depotPermissions';
 import {
   ArrowLeftRight,
   Download,
@@ -40,6 +42,8 @@ export const MovementsView: React.FC = () => {
   const {
     movements,
     products,
+    depots,
+    users,
     departments,
     projects,
     orders,
@@ -90,7 +94,20 @@ export const MovementsView: React.FC = () => {
 
   // Filtered movements
   const filteredMovements = useMemo(() => {
-    let list = movements;
+    let list = movements.filter((m) => {
+      const depotNames = [m.depot_name, getMovementSourceDepot(m), getMovementDestDepot(m)].filter(
+        Boolean
+      ) as string[];
+      for (const dn of depotNames) {
+        const depObj = (depots || []).find(
+          (d) => d.name.trim().toLowerCase() === dn.trim().toLowerCase()
+        );
+        if (depObj && !canUserViewDepot(depObj, currentUser, users, departments)) {
+          return false;
+        }
+      }
+      return true;
+    });
 
     // Sub-tab logic
     if (subTab === 'MY' && currentUser) {
@@ -871,9 +888,11 @@ export const MovementsView: React.FC = () => {
                           >
                             <div className="flex items-center justify-between gap-2 relative overflow-hidden">
                               <div className="flex items-center gap-2 min-w-0 flex-1 relative z-10 overflow-hidden">
-                                <span className="font-mono font-bold text-xs bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-300 shrink-0 relative z-20">
-                                  {it.product_ref}
-                                </span>
+                                <ProductRefLink
+                                  productId={it.product_id}
+                                  reference={it.product_ref}
+                                  className="font-mono font-bold text-xs bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-300 shrink-0 relative z-20"
+                                />
                                 <span className="font-bold text-slate-900 dark:text-white truncate relative z-10">
                                   {it.product_name}
                                 </span>
@@ -1093,7 +1112,13 @@ export const MovementsView: React.FC = () => {
                             <>
                               <span>•</span>
                               <span className="font-semibold text-emerald-700 dark:text-emerald-400 truncate">
-                                📦 {srcDepot}
+                                📦{' '}
+                                {(() => {
+                                  const dObj = (depots || []).find(
+                                    (d) => d.name.trim().toLowerCase() === srcDepot.trim().toLowerCase()
+                                  );
+                                  return dObj ? formatDepotNameForDisplay(dObj, users) : srcDepot;
+                                })()}
                               </span>
                             </>
                           )}
@@ -1101,7 +1126,13 @@ export const MovementsView: React.FC = () => {
                             <>
                               <span>→</span>
                               <span className="font-semibold text-sky-700 dark:text-sky-400 truncate">
-                                📦 {dstDepot}
+                                📦{' '}
+                                {(() => {
+                                  const dObj = (depots || []).find(
+                                    (d) => d.name.trim().toLowerCase() === dstDepot.trim().toLowerCase()
+                                  );
+                                  return dObj ? formatDepotNameForDisplay(dObj, users) : dstDepot;
+                                })()}
                               </span>
                             </>
                           )}

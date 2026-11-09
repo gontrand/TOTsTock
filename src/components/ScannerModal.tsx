@@ -27,18 +27,26 @@ import {
   SwitchCamera,
   Volume2,
   Smartphone,
+  Warehouse,
 } from 'lucide-react';
 import {
   isHapticsEnabled,
   setHapticsEnabled,
   triggerHapticTest,
 } from '../utils/haptics';
+import { SearchableSelect } from './SearchableSelect';
+import {
+  canUserViewDepot,
+  formatDepotNameForDisplay,
+  getEligibleStockInDepotsForProduct,
+} from '../utils/depotPermissions';
 
 export const ScannerModal: React.FC = () => {
   const {
     scanState,
     setScanState,
     products,
+    stockLevels,
     depots,
     departments,
     users,
@@ -69,7 +77,28 @@ export const ScannerModal: React.FC = () => {
   const [manualCode, setManualCode] = useState('');
   const [scannedAlert, setScannedAlert] = useState<string | null>(null);
   const [hapticsOn, setHapticsOn] = useState<boolean>(() => isHapticsEnabled());
+  const [selectedInTargetDepot, setSelectedInTargetDepot] = useState<string>('');
   const isCooldownRef = useRef(false);
+
+  const hasGeneralStockIn = userHasPermission('perm_stock_in');
+  const eligibleScannerInDepots = React.useMemo(
+    () =>
+      (depots || []).filter(
+        (d) =>
+          d.is_active !== false &&
+          canUserViewDepot(d, currentUser, users, departments) &&
+          canUserEnterStockInDepot(
+            currentUser,
+            d.name,
+            depots,
+            hasGeneralStockIn,
+            language,
+            departments,
+            users
+          ).allowed
+      ),
+    [depots, currentUser, users, departments, hasGeneralStockIn, language]
+  );
 
   useEffect(() => {
     const syncPrefs = () => {
@@ -216,24 +245,42 @@ export const ScannerModal: React.FC = () => {
         }
       }
 
-      // In IN mode: validate vehicle stock entry rule
+      // In IN mode: validate target depot stock entry rule
+      let chosenInTargetDepot: string | undefined = undefined;
       if (scanState.mode === 'IN') {
-        const hasGeneralStockIn = userHasPermission('perm_stock_in');
+        const candidateDepot = selectedInTargetDepot || prod.store_name;
         const entryCheck = canUserEnterStockInDepot(
           currentUser,
-          prod.store_name,
+          candidateDepot,
           depots,
           hasGeneralStockIn,
-          language
+          language,
+          departments,
+          users
         );
-        if (!entryCheck.allowed) {
-          setScannedAlert(entryCheck.reason || t('common_error'));
-          playScanBeep(false);
-          setTimeout(() => {
-            isCooldownRef.current = false;
-            setScannedAlert(null);
-          }, 3500);
-          return;
+        if (entryCheck.allowed) {
+          chosenInTargetDepot = candidateDepot;
+        } else {
+          const fallbackEligible = getEligibleStockInDepotsForProduct(
+            prod,
+            stockLevels,
+            depots,
+            currentUser,
+            hasGeneralStockIn,
+            departments,
+            users
+          );
+          if (fallbackEligible.length > 0) {
+            chosenInTargetDepot = fallbackEligible[0].name;
+          } else {
+            setScannedAlert(entryCheck.reason || t('common_error'));
+            playScanBeep(false);
+            setTimeout(() => {
+              isCooldownRef.current = false;
+              setScannedAlert(null);
+            }, 3500);
+            return;
+          }
         }
       }
 
@@ -247,7 +294,7 @@ export const ScannerModal: React.FC = () => {
         user_trigram: currentUser?.trigram || 'OP',
         product_id: prod.id,
         product_ref: prod.reference,
-        depot_name: prod.store_name,
+        depot_name: chosenInTargetDepot || prod.store_name,
         meta: {
           scannedCode: raw,
           scanFormat: /^\d{8,14}$/.test(raw) ? 'Code-barres EAN/1D' : 'QR Code',
@@ -266,13 +313,16 @@ export const ScannerModal: React.FC = () => {
         if (scanState.mode === 'SEARCH') {
           setActiveProductId(prod.id);
         } else {
-          addToCart(prod, 1);
+          addToCart(prod, 1, chosenInTargetDepot);
           setBatchCartModalOpen(true);
         }
       }, 500);
     },
     [
       scanState.mode,
+      selectedInTargetDepot,
+      hasGeneralStockIn,
+      stockLevels,
       products,
       setPendingScannedConfig,
       stopCamera,
@@ -284,7 +334,6 @@ export const ScannerModal: React.FC = () => {
       depots,
       departments,
       users,
-      userHasPermission,
       currentUser,
       language,
       logActivity,
@@ -582,6 +631,43 @@ export const ScannerModal: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Target depot selector in IN mode */}
+        {scanState.mode === 'IN' && eligibleScannerInDepots.length > 0 && (
+          <div className="mt-2 p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1">
+              <Warehouse className="w-3.5 h-3.5 text-emerald-600" />
+              <span>
+                {tr(
+                  language,
+                  'Dépôt cible à réapprovisionner',
+                  'Target depot to replenish',
+                  'Doeldepot om aan te vullen'
+                )}
+              </span>
+            </label>
+            <SearchableSelect
+              value={selectedInTargetDepot}
+              onChange={(val) => setSelectedInTargetDepot(val)}
+              recentKey="depots"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none"
+            >
+              <option value="">
+                {tr(
+                  language,
+                  '— Dépôt de la référence scannée (par défaut) —',
+                  '— Scanned item default depot —',
+                  '— Standaarddepot van gescand artikel —'
+                )}
+              </option>
+              {eligibleScannerInDepots.map((d) => (
+                <option key={String(d.id)} value={d.name}>
+                  {formatDepotNameForDisplay(d, users)}
+                </option>
+              ))}
+            </SearchableSelect>
+          </div>
+        )}
 
         {/* Video Scanner Box - Always keep <video> mounted in DOM */}
         <div className="relative w-full h-56 bg-black rounded-2xl overflow-hidden my-2.5 shadow-inner flex items-center justify-center">

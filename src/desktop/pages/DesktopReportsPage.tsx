@@ -63,6 +63,9 @@ import {
 import { Product, StockLevelsReportRow } from '../../types';
 import { tr } from '../../i18n/dutchTranslator';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { ProductRefLink } from '../../components/ProductRefLink';
+import { filterVisibleDepotsForUser } from '../../utils/depotPermissions';
+import { isProjectClosed } from '../../services/projectStatusService';
 
 export interface DesktopReportsPageProps {
   selectedDepotFilter?: string;
@@ -113,7 +116,13 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
   );
   const companyName = (license as any)?.company_name || 'TOT Stock';
 
+  const visibleDepots = useMemo(
+    () => filterVisibleDepotsForUser(depots, currentUser, users),
+    [depots, currentUser, users]
+  );
+
   const [activeReportKind, setActiveReportKind] = useState<ReportKindId>('ORDERS');
+  const [includeClosedProjects, setIncludeClosedProjects] = useState<boolean>(true);
   const [orderFilters, setOrderFilters] = useState<OrderSearchFilters>(() =>
     createDefaultOrderSearchFilters()
   );
@@ -397,10 +406,45 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
     return rpcStockProducts !== null ? rpcStockProducts : products;
   }, [canViewStockLevels, rpcStockProducts, products]);
 
+  const closedProjectNumbersSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of projects) {
+      if (isProjectClosed(p) && p.project_number) {
+        s.add(p.project_number.trim().toLowerCase());
+      }
+    }
+    return s;
+  }, [projects]);
+
+  const filteredProjectsForReport = useMemo(
+    () => (includeClosedProjects ? projects : projects.filter((p) => !isProjectClosed(p))),
+    [projects, includeClosedProjects]
+  );
+
+  const filteredOrdersForReport = useMemo(
+    () =>
+      includeClosedProjects
+        ? resolvedOrdersForReport
+        : resolvedOrdersForReport.filter(
+            (o) => !o.site_number || !closedProjectNumbersSet.has(o.site_number.trim().toLowerCase())
+          ),
+    [resolvedOrdersForReport, includeClosedProjects, closedProjectNumbersSet]
+  );
+
+  const filteredMovementsForReport = useMemo(
+    () =>
+      includeClosedProjects
+        ? resolvedMovementsForReport
+        : resolvedMovementsForReport.filter(
+            (m) => !m.site_number || !closedProjectNumbersSet.has(m.site_number.trim().toLowerCase())
+          ),
+    [resolvedMovementsForReport, includeClosedProjects, closedProjectNumbersSet]
+  );
+
   const currentReport: GeneratedReportPayload = useMemo(() => {
     switch (activeReportKind) {
       case 'WEEKLY_RECAP':
-        return buildWeeklyUserRecapReport(currentUser, movements, products, language);
+        return buildWeeklyUserRecapReport(currentUser, filteredMovementsForReport, products, language);
       case 'LOW_STOCK':
         return buildLowStockReport(
           resolvedStockProductsForReport,
@@ -415,14 +459,14 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
         return buildDepartmentProjectsReport(
           currentUser,
           departments,
-          projects,
-          movements,
+          filteredProjectsForReport,
+          filteredMovementsForReport,
           products,
           language
         );
       case 'MOVEMENTS':
         return buildMovementsReport(
-          resolvedMovementsForReport,
+          filteredMovementsForReport,
           products,
           effectiveMovementFilters,
           canViewPrices,
@@ -432,7 +476,7 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
       case 'ORDERS':
       default:
         return buildOrdersReport(
-          resolvedOrdersForReport,
+          filteredOrdersForReport,
           effectiveOrderFilters,
           canViewPrices,
           currentUser,
@@ -442,16 +486,15 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
   }, [
     activeReportKind,
     currentUser,
-    movements,
+    filteredMovementsForReport,
     products,
     resolvedStockProductsForReport,
     users,
     roles,
     departments,
-    projects,
-    resolvedMovementsForReport,
+    filteredProjectsForReport,
     effectiveMovementFilters,
-    resolvedOrdersForReport,
+    filteredOrdersForReport,
     effectiveOrderFilters,
     canViewPrices,
     language,
@@ -714,23 +757,42 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
       )}
 
       {/* Report Type Tabs */}
-      <div className="px-6 py-2.5 bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-2 shrink-0 text-xs font-bold">
-        {visibleReportTabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            data-testid={`report-tab-${id.toLowerCase()}`}
-            onClick={() => setActiveReportKind(id)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-              activeReportKind === id
-                ? 'bg-orange-600 text-white shadow-2xs'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-            }`}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            <span>{label}</span>
-          </button>
-        ))}
+      <div className="px-6 py-2.5 bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0 text-xs font-bold">
+        <div className="flex flex-wrap items-center gap-2">
+          {visibleReportTabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`report-tab-${id.toLowerCase()}`}
+              onClick={() => setActiveReportKind(id)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                activeReportKind === id
+                  ? 'bg-orange-600 text-white shadow-2xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+
+        <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeClosedProjects}
+            onChange={(e) => setIncludeClosedProjects(e.target.checked)}
+            className="rounded border-slate-300 text-orange-600 focus:ring-orange-500"
+          />
+          <span>
+            {tr(
+              language,
+              'Inclure les projets terminés',
+              'Include closed projects',
+              'Afgesloten projecten opnemen'
+            )}
+          </span>
+        </label>
       </div>
 
       {/* Conditional Filter Bar for Orders Report */}
@@ -883,7 +945,7 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
               className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
             >
               <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
-              {depots.map((d) => (
+              {visibleDepots.map((d) => (
                 <option key={d.id} value={d.name}>
                   {d.name}
                 </option>
@@ -1066,7 +1128,7 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
               className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800"
             >
               <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
-              {depots.map((d) => (
+              {visibleDepots.map((d) => (
                 <option key={d.id} value={d.name}>
                   {d.name}
                 </option>
@@ -1159,6 +1221,10 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
                         typeof val === 'number' && !Number.isInteger(val)
                           ? val.toFixed(2).replace('.', ',')
                           : String(val ?? '—');
+                      const isRefCol =
+                        (col.key === 'reference' || col.key === 'product_ref') &&
+                        formatted &&
+                        formatted !== '—';
                       return (
                         <td
                           key={col.key}
@@ -1170,7 +1236,18 @@ export const DesktopReportsPage: React.FC<DesktopReportsPageProps> = ({
                               : 'text-left'
                           }`}
                         >
-                          {formatted}
+                          {isRefCol ? (
+                            <ProductRefLink
+                              productId={
+                                row.product_id || row.productId
+                                  ? String(row.product_id || row.productId)
+                                  : undefined
+                              }
+                              reference={formatted}
+                            />
+                          ) : (
+                            formatted
+                          )}
                         </td>
                       );
                     })}

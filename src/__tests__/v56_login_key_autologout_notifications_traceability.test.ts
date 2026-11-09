@@ -857,8 +857,8 @@ describe('Prompt v56 — 6. Documentation & Versions 5.16.0 / Schéma 2.10.0 / v
     expect(buildGradle).toContain('versionCode 12');
     expect(buildGradle).toContain('versionName "5.16.0"');
 
-    // Le prompt interdit de créer 19_order_trace.sql
-    expect(fs.existsSync(path.join(ROOT_DIR, 'supabase-client/19_order_trace.sql'))).toBe(false);
+    // Le script 19_order_trace.sql est fourni séparément puis intégré au dépôt (étape 19 de SQL_STEPS)
+    expect(fs.existsSync(path.join(ROOT_DIR, 'supabase-client/19_order_trace.sql'))).toBe(true);
 
     // Vérifier que DocumentationModal documente bien les nouveautés v56 en FR/EN/NL
     const docSrc = fs.readFileSync(path.join(ROOT_DIR, 'src/components/DocumentationModal.tsx'), 'utf8');

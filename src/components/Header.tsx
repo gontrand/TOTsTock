@@ -6,6 +6,7 @@ import {
   computeTargetedBellBadgeCount,
   getTargetedOrderNotificationsForUser,
 } from '../services/notificationService';
+import { NO_AUTH_SESSION_BANNER_MESSAGE } from '../services/clientSupabase';
 import {
   Database,
   RefreshCw,
@@ -55,6 +56,8 @@ export const Header: React.FC = () => {
     orderCart,
     setOrderCartModalOpen,
     setPreparerOrdersModalOpen,
+    setTransfersModalOpen,
+    transfersToReturn,
     isPreparer,
     appLogoUrl,
     rejectedSyncOps,
@@ -63,6 +66,8 @@ export const Header: React.FC = () => {
     roles,
     users,
     dismissedNotificationKeys,
+    isSupabaseConnected,
+    hasAuthSession,
   } = useApp();
 
   const canManageConfig = !currentUser || userHasPermission('perm_config_license') || userHasPermission('perm_config_db');
@@ -186,6 +191,7 @@ export const Header: React.FC = () => {
   );
 
   return (
+    <>
     <header className="sticky top-0 z-30 w-full max-w-full overflow-hidden flex items-center justify-between gap-1 px-2.5 sm:px-4 py-2 bg-white dark:bg-[#1e293b] text-slate-800 dark:text-white shadow-sm dark:shadow-md border-b border-slate-200/90 dark:border-slate-800 min-h-[56px] select-none transition-colors duration-200 relative">
       <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-1 overflow-hidden relative z-10">
         <div className="flex items-center gap-1.5 shrink-0 relative z-20">
@@ -727,5 +733,47 @@ export const Header: React.FC = () => {
         </div>
       )}
     </header>
+    {currentUser && isSupabaseConnected && !hasAuthSession && (
+      <div
+        role="alert"
+        data-testid="no-auth-session-banner"
+        className="w-full px-3 sm:px-4 py-2 bg-amber-600 text-white text-xs font-bold flex flex-wrap items-center justify-between gap-2 shadow-xs z-20"
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{NO_AUTH_SESSION_BANNER_MESSAGE}</span>
+        </div>
+        <button
+          type="button"
+          onClick={logout}
+          className="px-3 py-1 rounded-lg bg-white text-amber-900 hover:bg-amber-50 font-extrabold text-[11px] shrink-0 cursor-pointer transition"
+        >
+          Se reconnecter
+        </button>
+      </div>
+    )}
+    {currentUser && transfersToReturn.length > 0 && (
+      <div
+        role="alert"
+        data-testid="overdue-transfers-banner"
+        className="w-full px-3 sm:px-4 py-2 bg-rose-600 text-white text-xs font-bold flex flex-wrap items-center justify-between gap-2 shadow-xs z-20"
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>
+            {transfersToReturn.length} transfert(s) non validé(s) depuis plus de 7 jours — remettez les produits en stock
+          </span>
+        </div>
+        <button
+          type="button"
+          data-testid="open-overdue-transfers-btn"
+          onClick={() => setTransfersModalOpen(true)}
+          className="px-3 py-1 rounded-lg bg-white text-rose-900 hover:bg-rose-50 font-extrabold text-[11px] shrink-0 cursor-pointer transition"
+        >
+          Ouvrir les transferts
+        </button>
+      </div>
+    )}
+    </>
   );
 };

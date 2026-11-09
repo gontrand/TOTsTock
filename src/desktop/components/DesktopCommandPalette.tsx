@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { tr } from '../../i18n/dutchTranslator';
 import { useApp } from '../../context/AppContext';
 import { DesktopPageId } from '../types';
+import { ProductRefLink } from '../../components/ProductRefLink';
 import {
   Search,
   Package,
@@ -30,6 +31,9 @@ interface CommandItem {
   group: 'action' | 'product' | 'order';
   label: string;
   subtitle?: string;
+  productId?: string;
+  reference?: string;
+  designation?: string;
   icon: React.ReactNode;
   run: () => void;
 }
@@ -171,11 +175,13 @@ export const DesktopCommandPalette: React.FC<DesktopCommandPaletteProps> = ({
         id: `prod-${p.id}`,
         group: 'product',
         label: `${p.reference} — ${p.brand} ${p.model}`,
+        productId: String(p.id),
+        reference: p.reference,
+        designation: `${p.brand} ${p.model}`.trim(),
         subtitle: `${p.store_name || '—'} · Stock: ${p.quantity ?? 0}`,
         icon: <Package className="w-4 h-4 text-slate-500" />,
         run: () => {
           onClose();
-          onNavigatePage('inventory');
           onSelectProduct(p.id);
         },
       });
@@ -317,7 +323,22 @@ export const DesktopCommandPalette: React.FC<DesktopCommandPaletteProps> = ({
                   <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     {item.icon}
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-semibold truncate">{item.label}</div>
+                      <div className="text-xs font-semibold truncate flex items-center gap-1.5">
+                        {item.group === 'product' && item.reference ? (
+                          <>
+                            <ProductRefLink
+                              productId={item.productId}
+                              reference={item.reference}
+                              onAfterOpen={onClose}
+                            />
+                            {item.designation && (
+                              <span className="truncate">— {item.designation}</span>
+                            )}
+                          </>
+                        ) : (
+                          item.label
+                        )}
+                      </div>
                       {item.subtitle && (
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                           {item.subtitle}

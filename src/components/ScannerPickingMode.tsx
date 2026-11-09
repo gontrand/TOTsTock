@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 import { MaterialOrder, MaterialOrderItem, Product } from '../types';
 import { PrintLabelFormat } from '../services/labelRendering';
 import {
@@ -1854,7 +1855,11 @@ export const ScannerPickingMode: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 my-1">
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="inline-block px-2 py-0.5 rounded bg-slate-800 font-mono text-xs font-black text-emerald-400">
-                      {currentPickingItem.substituted_with_ref || currentPickingItem.product_ref}
+                      <ProductRefLink
+                        productId={currentPickingItem.substituted_with_id || currentPickingItem.product_id}
+                        reference={currentPickingItem.substituted_with_ref || currentPickingItem.product_ref}
+                        className="text-emerald-400 hover:text-emerald-300"
+                      />
                     </div>
                     <h2 className="text-lg sm:text-xl font-black text-white leading-snug">
                       {currentPickingItem.substituted_with_name || currentPickingItem.product_name}
@@ -2064,7 +2069,13 @@ export const ScannerPickingMode: React.FC = () => {
                           <div className="font-bold text-white truncate">
                             {it.product_name}{' '}
                             <span className="font-mono text-[10px] text-slate-400">
-                              ({it.product_ref})
+                              (
+                              <ProductRefLink
+                                productId={it.substituted_with_id || it.product_id}
+                                reference={it.substituted_with_ref || it.product_ref}
+                                className="text-emerald-400 hover:text-emerald-300"
+                              />
+                              )
                             </span>
                           </div>
                           <div className="text-[10px] text-slate-400 flex items-center gap-2">
@@ -2344,7 +2355,13 @@ export const ScannerPickingMode: React.FC = () => {
                 : t('scanner_mode_qty_confirm_title')}
             </h3>
             <p className="text-xs font-bold text-emerald-400">
-              {qtyPrompt.item.product_name} ({qtyPrompt.item.product_ref})
+              {qtyPrompt.item.product_name} (
+              <ProductRefLink
+                productId={qtyPrompt.item.substituted_with_id || qtyPrompt.item.product_id}
+                reference={qtyPrompt.item.substituted_with_ref || qtyPrompt.item.product_ref}
+                className="text-emerald-400 hover:text-emerald-300"
+              />
+              )
             </p>
 
             {!qtyPrompt.confirmPartial ? (

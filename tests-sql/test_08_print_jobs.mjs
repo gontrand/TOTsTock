@@ -88,6 +88,9 @@ export async function runPrintJobsSqlTests() {
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
     '18_password_reset.sql',
+    '19_order_trace.sql',
+    '20_notification_reads.sql',
+    '21_vehicules_transferts_regles.sql',
     '07_app_compat.sql',
   ];
 
@@ -165,6 +168,9 @@ export async function runPrintJobsSqlTests() {
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
     '18_password_reset.sql',
+    '19_order_trace.sql',
+    '20_notification_reads.sql',
+    '21_vehicules_transferts_regles.sql',
     '07_app_compat.sql',
   ];
   for (const s of v100Scripts) {
@@ -585,6 +591,17 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
+    // Le script 02 supprime en cascade les règles RLS dépendantes de current_user_*() : on rejoue aussi les scripts
+    // suivants (comme l'installation complète) pour que toutes les tables retrouvent leurs règles d'accès.
+    '13_transfer_stock_batch.sql',
+    '14_mailing.sql',
+    '15_search_orders_movements.sql',
+    '16_audit_trail.sql',
+    '17_transferts_valides.sql',
+    '18_password_reset.sql',
+    '19_order_trace.sql',
+    '20_notification_reads.sql',
+    '21_vehicules_transferts_regles.sql',
     '07_app_compat.sql',
   ]) {
     await db.exec(readClientScript(scriptToReplay));
@@ -612,7 +629,7 @@ export async function runPrintJobsSqlTests() {
       'Read stk_material_order_items',
       'Write stk_material_order_items',
     ],
-    stk_depots: ['Admin write depots', 'Authenticated read depots'],
+    stk_depots: ['depots_delete_admin', 'depots_insert_admin', 'depots_select_visible', 'depots_update_admin'],
     core_app_settings: ['Admin write app_settings', 'Anon public settings', 'Authenticated read app_settings'],
     core_company_settings: [
       'Admin write company_settings',
@@ -624,7 +641,12 @@ export async function runPrintJobsSqlTests() {
     core_departments: ['Admin write departments', 'Authenticated read departments'],
     core_projects: ['Admin write core_projects', 'Authenticated read core_projects'],
     stk_sub_categories: ['Admin write sub_categories', 'Authenticated read sub_categories'],
-    stk_stock_levels: ['Admin write stk_stock_levels', 'Authenticated read stk_stock_levels'],
+    stk_stock_levels: [
+      'stock_levels_delete_admin',
+      'stock_levels_insert_admin',
+      'stock_levels_select_visible',
+      'stock_levels_update_admin',
+    ],
     core_audit_logs: ['Authenticated insert audit_logs', 'Authenticated read audit_logs'],
     core_processed_operations: ['User read self processed_operations'],
     core_app_compat: ['Lecture de la compatibilité', 'Modification compatibilité admin'],
@@ -946,6 +968,9 @@ export async function runPrintJobsSqlTests() {
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
     '18_password_reset.sql',
+    '19_order_trace.sql',
+    '20_notification_reads.sql',
+    '21_vehicules_transferts_regles.sql',
     '07_app_compat.sql',
   ];
 
@@ -1698,6 +1723,9 @@ export async function runLegacySchemaSqlTests() {
     '16_audit_trail.sql',
     '17_transferts_valides.sql',
     '18_password_reset.sql',
+    '19_order_trace.sql',
+    '20_notification_reads.sql',
+    '21_vehicules_transferts_regles.sql',
     '07_app_compat.sql',
   ];
 

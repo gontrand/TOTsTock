@@ -9,13 +9,19 @@ import {
   attachStreamToVideoElement,
 } from '../utils/qrCodeHelper';
 import { useApp } from '../context/AppContext';
-import { buildOrderTraceabilityDetails } from '../services/orderTraceabilityService';
+import {
+  buildOrderTraceabilityDetails,
+  canUserValidateOrderPickup,
+  canUserViewOrderSignature,
+  getOrderPickupReservedMessage,
+} from '../services/orderTraceabilityService';
 import {
   getAssignedDepotsForPreparer,
   isUserAuthorizedPreparerForOrder,
 } from '../services/notificationService';
 import { MaterialOrder, OrderStatus } from '../types';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 import { printHtmlViaIframe, generateOrderSlipHtml, generateThermalLabelHtml } from '../utils/printHelper';
 import { playScanBeep } from '../utils/crypto';
 import { hapticFeedback } from '../utils/haptics';
@@ -74,6 +80,8 @@ export const OrdersPreparationModal: React.FC = () => {
     products,
     depots,
     depotHolders,
+    departments,
+    projects,
     roles,
     subCategories,
     assignOrderToMe,
@@ -494,6 +502,13 @@ export const OrdersPreparationModal: React.FC = () => {
       }
     }
 
+    const canIncludeSig = canUserViewOrderSignature({
+      user: currentUser,
+      order,
+      departments,
+      projects,
+    });
+
     const html = generateOrderSlipHtml({
       orderNumber: order.order_number,
       siteNumber: order.site_number,
@@ -504,6 +519,10 @@ export const OrdersPreparationModal: React.FC = () => {
       items: order.items,
       qrCodeDataUrl: finalQr,
       notes: order.notes,
+      signatureDataUrl: order.signature_data || null,
+      signedByName: order.collected_by || order.requester_name,
+      signedAt: order.collected_at || null,
+      canIncludeSignature: canIncludeSig,
     });
     printHtmlViaIframe(html);
   };
@@ -1170,45 +1189,96 @@ export const OrdersPreparationModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Point 5.2 : Bloc « Traçabilité » */}
+                  {/* Point 5.2 & v60 point 8 : Bloc « Traçabilité » & Signature de retrait */}
                   {(() => {
-                    const trace = buildOrderTraceabilityDetails(focusedOrder, language);
+                    const trace = buildOrderTraceabilityDetails(focusedOrder, language, {
+                      currentUser,
+                      departments,
+                      projects,
+                    });
                     return (
                       <div
                         data-testid="prep-order-traceability-block"
-                        className="mt-2 pt-2.5 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]"
+                        className="mt-2 pt-2.5 border-t border-slate-100 dark:border-slate-800 space-y-2 text-[11px]"
                       >
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                            {tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
-                          </span>
-                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.requesterName}</span>
-                          <span className="text-[10px] text-slate-400 block font-mono">{trace.createdAtFormatted}</span>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div>
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              {tr(language, 'Demandeur', 'Requester', 'Aanvrager')}
+                            </span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{trace.requesterName}</span>
+                            <span className="text-[10px] text-slate-400 block font-mono">{trace.createdAtFormatted}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              {tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
+                            </span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{trace.preparerName}</span>
+                            <span className="text-[10px] text-slate-400 block font-mono">
+                              {trace.readyAtFormatted !== '—' ? trace.readyAtFormatted : trace.assignedAtFormatted}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              {tr(language, 'Enleveur', 'Collector', 'Afhaler')}
+                            </span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{trace.collectorName}</span>
+                            <span className="text-[10px] text-slate-400 block font-mono">{trace.collectedAtFormatted}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              {tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen')}
+                            </span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                              {trace.pickupTransferSummary}
+                            </span>
+                          </div>
                         </div>
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                            {tr(language, 'Préparateur', 'Preparer', 'Orderpicker')}
-                          </span>
-                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.preparerName}</span>
-                          <span className="text-[10px] text-slate-400 block font-mono">
-                            {trace.readyAtFormatted !== '—' ? trace.readyAtFormatted : trace.assignedAtFormatted}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                            {tr(language, 'Enleveur', 'Collector', 'Afhaler')}
-                          </span>
-                          <span className="font-bold text-slate-800 dark:text-slate-200">{trace.collectorName}</span>
-                          <span className="text-[10px] text-slate-400 block font-mono">{trace.collectedAtFormatted}</span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
-                            {tr(language, 'Retrait transféré', 'Pickup transferred', 'Afhaling overgedragen')}
-                          </span>
-                          <span className="font-bold text-slate-800 dark:text-slate-200">
-                            {trace.pickupTransferSummary}
-                          </span>
-                        </div>
+
+                        {focusedOrder.status === 'READY' &&
+                          !canUserValidateOrderPickup(currentUser, focusedOrder) && (
+                            <div
+                              data-testid="prep-order-pickup-reserved-notice"
+                              className="p-2 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 font-bold text-xs"
+                            >
+                              {getOrderPickupReservedMessage(focusedOrder, language)}
+                            </div>
+                          )}
+
+                        {(focusedOrder.status === 'COLLECTED' || trace.hasSignature) && (
+                          <div
+                            data-testid="prep-order-traceability-signature"
+                            className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5"
+                          >
+                            <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                              {tr(language, 'Signature de retrait', 'Pickup Signature')}
+                            </span>
+                            {trace.hasSignature ? (
+                              trace.canViewSignature && trace.signatureData ? (
+                                <div className="space-y-1">
+                                  <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-center">
+                                    <img
+                                      src={trace.signatureData}
+                                      alt="Signature de retrait"
+                                      className="max-h-20 object-contain"
+                                    />
+                                  </div>
+                                  <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                    {trace.signedByLabel}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                  {tr(language, 'Retrait signé', 'Signed pickup')}
+                                </div>
+                              )
+                            ) : (
+                              <div className="text-xs text-slate-400 italic">
+                                {tr(language, 'Aucune signature enregistrée', 'No signature recorded')}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -1344,8 +1414,8 @@ export const OrdersPreparationModal: React.FC = () => {
                                 <span className={isUnavailable ? 'line-through text-slate-400' : ''}>
                                   {it.product_name}
                                 </span>
-                                <span className="font-mono text-[11px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-                                  {it.product_ref}
+                                <span className="font-mono text-[11px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                                  <ProductRefLink productId={it.product_id} reference={it.product_ref} />
                                 </span>
                               </div>
 
@@ -1368,7 +1438,14 @@ export const OrdersPreparationModal: React.FC = () => {
                               {isSubstituted && (
                                 <div className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200 text-[11px] font-bold border border-amber-300 dark:border-amber-800">
                                   <RefreshCw className="w-3 h-3 text-amber-600" />
-                                  <span>Substitué par : {it.substituted_with_ref} - {it.substituted_with_name}</span>
+                                  <span>
+                                    Substitué par :{' '}
+                                    <ProductRefLink
+                                      productId={it.substituted_with_id}
+                                      reference={it.substituted_with_ref}
+                                    />{' '}
+                                    - {it.substituted_with_name}
+                                  </span>
                                 </div>
                               )}
                             </div>
@@ -2115,7 +2192,9 @@ export const OrdersPreparationModal: React.FC = () => {
                                     {it.product_name}
                                   </div>
                                   <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5 flex-wrap">
-                                    <span>Réf: {it.product_ref}</span>
+                                    <span>
+                                      Réf: <ProductRefLink productId={it.product_id} reference={it.product_ref} />
+                                    </span>
                                     {it.picked && (
                                       <span className="text-emerald-600 dark:text-emerald-400 font-bold not-italic">
                                         • Pointé : {it.picked_quantity || it.quantity} {it.unit || 'pcs'}
@@ -2219,7 +2298,13 @@ export const OrdersPreparationModal: React.FC = () => {
                                   <RefreshCw className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                                   <span className="truncate">
                                     {tr(language, 'Substitué par :', 'Substituted with:')}{' '}
-                                    <strong>{it.substituted_with_ref} - {it.substituted_with_name}</strong>
+                                    <strong>
+                                      <ProductRefLink
+                                        productId={it.substituted_with_id}
+                                        reference={it.substituted_with_ref}
+                                      />{' '}
+                                      - {it.substituted_with_name}
+                                    </strong>
                                   </span>
                                 </div>
                                 <span className="text-[10px] bg-amber-200 dark:bg-amber-800 px-1.5 py-0.5 rounded text-amber-950 dark:text-amber-100 shrink-0 ml-2">
@@ -2645,7 +2730,12 @@ export const OrdersPreparationModal: React.FC = () => {
                 {substitutionTargetItem.product_name}
               </div>
               <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                Réf: {substitutionTargetItem.product_ref} • Quantité requise : {substitutionTargetItem.quantity} {substitutionTargetItem.unit || 'pièce'}
+                Réf:{' '}
+                <ProductRefLink
+                  productId={substitutionTargetItem.product_id}
+                  reference={substitutionTargetItem.product_ref}
+                />{' '}
+                • Quantité requise : {substitutionTargetItem.quantity} {substitutionTargetItem.unit || 'pièce'}
               </div>
             </div>
 
@@ -2683,9 +2773,11 @@ export const OrdersPreparationModal: React.FC = () => {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-mono font-bold text-amber-600 dark:text-amber-400 text-[11px]">
-                            {prod.reference}
-                          </span>
+                          <ProductRefLink
+                            productId={prod.id}
+                            reference={prod.reference}
+                            className="text-amber-600 dark:text-amber-400 text-[11px]"
+                          />
                           <span className="font-bold text-slate-900 dark:text-white truncate">
                             {prod.brand} {prod.model}
                           </span>

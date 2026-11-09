@@ -4,6 +4,8 @@ import { useApp } from '../context/AppContext';
 import { Product } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
+import { filterVisibleDepotsForUser } from '../utils/depotPermissions';
 import {
   buildDepotAuditCountingRows,
   buildAuditAdjustmentsFromSession,
@@ -58,12 +60,18 @@ export const InventoryAuditModal: React.FC = () => {
     stockLevels,
     subCategories,
     currentUser,
+    users,
     applyInventoryAdjustments,
     userHasPermission,
     language,
     t,
     inventoryAuditTargetDepot,
   } = useApp();
+
+  const visibleDepots = useMemo(
+    () => filterVisibleDepotsForUser(depots, currentUser, users),
+    [depots, currentUser, users]
+  );
 
   const canViewPrices = userHasPermission('perm_prod_view_price');
   const canAudit = userHasPermission('perm_menu_inventory_audit');
@@ -172,8 +180,10 @@ export const InventoryAuditModal: React.FC = () => {
         searchQuery,
         tableFilter,
         counts,
+        depots,
+        users,
       }),
-    [products, stockLevels, subCategories, currentUser, selectedDepot, selectedCategory, searchQuery, tableFilter, counts]
+    [products, stockLevels, subCategories, currentUser, selectedDepot, selectedCategory, searchQuery, tableFilter, counts, depots, users]
   );
 
   const scopeProducts = useMemo(() => scopeRows.map((r) => r.product), [scopeRows]);
@@ -742,7 +752,10 @@ export const InventoryAuditModal: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
-                        <span className="text-orange-600 dark:text-orange-400">{lastScannedProduct.product.reference}</span>
+                        <ProductRefLink
+                          productId={lastScannedProduct.product.id}
+                          reference={lastScannedProduct.product.reference}
+                        />
                         <span className="truncate">• {lastScannedProduct.product.brand} {lastScannedProduct.product.model}</span>
                       </div>
                       <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5 flex-wrap">
@@ -801,7 +814,7 @@ export const InventoryAuditModal: React.FC = () => {
                       className="w-full p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer"
                     >
                       <option value="ALL">{t('audit_scope_all_depots')}</option>
-                      {depots.map((d) => (
+                      {visibleDepots.map((d) => (
                         <option key={String(d.id)} value={d.name}>
                           {d.name} {d.is_active === false ? '(Fermé)' : ''}
                         </option>
@@ -1056,9 +1069,10 @@ export const InventoryAuditModal: React.FC = () => {
                           {/* Item Info */}
                           <td className="p-3">
                             <div className="flex items-center gap-1.5">
-                              <span className="font-extrabold text-orange-600 dark:text-orange-400">
-                                {p.reference}
-                              </span>
+                              <ProductRefLink
+                                productId={p.id}
+                                reference={p.reference}
+                              />
                               {p.barcode && (
                                 <span className="font-mono text-[9px] bg-slate-100 dark:bg-slate-700 px-1 py-0.5 rounded text-slate-500">
                                   {p.barcode}

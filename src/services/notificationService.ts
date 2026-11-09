@@ -9,6 +9,7 @@ import {
   User,
 } from '../types';
 import { getDismissedKeysSync } from './notificationReadService';
+import { getClosedProjectContainerAlertsForUser } from './projectStatusService';
 
 export type StockTransfer = StockTransferRecord & {
   from_depot_id?: string | number | null;
@@ -34,7 +35,9 @@ export type NotificationEventTypeAlias =
   | 'ORDER_MODIFIED'
   | 'TRANSFER_INCOMING'
   | 'TRANSFER_ANOMALY_OR_RETURN'
-  | 'STOCK_LOW_ALERT';
+  | 'TRANSFER_OVERDUE'
+  | 'STOCK_LOW_ALERT'
+  | 'PROJECT_CLOSED';
 
 export const ALL_TARGETED_NOTIFICATION_TYPES: readonly TargetedNotificationEventType[] = [
   'ORDER_WAITING_APPROVAL',
@@ -112,6 +115,7 @@ export function shouldAutoDismissOnCardClick(
     case 'ORDER_READY':
     case 'ORDER_READY_FOR_PICKUP':
     case 'ORDER_PICKUP_DELEGATED':
+    case 'TRANSFER_OVERDUE':
       return false;
     case 'CANCELLED':
     case 'REJECTED':
@@ -132,6 +136,7 @@ export function shouldAutoDismissOnCardClick(
     case 'STOCK_LOW_ALERT':
     case 'LOW':
     case 'OUT':
+    case 'PROJECT_CLOSED':
       return true;
     default:
       return false;
@@ -191,6 +196,7 @@ function normalizeToCanonicalPrefType(
     case 'TRANSFER_EVENT':
     case 'TRANSFER_INCOMING':
     case 'TRANSFER_ANOMALY_OR_RETURN':
+    case 'TRANSFER_OVERDUE':
       return 'TRANSFER_EVENT';
     default:
       return null;
@@ -970,6 +976,9 @@ export interface TargetedTransferNotificationItem {
   notificationType: 'TRANSFER_EVENT';
   eventType: NotificationEventTypeAlias;
   notifKey: string;
+  isOverdue7Days?: boolean;
+  isWarning5Days?: boolean;
+  ageDays?: number;
 }
 
 export interface TargetedStockAlertNotificationItem {
@@ -1329,6 +1338,8 @@ export function getTargetedOrderNotificationsForUser(params: {
 
 /**
  * Calcule la liste des transferts actifs destinés à `user` (en excluant `dismissedKeys`).
+ * Pour les transferts en transit / en attente depuis >= 5 jours (avertissement J+5) ou >= 7 jours (remise en stock obligatoire J+7),
+ * utilise la clé `TRANSFER_OVERDUE:<id>:<status>`.
  */
 export function getTargetedTransferNotificationsForUser(params: {
   user: User | null | undefined;
@@ -1339,6 +1350,7 @@ export function getTargetedTransferNotificationsForUser(params: {
   hasReceiveAllPerm?: boolean;
   respectBannerPrefs?: boolean;
   dismissedKeys?: ReadonlySet<string>;
+  nowMs?: number;
 }): TargetedTransferNotificationItem[] {
   const {
     user,
@@ -1349,6 +1361,7 @@ export function getTargetedTransferNotificationsForUser(params: {
     hasReceiveAllPerm = false,
     respectBannerPrefs = true,
     dismissedKeys = new Set<string>(),
+    nowMs = Date.now(),
   } = params;
   if (!user || user.id === undefined || user.id === null) return [];
 
@@ -1364,8 +1377,37 @@ export function getTargetedTransferNotificationsForUser(params: {
       tr.status === 'PARTIALLY_RECEIVED';
     if (!isActionableStatus) continue;
 
-    const notifKey = buildNotificationKey('TRANSFER_EVENT', tr.id ?? '', tr.status ?? 'IN_TRANSIT');
-    if (dismissedKeys && dismissedKeys.has(notifKey)) continue;
+    let ageDays = 0;
+    if (tr.created_at) {
+      const ts = new Date(tr.created_at).getTime();
+      if (Number.isFinite(ts)) {
+        ageDays = Math.max(0, (nowMs - ts) / (24 * 60 * 60 * 1000));
+      }
+    }
+    const isOverdueStatus = tr.status === 'IN_TRANSIT' || tr.status === 'AWAITING_SENDER';
+    const isOverdue7Days = isOverdueStatus && ageDays >= 7;
+    const isWarning5Days = isOverdueStatus && ageDays >= 5 && ageDays < 7;
+    const isOverdueOrWarning = isOverdue7Days || isWarning5Days;
+
+    const eventType: NotificationEventTypeAlias = isOverdueOrWarning
+      ? 'TRANSFER_OVERDUE'
+      : 'TRANSFER_EVENT';
+    const notifKey = buildNotificationKey(
+      eventType,
+      tr.id ?? '',
+      tr.status ?? 'IN_TRANSIT'
+    );
+    const legacyKey = buildNotificationKey(
+      'TRANSFER_EVENT',
+      tr.id ?? '',
+      tr.status ?? 'IN_TRANSIT'
+    );
+    if (
+      dismissedKeys &&
+      (dismissedKeys.has(notifKey) || (!isOverdueOrWarning && dismissedKeys.has(legacyKey)))
+    ) {
+      continue;
+    }
 
     if (
       isUserRecipientForTransferEvent({
@@ -1380,8 +1422,11 @@ export function getTargetedTransferNotificationsForUser(params: {
       items.push({
         transfer: tr,
         notificationType: 'TRANSFER_EVENT',
-        eventType: 'TRANSFER_EVENT',
+        eventType,
         notifKey,
+        isOverdue7Days,
+        isWarning5Days,
+        ageDays,
       });
     }
   }
@@ -1483,5 +1528,18 @@ export function computeTargetedBellBadgeCount(params: {
     }
   }
 
-  return targetedOrders.length + targetedTransfers.length + targetedStockCount;
+  const closedProjectAlerts = getClosedProjectContainerAlertsForUser({
+    user,
+    projects,
+    depots,
+    departments,
+    dismissedKeys,
+  });
+
+  return (
+    targetedOrders.length +
+    targetedTransfers.length +
+    targetedStockCount +
+    closedProjectAlerts.length
+  );
 }

@@ -129,6 +129,12 @@ export const SQL_STEPS = [
     label: 'Notifications lues par utilisateur (core_notification_dismissals, dismiss_notifications, clear_my_dismissals)',
   },
   {
+    step: '21',
+    sourceRel: 'supabase-client/21_vehicules_transferts_regles.sql',
+    migrationName: '20261005069997_21_vehicules_transferts_regles.sql',
+    label: 'Visibilité véhicules/conteneurs par département, cohérence attribution, retour des transferts de plus de 7 jours',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',

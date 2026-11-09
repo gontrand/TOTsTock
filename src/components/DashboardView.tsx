@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import { formatCurrency, formatDate } from '../utils/crypto';
 import { RecentActivityFeed } from './RecentActivityFeed';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 import {
   fetchDashboardKpisFromSupabase,
   DashboardKpisResult,
@@ -108,6 +109,9 @@ export const DashboardView: React.FC = () => {
     flopRotation,
     chartMetrics,
     maxSparklineVal,
+    showAllVehiclesAndContainers,
+    setShowAllVehiclesAndContainers,
+    canToggleAllVehiclesAndContainers,
   } = useDashboardMetrics();
 
   const [hoveredDeptIndex, setHoveredDeptIndex] = useState<number | null>(null);
@@ -305,6 +309,36 @@ export const DashboardView: React.FC = () => {
                 <Building2 className="w-3.5 h-3.5 shrink-0" />
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Commutateur « Tous les véhicules et conteneurs » (v59 section 3) */}
+        {canToggleAllVehiclesAndContainers && kpiScope === 'MY_DEPARTMENT' && (
+          <div className="pt-2 border-t border-dashed border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
+              {tr(
+                language,
+                'Tous les véhicules et conteneurs',
+                'All vehicles and containers',
+                'Alle voertuigen en containers'
+              )}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showAllVehiclesAndContainers}
+              data-testid="toggle-all-vehicles-containers"
+              onClick={() => setShowAllVehiclesAndContainers((v) => !v)}
+              className={`px-3 py-1 rounded-xl text-[11px] font-extrabold border transition cursor-pointer ${
+                showAllVehiclesAndContainers
+                  ? 'bg-orange-600 text-white border-orange-600'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              {showAllVehiclesAndContainers
+                ? tr(language, 'Tous les départements', 'All departments', 'Alle afdelingen')
+                : tr(language, 'Mon département uniquement', 'My department only', 'Alleen mijn afdeling')}
+            </button>
           </div>
         )}
 
@@ -638,8 +672,14 @@ export const DashboardView: React.FC = () => {
                     onClick={() => setActiveProductId(item.product.id)}
                     className="flex items-center justify-between gap-1 cursor-pointer hover:underline text-[11px] relative overflow-hidden"
                   >
-                    <span className="truncate min-w-0 flex-1 font-medium text-slate-700 dark:text-slate-300 relative z-10">
-                      {item.product.brand} {item.product.model}
+                    <span className="truncate min-w-0 flex-1 font-medium text-slate-700 dark:text-slate-300 relative z-10 flex items-center gap-1">
+                      <ProductRefLink
+                        productId={item.product.id}
+                        reference={item.product.reference}
+                      />
+                      <span className="truncate">
+                        {item.product.brand} {item.product.model}
+                      </span>
                     </span>
                     <span className="font-bold text-emerald-600 shrink-0 relative z-20">
                       {item.volume} un.
@@ -663,8 +703,14 @@ export const DashboardView: React.FC = () => {
                   onClick={() => setActiveProductId(item.product.id)}
                   className="flex items-center justify-between gap-1 cursor-pointer hover:underline text-[11px] relative overflow-hidden"
                 >
-                  <span className="truncate min-w-0 flex-1 font-medium text-slate-600 dark:text-slate-400 relative z-10">
-                    {item.product.brand} {item.product.model}
+                  <span className="truncate min-w-0 flex-1 font-medium text-slate-600 dark:text-slate-400 relative z-10 flex items-center gap-1">
+                    <ProductRefLink
+                      productId={item.product.id}
+                      reference={item.product.reference}
+                    />
+                    <span className="truncate">
+                      {item.product.brand} {item.product.model}
+                    </span>
                   </span>
                   <span className="font-bold text-slate-400 shrink-0 relative z-20">
                     {item.volume} un.

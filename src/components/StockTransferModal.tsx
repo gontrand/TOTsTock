@@ -15,19 +15,27 @@ import {
   Package,
   ArrowRight,
   Clock,
+  RotateCcw,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { tr } from '../i18n/dutchTranslator';
+import { StockTransferRecord, StockTransferLine } from '../types';
 import {
   getAvailableStockInDepot,
 } from '../services/stockMovementService';
 import {
   getEligibleSourceDepots,
   getEligibleDestDepots,
+  canUserReturnTransferToSourceStock,
+  isTransferOverdue7Days,
+  getTransferAgeDays,
+  hasSenderUnresolvedOverdueTransfers,
 } from '../services/transferService';
+import { canUserViewDepot } from '../utils/depotPermissions';
 import { generateOperationId } from '../services/offline/indexedDb';
 import { playScanBeep } from '../utils/crypto';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 
 export interface StockTransferLineItem {
   productId: string;
@@ -50,8 +58,15 @@ export const StockTransferModal: React.FC = () => {
     batchCart,
     orderCart,
     transferStockBatchBetweenDepots,
+    transfers,
+    returnOverdueTransfer,
     language,
   } = useApp();
+
+  const hasUnresolvedOverdueTransfers = useMemo(
+    () => hasSenderUnresolvedOverdueTransfers(currentUser, transfers),
+    [currentUser, transfers]
+  );
 
   const eligibleSourceDepots = useMemo(
     () =>
@@ -61,8 +76,8 @@ export const StockTransferModal: React.FC = () => {
         depotHolders,
         userHasPermission('perm_stock_transfer'),
         userHasPermission('perm_stock_transfer_store')
-      ),
-    [currentUser, depots, depotHolders, userHasPermission]
+      ).filter((d) => canUserViewDepot(d, currentUser, users)),
+    [currentUser, depots, depotHolders, userHasPermission, users]
   );
 
   const [sourceDepot, setSourceDepot] = useState<string>('');
@@ -82,11 +97,98 @@ export const StockTransferModal: React.FC = () => {
     receiverNames?: string[];
   } | null>(null);
 
+  // v59 Section 5 : Remise en stock source (> 7 jours ou IN_TRANSIT / REJECTED)
+  const [returnTargetTransfer, setReturnTargetTransfer] = useState<StockTransferRecord | null>(null);
+  const [returnComment, setReturnComment] = useState<string>('');
+  const [submittingReturn, setSubmittingReturn] = useState<boolean>(false);
+  const [returnErrorMsg, setReturnErrorMsg] = useState<string | null>(null);
+
+  const myManageableTransfers = useMemo(
+    () =>
+      (transfers || []).filter(
+        (tItem: StockTransferRecord) =>
+          canUserReturnTransferToSourceStock(
+            tItem,
+            currentUser,
+            depots,
+            depotHolders,
+            userHasPermission('perm_stock_transfer_store') || userHasPermission('perm_stock_transfer')
+          ) ||
+          (tItem.status === 'RETURNED_TO_STOCK' &&
+            currentUser &&
+            (Number(currentUser.id) === 0 ||
+              Number(currentUser.role_id) === 0 ||
+              Number(currentUser.role_id) === 1 ||
+              String(tItem.sender_id ?? '') === String(currentUser.id)))
+      ),
+    [transfers, currentUser, depots, depotHolders, userHasPermission]
+  );
+
+  const myOverdueTransfers = useMemo(
+    () =>
+      myManageableTransfers.filter(
+        (tItem: StockTransferRecord) =>
+          (tItem.status === 'IN_TRANSIT' || tItem.status === 'AWAITING_SENDER') &&
+          isTransferOverdue7Days(tItem)
+      ),
+    [myManageableTransfers]
+  );
+
+  const handleConfirmReturnToStock = async () => {
+    if (!returnTargetTransfer) return;
+    const trimmed = returnComment.trim();
+    if (trimmed.length < 5) {
+      setReturnErrorMsg(
+        tr(
+          language,
+          'Le motif de remise en stock est obligatoire (minimum 5 caractères).',
+          'Return comment is mandatory (at least 5 characters).',
+          'Opmerking voor terugboeking is verplicht (minimaal 5 tekens).'
+        )
+      );
+      return;
+    }
+    setSubmittingReturn(true);
+    setReturnErrorMsg(null);
+    try {
+      const res = await returnOverdueTransfer(returnTargetTransfer.id, trimmed);
+      if (!res.success) {
+        setReturnErrorMsg(res.message || res.error || 'Erreur lors de la remise en stock.');
+        return;
+      }
+      setFeedback({
+        type: 'success',
+        message:
+          res.message ||
+          tr(
+            language,
+            'Transfert remis en stock source avec succès.',
+            'Transfer returned to source stock.',
+            'Overdracht teruggeboekt naar bronvoorraad.'
+          ),
+        transferNumber: returnTargetTransfer.transfer_number,
+        transferStatus: tr(
+          language,
+          'Remis en stock source',
+          'Returned to source stock',
+          'Teruggeboekt naar bronvoorraad'
+        ),
+      });
+      setReturnTargetTransfer(null);
+      setReturnComment('');
+    } finally {
+      setSubmittingReturn(false);
+    }
+  };
+
   const scanInputRef = useRef<HTMLInputElement | null>(null);
 
   const destDepotOptions = useMemo(
-    () => getEligibleDestDepots(sourceDepot, depots, depotHolders, users),
-    [sourceDepot, depots, depotHolders, users]
+    () =>
+      getEligibleDestDepots(sourceDepot, depots, depotHolders, users).filter((opt) =>
+        canUserViewDepot(opt.depot, currentUser, users)
+      ),
+    [sourceDepot, depots, depotHolders, users, currentUser]
   );
 
   // Initialisation à l'ouverture de la modale
@@ -543,6 +645,190 @@ export const StockTransferModal: React.FC = () => {
             </div>
           )}
 
+          {/* v59 Section 5 : Bandeau de blocage si transfert > 7 jours non régularisé */}
+          {(hasUnresolvedOverdueTransfers || myOverdueTransfers.length > 0) && (
+            <div
+              role="alert"
+              data-testid="overdue-transfer-blocking-banner"
+              className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border-2 border-rose-300 dark:border-rose-700 text-rose-900 dark:text-rose-100 space-y-2"
+            >
+              <div className="flex items-start gap-2.5 font-extrabold text-xs">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div>
+                  <div>
+                    {tr(
+                      language,
+                      'Transfert en attente depuis plus de 7 jours : création de nouveau transfert bloquée tant que vos transferts en retard ne sont pas remis en stock ou réceptionnés.',
+                      'Transfer pending for more than 7 days: new transfers are blocked until overdue transfers are returned to stock or received.',
+                      'Overdracht langer dan 7 dagen in afwachting: nieuwe overdrachten zijn geblokkeerd totdat achterstallige overdrachten zijn teruggeboekt of ontvangen.'
+                    )}
+                  </div>
+                </div>
+              </div>
+              {myOverdueTransfers.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  {myOverdueTransfers.map((ov: StockTransferRecord) => (
+                    <div
+                      key={ov.id}
+                      data-testid={`overdue-transfer-row-${ov.id}`}
+                      className="p-2 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-2 flex-wrap"
+                    >
+                      <div className="text-[11px]">
+                        <span className="font-mono font-black text-rose-700 dark:text-rose-300">
+                          {ov.transfer_number}
+                        </span>{' '}
+                        • {ov.source_depot} → {ov.dest_depot} ({getTransferAgeDays(ov)} j)
+                      </div>
+                      <button
+                        type="button"
+                        data-testid={`open-return-transfer-btn-${ov.id}`}
+                        onClick={() => {
+                          setReturnTargetTransfer(ov);
+                          setReturnComment('');
+                          setReturnErrorMsg(null);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>
+                          {tr(
+                            language,
+                            'Remettre en stock',
+                            'Return to stock',
+                            'Terug in voorraad'
+                          )}
+                        </span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* v59 Section 5 : Suivi de mes transferts émis (IN_TRANSIT / REJECTED / RETURNED_TO_STOCK) */}
+          {myManageableTransfers.length > 0 && (
+            <div
+              data-testid="manageable-transfers-section"
+              className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-2"
+            >
+              <div className="text-[11px] font-extrabold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                <span>
+                  {tr(
+                    language,
+                    'Mes transferts en cours / à régulariser',
+                    'My active / returnable transfers',
+                    'Mijn lopende / terug te boeken overdrachten'
+                  )}
+                </span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {myManageableTransfers.length}
+                </span>
+              </div>
+              <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                {myManageableTransfers.map((trItem: StockTransferRecord) => {
+                  const isReturned = trItem.status === 'RETURNED_TO_STOCK';
+                  const isRejected = trItem.status === 'REJECTED';
+                  const canReturn = canUserReturnTransferToSourceStock(
+                    trItem,
+                    currentUser,
+                    depots,
+                    depotHolders,
+                    userHasPermission('perm_stock_transfer_store') ||
+                      userHasPermission('perm_stock_transfer')
+                  );
+                  return (
+                    <div
+                      key={trItem.id}
+                      data-testid={`manageable-transfer-${trItem.id}`}
+                      className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono font-black text-slate-900 dark:text-white">
+                            {trItem.transfer_number}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            {trItem.source_depot} → {trItem.dest_depot}
+                          </span>
+                          {isReturned ? (
+                            <span
+                              data-testid={`transfer-status-returned-${trItem.id}`}
+                              className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300"
+                            >
+                              {tr(
+                                language,
+                                'Remis en stock source',
+                                'Returned to source stock',
+                                'Teruggeboekt naar bronvoorraad'
+                              )}
+                            </span>
+                          ) : isRejected ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 dark:bg-rose-950/70 text-rose-800 dark:text-rose-300">
+                              {tr(language, 'Refusé', 'Rejected', 'Geweigerd')}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 dark:bg-sky-950/70 text-sky-800 dark:text-sky-300">
+                              {tr(language, 'En transit', 'In transit', 'Onderweg')}
+                            </span>
+                          )}
+                        </div>
+                        {canReturn && (
+                          <button
+                            type="button"
+                            data-testid={`return-transfer-btn-${trItem.id}`}
+                            onClick={() => {
+                              setReturnTargetTransfer(trItem);
+                              setReturnComment('');
+                              setReturnErrorMsg(null);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-black text-[11px] flex items-center gap-1 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>
+                              {tr(
+                                language,
+                                'Remettre en stock',
+                                'Return to stock',
+                                'Terug in voorraad'
+                              )}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                      {Array.isArray(trItem.items) && trItem.items.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                          {trItem.items.map((it: StockTransferLine, idx: number) => (
+                            <span key={idx} className="inline-flex items-center gap-1">
+                              <ProductRefLink
+                                productId={it.product_id}
+                                reference={it.product_ref}
+                              />
+                              <span>×{it.quantity ?? it.quantity_sent}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {isReturned && (
+                        <div className="text-[10.5px] text-emerald-700 dark:text-emerald-300">
+                          {trItem.returned_by_name && (
+                            <span>Par {trItem.returned_by_name} </span>
+                          )}
+                          {trItem.returned_at && (
+                            <span>
+                              le {new Date(trItem.returned_at).toLocaleDateString('fr-FR')}{' '}
+                            </span>
+                          )}
+                          {trItem.return_comment && <span>— « {trItem.return_comment} »</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* 1. Dépôt source & Dépôt destination + Inversion rapide ⇄ */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80">
             <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-end gap-2.5">
@@ -756,9 +1042,7 @@ export const StockTransferModal: React.FC = () => {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-slate-900 dark:text-white">
-                            {p.reference}
-                          </span>
+                          <ProductRefLink productId={p.id} reference={p.reference} />
                           <span
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
                               availInSrc > 0
@@ -827,9 +1111,7 @@ export const StockTransferModal: React.FC = () => {
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono font-black text-slate-900 dark:text-white">
-                            {prod.reference}
-                          </span>
+                          <ProductRefLink productId={prod.id} reference={prod.reference} />
                           <span
                             data-testid={`transfer-line-avail-${line.productId}`}
                             className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono ${
@@ -984,7 +1266,12 @@ export const StockTransferModal: React.FC = () => {
             <button
               type="submit"
               data-testid="submit-transfer-batch-btn"
-              disabled={submitting || lines.length === 0 || Boolean(lineValidationError)}
+              disabled={
+                submitting ||
+                lines.length === 0 ||
+                Boolean(lineValidationError) ||
+                hasUnresolvedOverdueTransfers
+              }
               className="px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white font-extrabold flex items-center gap-2 shadow-md shadow-sky-600/20 cursor-pointer"
             >
               <ArrowLeftRight className="w-4 h-4" />
@@ -1002,6 +1289,115 @@ export const StockTransferModal: React.FC = () => {
           </div>
         </form>
       </div>
+
+      {/* Modale de confirmation « Remettre en stock » (v59 Section 5) */}
+      {returnTargetTransfer && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="return-transfer-modal"
+          className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !submittingReturn) {
+              setReturnTargetTransfer(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4 text-xs">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                  {tr(
+                    language,
+                    'Remettre en stock le transfert',
+                    'Return transfer to source stock',
+                    'Overdracht terugboeken naar bronvoorraad'
+                  )}
+                </h3>
+                <p className="text-[11px] font-mono text-amber-600 font-bold">
+                  {returnTargetTransfer.transfer_number} • {returnTargetTransfer.source_depot} →{' '}
+                  {returnTargetTransfer.dest_depot}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReturnTargetTransfer(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {returnErrorMsg && (
+              <div
+                role="alert"
+                data-testid="return-transfer-error-alert"
+                className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 font-bold"
+              >
+                {returnErrorMsg}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label
+                htmlFor="return-transfer-comment"
+                className="block font-bold text-slate-700 dark:text-slate-300"
+              >
+                {tr(
+                  language,
+                  'Commentaire obligatoire (minimum 5 caractères) * :',
+                  'Mandatory comment (at least 5 characters) *:',
+                  'Verplichte opmerking (minimaal 5 tekens) *:'
+                )}
+              </label>
+              <textarea
+                id="return-transfer-comment"
+                data-testid="return-transfer-comment-input"
+                rows={3}
+                value={returnComment}
+                onChange={(e) => setReturnComment(e.target.value)}
+                placeholder={tr(
+                  language,
+                  'Ex : Non réceptionné après 7 jours, réintégration au magasin central...',
+                  'E.g. Not received after 7 days, returned to main warehouse...',
+                  'Bijv. Niet ontvangen na 7 dagen, terug naar hoofdmagazijn...'
+                )}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                disabled={submittingReturn}
+                onClick={() => setReturnTargetTransfer(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 font-bold"
+              >
+                {tr(language, 'Annuler', 'Cancel', 'Annuleren')}
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-return-transfer-btn"
+                disabled={submittingReturn || returnComment.trim().length < 5}
+                onClick={handleConfirmReturnToStock}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-black flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>
+                  {submittingReturn
+                    ? tr(language, 'Remise en stock...', 'Returning...', 'Terugboeken...')
+                    : tr(
+                        language,
+                        'Confirmer la remise en stock',
+                        'Confirm return to stock',
+                        'Terugboeking bevestigen'
+                      )}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

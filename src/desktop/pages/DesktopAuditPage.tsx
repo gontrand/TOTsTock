@@ -21,6 +21,7 @@ import { useApp } from '../../context/AppContext';
 import { tr } from '../../i18n/dutchTranslator';
 import { formatCurrency, playScanBeep } from '../../utils/crypto';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { ProductRefLink } from '../../components/ProductRefLink';
 import {
   getClientSupabase,
   fetchInventoryAuditsFromSupabase,
@@ -59,6 +60,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
     depots,
     stockLevels,
     subCategories,
+    users,
     currentUser,
     applyInventoryAdjustments,
     userHasPermission,
@@ -79,8 +81,8 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
 
   // Allowed depots for current user
   const allowedDepots = useMemo(
-    () => getAllowedAuditDepotColumns(depots, products, stockLevels, currentUser),
-    [depots, products, stockLevels, currentUser]
+    () => getAllowedAuditDepotColumns(depots, products, stockLevels, currentUser, users),
+    [depots, products, stockLevels, currentUser, users]
   );
 
   // =========================================================================
@@ -110,6 +112,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
         discrepancyOnly: matrixDiscrepancyOnly,
         sortBy: matrixSortBy,
         sortDir: matrixSortDir,
+        users,
       }),
     [
       products,
@@ -117,6 +120,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
       stockLevels,
       subCategories,
       currentUser,
+      users,
       matrixSearch,
       matrixCategory,
       matrixBrand,
@@ -222,6 +226,8 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
         stockLevels,
         subCategories,
         currentUser,
+        depots,
+        users,
         selectedDepot,
         selectedCategory,
         zoneQuery,
@@ -234,6 +240,8 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
       stockLevels,
       subCategories,
       currentUser,
+      depots,
+      users,
       selectedDepot,
       selectedCategory,
       zoneQuery,
@@ -938,7 +946,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                       >
                         <td className="py-2.5 px-3 font-mono font-bold text-orange-600 dark:text-orange-400 whitespace-nowrap">
                           <div className="flex items-center gap-1.5">
-                            <span>{row.reference}</span>
+                            <ProductRefLink productId={row.productId} reference={row.reference} />
                             {row.hasDiscrepancy && (
                               <span
                                 title={tr(
@@ -1405,7 +1413,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                     filteredRows.map((row) => (
                       <tr key={`${row.productId}::${row.depotName}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                         <td className="py-2.5 px-3 font-mono font-bold text-orange-600 dark:text-orange-400">
-                          {row.reference}
+                          <ProductRefLink productId={row.productId} reference={row.reference} />
                         </td>
                         <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">
                           {row.brand} {row.model}
@@ -1750,7 +1758,7 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
                         selectedHistoryAudit.items.map((it) => (
                           <tr key={it.id}>
                             <td className="py-2 px-3 font-mono font-bold text-orange-600">
-                              {it.product_ref}
+                              <ProductRefLink productId={it.product_id} reference={it.product_ref} />
                             </td>
                             <td className="py-2 px-3">{it.product_name || '—'}</td>
                             <td className="py-2 px-3 text-center font-mono">{it.theoretical_qty}</td>

@@ -5,6 +5,7 @@ import { useDashboardMetrics, describeDonutSlice } from '../../hooks/useDashboar
 import { formatCurrency } from '../../utils/crypto';
 import { RecentActivityFeed } from '../../components/RecentActivityFeed';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { ProductRefLink } from '../../components/ProductRefLink';
 import { DesktopPageId } from '../types';
 import {
   Package,
@@ -78,6 +79,9 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
     flopRotation,
     chartMetrics,
     maxSparklineVal,
+    showAllVehiclesAndContainers,
+    setShowAllVehiclesAndContainers,
+    canToggleAllVehiclesAndContainers,
   } = useDashboardMetrics();
 
   const [hoveredDeptIndex, setHoveredDeptIndex] = useState<number | null>(null);
@@ -191,6 +195,28 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
                 </option>
               ))}
             </SearchableSelect>
+          )}
+
+          {canToggleAllVehiclesAndContainers && kpiScope === 'MY_DEPARTMENT' && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showAllVehiclesAndContainers}
+              data-testid="desktop-toggle-all-vehicles-containers"
+              onClick={() => setShowAllVehiclesAndContainers((v) => !v)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                showAllVehiclesAndContainers
+                  ? 'bg-orange-600 text-white border-orange-600'
+                  : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+              }`}
+            >
+              {tr(
+                language,
+                'Tous les véhicules et conteneurs',
+                'All vehicles and containers',
+                'Alle voertuigen en containers'
+              )}
+            </button>
           )}
 
           {canFilterDepots && kpiScope === 'COMPANY' && (
@@ -608,20 +634,25 @@ export const DesktopDashboardPage: React.FC<DesktopDashboardPageProps> = ({
 
               <div className="space-y-1.5 text-xs">
                 {topRotation.slice(0, 3).map((item) => (
-                  <button
+                  <div
                     key={item.product.id}
-                    type="button"
                     onClick={() => onOpenProductDetail(item.product.id)}
                     className="w-full py-1.5 px-2.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between gap-2 text-left transition cursor-pointer"
                   >
-                    <span className="truncate font-medium text-slate-800 dark:text-slate-200">
-                      <span className="font-mono text-slate-500 mr-1.5">{item.product.reference}</span>
-                      {item.product.brand} {item.product.model}
+                    <span className="truncate font-medium text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <ProductRefLink
+                        productId={item.product.id}
+                        reference={item.product.reference}
+                        onOpenProduct={onOpenProductDetail}
+                      />
+                      <span className="truncate">
+                        {item.product.brand} {item.product.model}
+                      </span>
                     </span>
                     <span className="font-mono tabular-nums font-bold text-orange-600 dark:text-orange-400 shrink-0">
                       {item.volume} u.
                     </span>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

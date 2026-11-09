@@ -3,9 +3,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardList,
+  Copy,
+  Download,
   Loader2,
   Plus,
   Printer,
+  QrCode,
   RotateCcw,
   Search,
   ShoppingBag,
@@ -19,6 +22,9 @@ import {
 import { useApp } from '../../context/AppContext';
 import { MaterialOrder, OrderStatus } from '../../types';
 import { formatCurrency } from '../../utils/crypto';
+import { copyToClipboard } from '../../services/clipboard';
+import { filterVisibleDepotsForUser } from '../../utils/depotPermissions';
+import { ProductRefLink } from '../../components/ProductRefLink';
 import {
   buildFullPrintableDocumentHtml,
   renderOrderReadyLabelSheetHtml,
@@ -38,12 +44,24 @@ import {
   OrderSearchFilters,
   ReportPeriodPreset,
 } from '../../services/reportsService';
-import { getClientSupabase, normalizeOrderRecord } from '../../services/clientSupabase';
+import {
+  getClientSupabase,
+  NO_AUTH_SESSION_BANNER_MESSAGE,
+  normalizeOrderRecord,
+} from '../../services/clientSupabase';
 import {
   buildOrderTraceabilityDetails,
+  canUserValidateOrderPickup,
+  canUserViewOrderSignature,
   formatOrderPickupTransferSummary,
+  getOrderPickupReservedMessage,
   isOrderPickupTransferred,
+  isValidPickupSignature,
 } from '../../services/orderTraceabilityService';
+import {
+  filterProjectsForSelection,
+  validateProjectForOutflowOrOrder,
+} from '../../services/projectStatusService';
 import { tr } from '../../i18n/dutchTranslator';
 import { Language } from '../../i18n/translations';
 import { SearchableSelect } from '../../components/SearchableSelect';
@@ -142,6 +160,10 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     depots,
     departments,
     projects,
+    currentUser,
+    users,
+    isSupabaseConnected,
+    hasAuthSession,
     supabaseUrl,
     supabaseKey,
     userHasPermission,
@@ -158,6 +180,17 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     language,
     t,
   } = useApp();
+
+  const visibleDepots = useMemo(
+    () => filterVisibleDepotsForUser(depots, currentUser, users),
+    [depots, currentUser, users]
+  );
+
+  const writeDisabledByAuth = Boolean(isSupabaseConnected && !hasAuthSession);
+  const activeProjects = useMemo(
+    () => filterProjectsForSelection(projects, 'ORDER'),
+    [projects]
+  );
 
   const effectiveDepotFilter = selectedDepotFilter ?? globalDepotFilter ?? 'ALL';
   const handlePrepRedirect = onOpenPreparationForOrder ?? onOpenOrderInPreparation;
@@ -207,6 +240,17 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   const [orderNotes, setOrderNotes] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
+  const [newOrderError, setNewOrderError] = useState<string | null>(null);
+
+  // Desktop Pickup Signature Modal State (v60)
+  const [desktopPickupModalOrder, setDesktopPickupModalOrder] = useState<MaterialOrder | null>(null);
+  const [desktopSignatureData, setDesktopSignatureData] = useState<string | null>(null);
+  const [desktopSigStrokeCount, setDesktopSigStrokeCount] = useState<number>(0);
+  const [isDrawingDesktopSig, setIsDrawingDesktopSig] = useState(false);
+  const [isSubmittingDesktopPickup, setIsSubmittingDesktopPickup] = useState(false);
+  const [desktopPickupError, setDesktopPickupError] = useState<string | null>(null);
+  const desktopSigCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const desktopLastPosRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (openNewOrderRequested) {
@@ -224,8 +268,6 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   const canCreateOrder = userHasPermission('perm_create_order');
   const canPrepOrder =
     userHasPermission('perm_menu_order_prep') || userHasPermission('perm_orders_manage');
-  const canCollectOrder =
-    userHasPermission('perm_order_mark_collected') || userHasPermission('perm_orders_manage');
   const canCancelOrder =
     userHasPermission('perm_order_cancel') || userHasPermission('perm_orders_manage');
   const canViewPrices = userHasPermission('perm_prod_view_price');
@@ -411,6 +453,84 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
     return displayedOrders[0] || null;
   }, [displayedOrders, selectedOrderId]);
 
+  const [orderQrDataUrl, setOrderQrDataUrl] = useState<string>('');
+  const [readyShelfQrDataUrl, setReadyShelfQrDataUrl] = useState<string>('');
+  const [copiedOrderQrCode, setCopiedOrderQrCode] = useState<boolean>(false);
+
+  const activeOrderQrPayload = activeOrder ? `TOT-ORDER:${activeOrder.order_number}` : '';
+  const activeShelfQrPayload =
+    activeOrder && activeOrder.status === 'READY' && activeOrder.ready_qr_code
+      ? activeOrder.ready_qr_code
+      : '';
+
+  useEffect(() => {
+    let cancelled = false;
+    setCopiedOrderQrCode(false);
+    if (!activeOrderQrPayload) {
+      setOrderQrDataUrl('');
+      return;
+    }
+    generateQrCodeDataUrlWithTotLogo(activeOrderQrPayload, { size: 180, margin: 1 })
+      .then((url) => {
+        if (!cancelled) setOrderQrDataUrl(url || '');
+      })
+      .catch(() => {
+        if (!cancelled) setOrderQrDataUrl('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeOrderQrPayload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeShelfQrPayload) {
+      setReadyShelfQrDataUrl('');
+      return;
+    }
+    generateQrCodeDataUrlWithTotLogo(activeShelfQrPayload, { size: 160, margin: 1 })
+      .then((url) => {
+        if (!cancelled) setReadyShelfQrDataUrl(url || '');
+      })
+      .catch(() => {
+        if (!cancelled) setReadyShelfQrDataUrl('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeShelfQrPayload]);
+
+  const handleCopyOrderQrCode = async () => {
+    if (!activeOrderQrPayload) return;
+    const ok = await copyToClipboard(activeOrderQrPayload);
+    if (ok) {
+      setCopiedOrderQrCode(true);
+      setTimeout(() => setCopiedOrderQrCode(false), 2000);
+    }
+  };
+
+  const handleDownloadOrderQrPng = async () => {
+    if (!activeOrder) return;
+    let url = orderQrDataUrl;
+    if (!url) {
+      try {
+        url = await generateQrCodeDataUrlWithTotLogo(`TOT-ORDER:${activeOrder.order_number}`, {
+          size: 260,
+          margin: 2,
+        });
+      } catch {
+        url = '';
+      }
+    }
+    if (!url) return;
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `QR_${activeOrder.order_number}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handlePrintOrderSlip = async (order: MaterialOrder) => {
     let qrDataUrl = '';
     try {
@@ -449,6 +569,18 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
 
   const performCreateOrderSubmit = async (): Promise<boolean> => {
     if (orderCart.length === 0) return false;
+    setNewOrderError(null);
+    const siteCheck = validateProjectForOutflowOrOrder(
+      orderSiteNumber || 'CHANTIER',
+      projects,
+      language
+    );
+    if (!siteCheck.valid) {
+      setNewOrderError(
+        siteCheck.message || `Le projet ${orderSiteNumber} est terminé : sortie impossible`
+      );
+      return false;
+    }
     setSubmittingOrder(true);
     try {
       const res = await submitMaterialOrder(
@@ -459,6 +591,9 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
       if (res.success) {
         setNewOrderOpen(false);
         setOrderNotes('');
+        setNewOrderError(null);
+      } else {
+        setNewOrderError(res.message);
       }
       return Boolean(res.success);
     } finally {
@@ -469,6 +604,110 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
   const handleCreateOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     await performCreateOrderSubmit();
+  };
+
+  const handleOpenDesktopPickupModal = (order: MaterialOrder) => {
+    if (!canUserValidateOrderPickup(currentUser, order)) {
+      setDesktopPickupError(getOrderPickupReservedMessage(order, language));
+      return;
+    }
+    setDesktopPickupModalOrder(order);
+    setDesktopSignatureData(null);
+    setDesktopSigStrokeCount(0);
+    setDesktopPickupError(null);
+  };
+
+  const clearDesktopSignature = () => {
+    const canvas = desktopSigCanvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+    setDesktopSignatureData(null);
+    setDesktopSigStrokeCount(0);
+  };
+
+  const handleDesktopSigPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = desktopSigCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const pos = {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+    setIsDrawingDesktopSig(true);
+    desktopLastPosRef.current = pos;
+  };
+
+  const handleDesktopSigPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingDesktopSig || !desktopLastPosRef.current) return;
+    e.preventDefault();
+    const canvas = desktopSigCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const pos = {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(desktopLastPosRef.current.x, desktopLastPosRef.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    desktopLastPosRef.current = pos;
+    setDesktopSigStrokeCount((prev) => prev + 1);
+  };
+
+  const handleDesktopSigPointerUp = () => {
+    if (!isDrawingDesktopSig) return;
+    setIsDrawingDesktopSig(false);
+    desktopLastPosRef.current = null;
+    const canvas = desktopSigCanvasRef.current;
+    if (canvas) {
+      setDesktopSignatureData(canvas.toDataURL('image/png'));
+    }
+  };
+
+  const handleConfirmDesktopPickup = async () => {
+    if (!desktopPickupModalOrder) return;
+    if (!isValidPickupSignature(desktopSignatureData, desktopSigStrokeCount)) {
+      setDesktopPickupError(
+        tr(
+          language,
+          'Veuillez signer dans le cadre avant de confirmer le retrait.',
+          'Please sign in the box before confirming pickup.'
+        )
+      );
+      return;
+    }
+    setIsSubmittingDesktopPickup(true);
+    setDesktopPickupError(null);
+    try {
+      const res = await markOrderCollected(desktopPickupModalOrder.id, {
+        signatureData: desktopSignatureData || undefined,
+      });
+      if (res.success) {
+        setDesktopPickupModalOrder(null);
+        setDesktopSignatureData(null);
+        setDesktopSigStrokeCount(0);
+      } else {
+        setDesktopPickupError(res.message);
+      }
+    } catch (err: any) {
+      setDesktopPickupError(err?.message || 'Erreur lors de la validation du retrait.');
+    } finally {
+      setIsSubmittingDesktopPickup(false);
+    }
   };
 
   const isNewOrderDirty = Boolean(
@@ -629,8 +868,10 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
             {canCreateOrder && (
               <button
                 type="button"
+                disabled={writeDisabledByAuth}
+                title={writeDisabledByAuth ? NO_AUTH_SESSION_BANNER_MESSAGE : undefined}
                 onClick={() => setNewOrderOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {t('desktop_new_order')}
@@ -794,7 +1035,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
             className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
           >
             <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
-            {depots.map((d) => (
+            {visibleDepots.map((d) => (
               <option key={d.id} value={d.name}>
                 {d.name}
               </option>
@@ -1054,16 +1295,27 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                       </button>
                     )}
 
-                  {activeOrder.status === 'READY' && canCollectOrder && (
-                    <button
-                      type="button"
-                      onClick={() => markOrderCollected(activeOrder.id)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
-                    >
-                      <Truck className="w-3.5 h-3.5" />
-                      {tr(language, 'Marquer retirée', 'Mark collected', 'Markeer als afgehaald')}
-                    </button>
-                  )}
+                  {activeOrder.status === 'READY' &&
+                    (canUserValidateOrderPickup(currentUser, activeOrder) ? (
+                      <button
+                        type="button"
+                        data-testid="desktop-order-collect-btn"
+                        disabled={writeDisabledByAuth}
+                        title={writeDisabledByAuth ? NO_AUTH_SESSION_BANNER_MESSAGE : undefined}
+                        onClick={() => handleOpenDesktopPickupModal(activeOrder)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white cursor-pointer"
+                      >
+                        <Truck className="w-3.5 h-3.5" />
+                        {tr(language, 'Valider le retrait', 'Confirm pickup', 'Afhaling bevestigen')}
+                      </button>
+                    ) : (
+                      <div
+                        data-testid="desktop-order-pickup-reserved"
+                        className="px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-bold"
+                      >
+                        {getOrderPickupReservedMessage(activeOrder, language)}
+                      </div>
+                    ))}
 
                   {(activeOrder.status === 'PENDING' ||
                     activeOrder.status === 'WAITING_APPROVAL') &&
@@ -1080,10 +1332,147 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                 </div>
               </div>
 
-              {/* Order Items Table + Traceability Block */}
+              {/* Order Items Table + QR Code + Traceability Block */}
               <div className="flex-1 overflow-auto p-6 space-y-4">
+                {/* Section 6 (v59): QR Code de la commande + Code de retrait étagère */}
+                <div
+                  data-testid="desktop-order-qr-block"
+                  className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs"
+                >
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-xl bg-white border border-slate-200 shadow-2xs flex flex-col items-center">
+                        <img
+                          data-testid="desktop-order-qr-img"
+                          src={
+                            orderQrDataUrl ||
+                            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+                          }
+                          alt={activeOrderQrPayload}
+                          className="w-24 h-24 object-contain"
+                        />
+                        <span
+                          data-testid="desktop-order-qr-code-text"
+                          className="mt-1 font-mono font-bold text-[10px] text-slate-700"
+                        >
+                          {activeOrderQrPayload}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                          <QrCode className="w-4 h-4 text-orange-500" />
+                          <span>
+                            {tr(
+                              language,
+                              'QR Code de la commande',
+                              'Order QR Code',
+                              'QR-code van de bestelling'
+                            )}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-xs">
+                          {tr(
+                            language,
+                            'Scannez ce code en préparation ou au retrait pour ouvrir directement la commande.',
+                            'Scan this code during picking or pickup to open the order directly.',
+                            'Scan deze code tijdens het verzamelen of afhalen om de bestelling direct te openen.'
+                          )}
+                        </p>
+                        <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
+                          {activeOrder.order_number}
+                        </div>
+                      </div>
+                    </div>
+
+                    {activeOrder.status === 'READY' && activeOrder.ready_qr_code && (
+                      <div
+                        data-testid="desktop-order-shelf-qr-block"
+                        className="flex items-center gap-3 pl-4 border-l border-slate-200 dark:border-slate-800"
+                      >
+                        <div className="p-2 rounded-xl bg-white border border-emerald-300 shadow-2xs flex flex-col items-center">
+                          <img
+                            data-testid="desktop-order-shelf-qr-img"
+                            src={
+                              readyShelfQrDataUrl ||
+                              'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+                            }
+                            alt={activeOrder.ready_qr_code}
+                            className="w-20 h-20 object-contain"
+                          />
+                          <span className="mt-1 font-mono font-bold text-[10px] text-emerald-700">
+                            {activeOrder.ready_qr_code}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="font-black text-emerald-700 dark:text-emerald-300">
+                            {tr(
+                              language,
+                              'Code de retrait étagère',
+                              'Shelf pickup code',
+                              'Afhaalcode schap'
+                            )}
+                          </div>
+                          {activeOrder.pickup_zone && (
+                            <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                              {tr(language, 'Zone :', 'Zone:', 'Zone:')} {activeOrder.pickup_zone}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid="desktop-order-copy-qr-btn"
+                      onClick={handleCopyOrderQrCode}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5 text-orange-500" />
+                      <span>
+                        {copiedOrderQrCode
+                          ? tr(language, 'Code copié ✓', 'Copied ✓', 'Gekopieerd ✓')
+                          : tr(language, 'Copier le code', 'Copy code', 'Code kopiëren')}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="desktop-order-download-qr-btn"
+                      onClick={handleDownloadOrderQrPng}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-orange-500" />
+                      <span>
+                        {tr(
+                          language,
+                          'Télécharger le QR (PNG)',
+                          'Download QR (PNG)',
+                          'QR downloaden (PNG)'
+                        )}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="desktop-order-print-slip-btn"
+                      onClick={() => handlePrintOrderSlip(activeOrder)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-700 text-white cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>
+                        {tr(language, 'Imprimer le bon', 'Print slip', 'Bon afdrukken')}
+                      </span>
+                    </button>
+                  </div>
+                </div>
                 {(() => {
-                  const trace = buildOrderTraceabilityDetails(activeOrder, language);
+                  const trace = buildOrderTraceabilityDetails(activeOrder, language, {
+                    currentUser,
+                    departments,
+                    projects,
+                  });
                   return (
                     <div
                       data-testid="desktop-order-traceability-block"
@@ -1154,6 +1543,42 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                           )}
                         </div>
                       </div>
+
+                      {/* v60 points 8.7 & 8.8 : Signature de retrait en lecture seule selon les droits */}
+                      {(activeOrder.status === 'COLLECTED' || trace.hasSignature) && (
+                        <div
+                          data-testid="desktop-order-traceability-signature"
+                          className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5"
+                        >
+                          <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                            {tr(language, 'Signature de retrait', 'Pickup Signature', 'Afhaalhandtekening')}
+                          </span>
+                          {trace.hasSignature ? (
+                            trace.canViewSignature && trace.signatureData ? (
+                              <div className="space-y-1">
+                                <div className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-center">
+                                  <img
+                                    src={trace.signatureData}
+                                    alt="Signature de retrait"
+                                    className="max-h-24 object-contain"
+                                  />
+                                </div>
+                                <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                  {trace.signedByLabel}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                {tr(language, 'Retrait signé', 'Signed pickup', 'Ondertekende afhaling')}
+                              </div>
+                            )
+                          ) : (
+                            <div className="text-xs text-slate-400 italic">
+                              {tr(language, 'Aucune signature enregistrée', 'No signature recorded')}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1179,7 +1604,10 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                         return (
                           <tr key={String(it.product_id)} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                             <td className="py-3 px-4 font-mono font-bold text-orange-600 dark:text-orange-400">
-                              {it.product_ref}
+                              <ProductRefLink
+                                productId={it.product_id}
+                                reference={it.product_ref}
+                              />
                             </td>
                             <td className="py-3 px-4">
                               <div className="font-bold text-slate-900 dark:text-white">
@@ -1188,7 +1616,12 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                               {it.substituted && it.substituted_with_ref && (
                                 <div className="text-[11px] text-amber-600">
                                   {tr(language, 'Remplacé par', 'Replaced with', 'Vervangen door')}{' '}
-                                  {it.substituted_with_ref} ({it.substituted_with_name})
+                                  <ProductRefLink
+                                    productId={it.substituted_with_id}
+                                    reference={it.substituted_with_ref}
+                                    className="text-amber-600"
+                                  />{' '}
+                                  ({it.substituted_with_name})
                                 </div>
                               )}
                             </td>
@@ -1282,7 +1715,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                     recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-semibold disabled:opacity-60"
                   >
-                    {depots.map((d) => (
+                    {visibleDepots.map((d) => (
                       <option key={d.id} value={d.name}>
                         {d.name}
                       </option>
@@ -1304,7 +1737,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono"
                   />
                   <datalist id="desktop-order-projects">
-                    {projects.map((p) => (
+                    {activeProjects.map((p) => (
                       <option key={p.id} value={p.project_number}>
                         {p.project_name}
                       </option>
@@ -1330,6 +1763,15 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                   </SearchableSelect>
                 </div>
               </div>
+
+              {newOrderError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 font-bold text-xs"
+                >
+                  {newOrderError}
+                </div>
+              )}
 
               {/* Add catalog items */}
               <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
@@ -1363,7 +1805,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                     >
                       <div>
                         <span className="font-mono font-bold text-orange-600 mr-2">
-                          {p.reference}
+                          <ProductRefLink productId={p.id} reference={p.reference} />
                         </span>
                         <span className="font-semibold text-slate-800 dark:text-slate-200">
                           {p.brand} {p.model}
@@ -1403,7 +1845,7 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                       >
                         <div className="min-w-0 flex-1">
                           <div className="font-mono text-[11px] font-bold text-orange-600">
-                            {c.product_ref}
+                            <ProductRefLink productId={c.product_id} reference={c.product_ref} />
                           </div>
                           <div className="font-semibold truncate text-slate-900 dark:text-white">
                             {c.product_name}
@@ -1461,7 +1903,13 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={orderCart.length === 0 || !orderSiteNumber.trim() || submittingOrder}
+                  disabled={
+                    orderCart.length === 0 ||
+                    !orderSiteNumber.trim() ||
+                    submittingOrder ||
+                    writeDisabledByAuth
+                  }
+                  title={writeDisabledByAuth ? NO_AUTH_SESSION_BANNER_MESSAGE : undefined}
                   className="px-5 py-2 rounded-lg font-bold bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white"
                 >
                   {submittingOrder
@@ -1470,6 +1918,101 @@ export const DesktopOrdersPage: React.FC<DesktopOrdersPageProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Desktop Pickup Signature Modal (v60) */}
+      {desktopPickupModalOrder && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSubmittingDesktopPickup) {
+              setDesktopPickupModalOrder(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4 text-xs">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                  {tr(language, 'Émargement & Validation du Retrait', 'Signature & Pickup Confirmation')}
+                </h3>
+                <p className="text-[11px] font-mono text-emerald-600 font-bold">
+                  {desktopPickupModalOrder.order_number} • Chantier {desktopPickupModalOrder.site_number}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDesktopPickupModalOrder(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {desktopPickupError && (
+              <div
+                role="alert"
+                data-testid="desktop-pickup-error-toast"
+                className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 font-bold"
+              >
+                {desktopPickupError}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                <span>
+                  {tr(language, 'Signature obligatoire du demandeur ou délégué :', 'Required signature of requester or delegate:')}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearDesktopSignature}
+                  className="text-rose-600 hover:underline font-bold cursor-pointer"
+                >
+                  {tr(language, 'Effacer', 'Clear')}
+                </button>
+              </div>
+              <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-950 overflow-hidden relative">
+                <canvas
+                  ref={desktopSigCanvasRef}
+                  width={500}
+                  height={160}
+                  onPointerDown={handleDesktopSigPointerDown}
+                  onPointerMove={handleDesktopSigPointerMove}
+                  onPointerUp={handleDesktopSigPointerUp}
+                  onPointerCancel={handleDesktopSigPointerUp}
+                  className="w-full h-36 cursor-crosshair block touch-none"
+                  style={{ touchAction: 'none' }}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                disabled={isSubmittingDesktopPickup}
+                onClick={() => setDesktopPickupModalOrder(null)}
+                className="px-4 py-2 rounded-lg font-bold border border-slate-200 dark:border-slate-700"
+              >
+                {t('common_cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="desktop-confirm-pickup-submit-btn"
+                disabled={
+                  isSubmittingDesktopPickup ||
+                  !isValidPickupSignature(desktopSignatureData, desktopSigStrokeCount)
+                }
+                onClick={handleConfirmDesktopPickup}
+                className="px-4 py-2 rounded-lg font-bold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white cursor-pointer"
+              >
+                {isSubmittingDesktopPickup
+                  ? tr(language, 'Validation...', 'Confirming...')
+                  : tr(language, 'Confirmer le retrait', 'Confirm Pickup')}
+              </button>
+            </div>
           </div>
         </div>
       )}

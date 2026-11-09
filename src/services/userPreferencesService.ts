@@ -453,22 +453,47 @@ function triggerSyncErrorBannerOnce(error: any): void {
   }
 }
 
-function isMissingTableOrRlsError(err: any): boolean {
+export function clearSyncErrorBannerOnSuccess(): void {
+  if (!currentSyncBanner.visible && !bannerShownOnceInSession) return;
+  bannerShownOnceInSession = false;
+  currentSyncBanner = {
+    visible: false,
+    dismissed: false,
+    errorCode: '',
+    message: '',
+  };
+  for (const listener of syncBannerListeners) {
+    try {
+      listener(getSyncBannerState());
+    } catch {}
+  }
+}
+
+export function isMissingSql12TableOrFunctionError(err: any): boolean {
   if (!err) return false;
-  const code = String(err.code || '');
+  const code = String(err.code || '').trim().toUpperCase();
   const msg = String(err.message || err.details || '').toLowerCase();
-  return (
-    code === '42P01' ||
-    code === 'PGRST205' ||
+  // Ne jamais afficher le bandeau « script SQL 12 manquant » sur une erreur 42501 / RLS / permission denied
+  if (
     code === '42501' ||
     code === 'PGRST301' ||
-    msg.includes('core_user_preferences') ||
+    msg.includes('permission denied') ||
+    msg.includes('row-level security')
+  ) {
+    return false;
+  }
+  return (
+    code === '42P01' ||
+    code === 'PGRST202' ||
+    code === 'PGRST205' ||
+    code === '42883' ||
     msg.includes('does not exist') ||
     msg.includes('could not find the table') ||
-    msg.includes('row-level security') ||
-    msg.includes('permission denied')
+    msg.includes('could not find the function')
   );
 }
+
+const isMissingTableOrRlsError = isMissingSql12TableOrFunctionError;
 
 /**
  * Configure les résolveurs du client Supabase et de l'identifiant utilisateur courant.
@@ -568,8 +593,10 @@ export async function flushPendingUserPreferences(
       .eq('user_id', rawUserId)
       .maybeSingle();
 
-    if (selectErr && isMissingTableOrRlsError(selectErr)) {
-      triggerSyncErrorBannerOnce(selectErr);
+    if (selectErr) {
+      if (isMissingTableOrRlsError(selectErr)) {
+        triggerSyncErrorBannerOnce(selectErr);
+      }
       return { synced: false, error: selectErr };
     }
 
@@ -612,6 +639,7 @@ export async function flushPendingUserPreferences(
 
     clearPendingPreferenceKeys(pendingKeys);
     inMemoryPendingValues = {};
+    clearSyncErrorBannerOnSuccess();
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(LAST_SYNCED_UPDATED_AT_KEY, nowIso);
@@ -729,6 +757,8 @@ export async function syncUserPreferencesOnLogin(
         }
       }
 
+      clearSyncErrorBannerOnSuccess();
+
       return {
         synced: true,
         createdInitialRow: false,
@@ -762,6 +792,7 @@ export async function syncUserPreferencesOnLogin(
 
     clearPendingPreferenceKeys(pendingKeys);
     inMemoryPendingValues = {};
+    clearSyncErrorBannerOnSuccess();
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(LAST_SYNCED_UPDATED_AT_KEY, nowIso);

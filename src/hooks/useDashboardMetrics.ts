@@ -7,6 +7,7 @@ import {
   getClientSupabase,
 } from '../services/clientSupabase';
 import { StockMovement } from '../types';
+import { canUserViewDepot, resolveDepotDepartment } from '../utils/depotPermissions';
 
 export type KpiScope = 'COMPANY' | 'MY_DEPARTMENT' | 'OTHER_DEPARTMENT' | 'INDIVIDUAL';
 
@@ -94,6 +95,7 @@ export function useDashboardMetrics() {
     users,
     roles,
     orders,
+    projects,
     userHasPermission,
     language,
     supabaseUrl,
@@ -152,12 +154,84 @@ export function useDashboardMetrics() {
   });
 
   const [selectedDepot, setSelectedDepot] = useState<string>('ALL');
+  const [showAllVehiclesAndContainers, setShowAllVehiclesAndContainers] = useState<boolean>(false);
   const [kpiPeriod, setKpiPeriod] = useState<'1d' | '1w' | '3m' | '6m' | '1y' | '2y'>('1w');
   const [outPeriod, setOutPeriod] = useState<'1d' | '1w' | '1m' | '1y'>('1w');
   const [inPeriod, setInPeriod] = useState<'1d' | '1w' | '1m' | '1y'>('1w');
   const [chartPeriod, setChartPeriod] = useState<'1d' | '1w' | '1m' | '1y'>('1w');
   const [rotationPeriod, setRotationPeriod] = useState<'1w' | '1m' | '1y'>('1m');
   const [deptChartMetric, setDeptChartMetric] = useState<'ORDERS' | 'MOVEMENTS'>('ORDERS');
+
+  const canToggleAllVehiclesAndContainers = useMemo(() => {
+    if (isSuperAdmin) return true;
+    if (userHasPermission('perm_dash_kpi_all')) return true;
+    if (userDepartmentObj?.allow_global_kpis) return true;
+    return false;
+  }, [isSuperAdmin, userHasPermission, userDepartmentObj]);
+
+  /**
+   * Vérifie si un dépôt (par nom) est autorisé dans le périmètre KPI courant :
+   * - Pour un véhicule ou conteneur hors mode COMPANY / tous véhicules activé :
+   *   en mode MY_DEPARTMENT (ou par défaut si showAllVehiclesAndContainers est false),
+   *   exclut les véhicules/conteneurs d'un autre département.
+   */
+  const isDepotAllowedInKpiScope = useMemo(() => {
+    const depotByName = new Map<string, (typeof depots)[0]>();
+    for (const d of depots) {
+      if (d.name) depotByName.set(d.name.trim().toLowerCase(), d);
+    }
+
+    return (depotName?: string | null): boolean => {
+      const clean = (depotName || '').trim();
+      if (!clean) return true;
+      const depotObj = depotByName.get(clean.toLowerCase());
+      if (!depotObj) return true;
+
+      const dType = (depotObj.type || 'FIXED').toUpperCase();
+      if (dType !== 'VEHICLE' && dType !== 'CONTAINER') {
+        return true;
+      }
+
+      if (canToggleAllVehiclesAndContainers && showAllVehiclesAndContainers) {
+        return true;
+      }
+
+      if (kpiScope === 'MY_DEPARTMENT' || !canToggleAllVehiclesAndContainers) {
+        const resolved = resolveDepotDepartment(depotObj, departments, users, projects);
+        if (!userDept) return canUserViewDepot(currentUser, depotObj, departments, users, projects);
+        const matchesMyDept =
+          (resolved.departmentName &&
+            resolved.departmentName.trim().toLowerCase() === userDept.toLowerCase()) ||
+          (userDepartmentObj &&
+            resolved.departmentId !== null &&
+            String(resolved.departmentId) === String(userDepartmentObj.id));
+        if (matchesMyDept) return true;
+        return canUserViewDepot(currentUser, depotObj, departments, users, projects);
+      }
+
+      if (kpiScope === 'OTHER_DEPARTMENT') {
+        const resolved = resolveDepotDepartment(depotObj, departments, users, projects);
+        return Boolean(
+          resolved.departmentName &&
+            resolved.departmentName.trim().toLowerCase() === selectedOtherDept.trim().toLowerCase()
+        );
+      }
+
+      return true;
+    };
+  }, [
+    depots,
+    canToggleAllVehiclesAndContainers,
+    showAllVehiclesAndContainers,
+    kpiScope,
+    departments,
+    users,
+    projects,
+    userDept,
+    userDepartmentObj,
+    currentUser,
+    selectedOtherDept,
+  ]);
 
   const [serverKpis, setServerKpis] = useState<DashboardKpisResult | null>(null);
   const [isLoadingServerKpis, setIsLoadingServerKpis] = useState(false);
@@ -277,24 +351,27 @@ export function useDashboardMetrics() {
       const store =
         (p.store_name || '').trim() ||
         tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot');
+      if (!isDepotAllowedInKpiScope(store)) continue;
       counts.set(store, (counts.get(store) || 0) + 1);
     }
     for (const d of depots) {
-      if (d.name && !counts.has(d.name.trim())) {
+      if (d.name && isDepotAllowedInKpiScope(d.name) && !counts.has(d.name.trim())) {
         counts.set(d.name.trim(), 0);
       }
     }
     return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-  }, [depots, products, language]);
+  }, [depots, products, language, isDepotAllowedInKpiScope]);
 
   const scopedMovements = useMemo(() => {
     if (isStandardUser || kpiScope === 'INDIVIDUAL') {
       return movements.filter(
         (m) =>
-          String(m.user_id) === String(currentUser?.id) ||
-          (m.user_name &&
-            currentUser?.name &&
-            m.user_name.toLowerCase().trim() === currentUser.name.toLowerCase().trim())
+          (String(m.user_id) === String(currentUser?.id) ||
+            (m.user_name &&
+              currentUser?.name &&
+              m.user_name.toLowerCase().trim() === currentUser.name.toLowerCase().trim())) &&
+          isDepotAllowedInKpiScope(m.depot_name) &&
+          isDepotAllowedInKpiScope(m.dest_depot_name)
       );
     }
 
@@ -304,12 +381,21 @@ export function useDashboardMetrics() {
           .filter((u) => (u.department || '').toLowerCase().trim() === userDept.toLowerCase().trim())
           .map((u) => u.name.toLowerCase().trim())
       );
-      return movements.filter(
-        (m) =>
+      return movements.filter((m) => {
+        if (!isDepotAllowedInKpiScope(m.depot_name) || !isDepotAllowedInKpiScope(m.dest_depot_name)) {
+          return false;
+        }
+        return (
           (m.department_name &&
             m.department_name.toLowerCase().trim() === userDept.toLowerCase().trim()) ||
-          (m.user_name && deptUserNames.has(m.user_name.toLowerCase().trim()))
-      );
+          (m.user_name && deptUserNames.has(m.user_name.toLowerCase().trim())) ||
+          (m.depot_name && isDepotAllowedInKpiScope(m.depot_name) && depots.some(
+            (d) =>
+              d.name.trim().toLowerCase() === m.depot_name!.trim().toLowerCase() &&
+              ((d.type || 'FIXED') === 'VEHICLE' || (d.type || 'FIXED') === 'CONTAINER')
+          ))
+        );
+      });
     }
 
     if (kpiScope === 'OTHER_DEPARTMENT') {
@@ -321,19 +407,26 @@ export function useDashboardMetrics() {
           )
           .map((u) => u.name.toLowerCase().trim())
       );
-      return movements.filter(
-        (m) =>
+      return movements.filter((m) => {
+        if (!isDepotAllowedInKpiScope(m.depot_name) || !isDepotAllowedInKpiScope(m.dest_depot_name)) {
+          return false;
+        }
+        return (
           (m.department_name &&
             m.department_name.toLowerCase().trim() === selectedOtherDept.toLowerCase().trim()) ||
           (m.user_name && targetUserNames.has(m.user_name.toLowerCase().trim()))
-      );
+        );
+      });
     }
 
-    if (selectedDepot === 'ALL') return movements;
-    return movements.filter((m) => {
+    const baseMovements = movements.filter(
+      (m) => isDepotAllowedInKpiScope(m.depot_name) && isDepotAllowedInKpiScope(m.dest_depot_name)
+    );
+    if (selectedDepot === 'ALL') return baseMovements;
+    return baseMovements.filter((m) => {
       const p = productMap.get(m.product_id) || (m.product_ref ? productMap.get(m.product_ref) : undefined);
       const store =
-        (p?.store_name || '').trim() ||
+        (m.depot_name || p?.store_name || '').trim() ||
         tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot');
       return store.toLowerCase() === selectedDepot.toLowerCase().trim();
     });
@@ -348,12 +441,15 @@ export function useDashboardMetrics() {
     selectedDepot,
     productMap,
     language,
+    isDepotAllowedInKpiScope,
+    depots,
   ]);
 
   const scopedProducts = useMemo(() => {
+    const allowedProducts = products.filter((p) => isDepotAllowedInKpiScope(p.store_name));
     if (kpiScope === 'COMPANY' && isLogistiqueOrDirection) {
-      if (selectedDepot === 'ALL') return products;
-      return products.filter((p) => {
+      if (selectedDepot === 'ALL') return allowedProducts;
+      return allowedProducts.filter((p) => {
         const store =
           (p.store_name || '').trim() ||
           tr(language, 'Dépôt Principal', 'Main Depot', 'Hoofddepot');
@@ -363,11 +459,19 @@ export function useDashboardMetrics() {
 
     const manipulatedIds = new Set(scopedMovements.map((m) => m.product_id));
     const manipulatedRefs = new Set(scopedMovements.map((m) => m.product_ref).filter(Boolean));
-    const matched = products.filter(
+    const matched = allowedProducts.filter(
       (p) => manipulatedIds.has(p.id) || (p.reference && manipulatedRefs.has(p.reference))
     );
-    return matched.length > 0 ? matched : products;
-  }, [kpiScope, isLogistiqueOrDirection, selectedDepot, products, language, scopedMovements]);
+    return matched.length > 0 ? matched : allowedProducts;
+  }, [
+    kpiScope,
+    isLogistiqueOrDirection,
+    selectedDepot,
+    products,
+    language,
+    scopedMovements,
+    isDepotAllowedInKpiScope,
+  ]);
 
   const slaStats = useMemo(() => {
     let intakeCount = 0;
@@ -701,6 +805,10 @@ export function useDashboardMetrics() {
     setSelectedOtherDept,
     selectedDepot,
     setSelectedDepot,
+    showAllVehiclesAndContainers,
+    setShowAllVehiclesAndContainers,
+    canToggleAllVehiclesAndContainers,
+    isDepotAllowedInKpiScope,
     kpiPeriod,
     setKpiPeriod,
     outPeriod,

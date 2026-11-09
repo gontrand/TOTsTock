@@ -199,6 +199,7 @@ const MainLayout: React.FC = () => {
           </div>
         )}
         <DesktopWorkspace />
+        {activeProductId && <ProductDetailModal />}
         {batchCartModalOpen && <BatchCartModal />}
         {diagnosticModalOpen && <DiagnosticModal />}
         {stockTransferModal?.open && <StockTransferModal />}

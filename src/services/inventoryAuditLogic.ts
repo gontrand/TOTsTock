@@ -1,5 +1,6 @@
 import { Depot, Product, StockLevel, SubCategory, User } from '../types';
-import { formatCurrency, isUserAllowedForDepot } from '../utils/crypto';
+import { formatCurrency } from '../utils/crypto';
+import { canUserViewDepot } from '../utils/depotPermissions';
 import { getProductDepotBreakdown, getProductDisplayLocation, sanitizeCsvCell } from './desktopInventoryLogic';
 import { escapeLabelHtml } from './labelRendering';
 
@@ -31,6 +32,7 @@ export interface StockByDepotMatrixFilter {
   discrepancyOnly?: boolean;
   sortBy?: 'reference' | 'designation' | 'brand' | 'category' | 'total' | string;
   sortDir?: 'asc' | 'desc';
+  users?: User[];
 }
 
 export interface StockByDepotMatrixResult {
@@ -118,7 +120,8 @@ export function getAllowedAuditDepotColumns(
   depots: Depot[] = [],
   products: Product[] = [],
   stockLevels: StockLevel[] = [],
-  currentUser?: User | null
+  currentUser?: User | null,
+  users: User[] = []
 ): string[] {
   const closedSet = new Set(
     (depots || [])
@@ -132,7 +135,7 @@ export function getAllowedAuditDepotColumns(
     if (!clean) return;
     const lower = clean.toLowerCase();
     if (closedSet.has(lower)) return;
-    if (currentUser && !isUserAllowedForDepot(currentUser, clean)) return;
+    if (currentUser && !canUserViewDepot(clean, currentUser, depots, users)) return;
     if (!mapLowerToDisplay.has(lower)) {
       mapLowerToDisplay.set(lower, clean);
     }
@@ -164,7 +167,8 @@ export function buildStockByDepotMatrix(
   currentUser?: User | null,
   filter: StockByDepotMatrixFilter = {}
 ): StockByDepotMatrixResult {
-  const depotColumns = getAllowedAuditDepotColumns(depots, products, stockLevels, currentUser);
+  const usersList = filter.users || [];
+  const depotColumns = getAllowedAuditDepotColumns(depots, products, stockLevels, currentUser, usersList);
   const subCatMap = new Map<string, string>();
   for (const sc of subCategories || []) {
     subCatMap.set(String(sc.id), sc.name);
@@ -179,7 +183,7 @@ export function buildStockByDepotMatrix(
   const rows: StockByDepotMatrixRow[] = [];
 
   for (const p of products || []) {
-    const breakdown = getProductDepotBreakdown(p, stockLevels, currentUser);
+    const breakdown = getProductDepotBreakdown(p, stockLevels, currentUser, depots, usersList);
     if (breakdown.hasDiscrepancy) {
       totalDiscrepancies++;
     }
@@ -341,9 +345,11 @@ export function getProductAuditDepotData(
   product: Product,
   selectedDepot: string,
   stockLevels: StockLevel[] = [],
-  currentUser?: User | null
+  currentUser?: User | null,
+  depots: Depot[] = [],
+  users: User[] = []
 ): { presentInScope: boolean; theoreticalQty: number; rackLocation: string; depotName: string } {
-  const breakdown = getProductDepotBreakdown(product, stockLevels, currentUser);
+  const breakdown = getProductDepotBreakdown(product, stockLevels, currentUser, depots, users);
   const cleanSelected = (selectedDepot || 'ALL').trim();
 
   if (!cleanSelected || cleanSelected === 'ALL') {
@@ -356,6 +362,15 @@ export function getProductAuditDepotData(
       theoreticalQty: theo,
       rackLocation: getProductDisplayLocation(product),
       depotName: product.store_name || 'Dépôt Principal',
+    };
+  }
+
+  if (currentUser && !canUserViewDepot(cleanSelected, currentUser, depots, users)) {
+    return {
+      presentInScope: false,
+      theoreticalQty: 0,
+      rackLocation: '',
+      depotName: cleanSelected,
     };
   }
 
@@ -374,7 +389,7 @@ export function getProductAuditDepotData(
   if (
     !breakdown.hasExplicitStockLevels &&
     (product.store_name || '').trim().toLowerCase() === targetLower &&
-    (!currentUser || isUserAllowedForDepot(currentUser, cleanSelected))
+    (!currentUser || canUserViewDepot(cleanSelected, currentUser, depots, users))
   ) {
     return {
       presentInScope: true,
@@ -400,6 +415,8 @@ export function buildDepotAuditCountingRows(params: {
   stockLevels: StockLevel[];
   subCategories?: SubCategory[];
   currentUser?: User | null;
+  depots?: Depot[];
+  users?: User[];
   selectedDepot: string;
   selectedCategory?: string;
   zoneQuery?: string;
@@ -412,6 +429,8 @@ export function buildDepotAuditCountingRows(params: {
     stockLevels = [],
     subCategories = [],
     currentUser = null,
+    depots = [],
+    users = [],
     selectedDepot = 'ALL',
     selectedCategory = 'ALL',
     zoneQuery = '',
@@ -435,7 +454,14 @@ export function buildDepotAuditCountingRows(params: {
       if (String(p.sub_category_id) !== selectedCategory) continue;
     }
 
-    const depotData = getProductAuditDepotData(p, selectedDepot, stockLevels, currentUser);
+    const depotData = getProductAuditDepotData(
+      p,
+      selectedDepot,
+      stockLevels,
+      currentUser,
+      depots,
+      users
+    );
     if (!depotData.presentInScope) continue;
 
     if (cleanZone) {

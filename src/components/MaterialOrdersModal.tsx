@@ -3,11 +3,27 @@ import { tr } from '../i18n/dutchTranslator';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { useApp } from '../context/AppContext';
-import { buildOrderTraceabilityDetails } from '../services/orderTraceabilityService';
+import {
+  buildOrderTraceabilityDetails,
+  canUserValidateOrderPickup,
+  canUserViewOrderSignature,
+  getOrderPickupReservedMessage,
+  isValidPickupSignature,
+  ORDER_PICKUP_QR_UNAUTHORIZED_MESSAGE,
+} from '../services/orderTraceabilityService';
+import {
+  filterProjectsForSelection,
+  validateProjectForOutflowOrOrder,
+} from '../services/projectStatusService';
 import { SearchableSelect } from './SearchableSelect';
+import { ProductRefLink } from './ProductRefLink';
 import { MaterialOrder, MaterialOrderItem, OrderBasket } from '../types';
 import { formatCurrency, playScanBeep } from '../utils/crypto';
-import { computeNextOrderNumber, formatOrderDatePrefix } from '../services/clientSupabase';
+import {
+  computeNextOrderNumber,
+  formatOrderDatePrefix,
+  NO_AUTH_SESSION_BANNER_MESSAGE,
+} from '../services/clientSupabase';
 import {
   openSmartphoneCameraStream,
   prewarmSmartphoneCameraStream,
@@ -103,11 +119,15 @@ export const MaterialOrdersModal: React.FC = () => {
     canViewPrices,
     isDepartmentManager,
     isAdmin,
+    isSupabaseConnected,
+    hasAuthSession,
     supabaseConfig,
     supabaseSyncStatus,
     language,
     t,
   } = useApp();
+
+  const writeDisabledByAuth = Boolean(isSupabaseConnected && !hasAuthSession);
 
   const [activeTab, setActiveTab] = useState<'cart' | 'orders'>(() => {
     return orderCart.length > 0 ? 'cart' : 'orders';
@@ -118,7 +138,7 @@ export const MaterialOrdersModal: React.FC = () => {
     return orderBaskets.find((b) => b.id === activeOrderBasketId) || orderBaskets[0] || null;
   }, [orderBaskets, activeOrderBasketId]);
 
-  // Règle : dans la commande, on ne voit QUE les chantiers du département d'appartenance du demandeur
+  // Règle : dans la commande, on ne voit QUE les chantiers en cours (IN_PROGRESS) du département d'appartenance du demandeur
   const userDeptObj = useMemo(() => {
     if (!currentUser?.department) return null;
     const str = currentUser.department.toLowerCase().trim();
@@ -129,14 +149,17 @@ export const MaterialOrdersModal: React.FC = () => {
     );
   }, [currentUser, departments]);
 
+  const activeProjects = useMemo(() => {
+    return filterProjectsForSelection(projects, 'ORDER');
+  }, [projects]);
+
   const departmentProjects = useMemo(() => {
     if (userDeptObj) {
-      const filtered = projects.filter((p) => p.department_id === userDeptObj.id);
+      const filtered = activeProjects.filter((p) => p.department_id === userDeptObj.id);
       if (filtered.length > 0) return filtered;
     }
-    // Si l'utilisateur est superadmin ou si aucun chantier n'est spécifié pour son département
-    return projects;
-  }, [projects, userDeptObj]);
+    return activeProjects;
+  }, [activeProjects, userDeptObj]);
 
   const [selectedSiteNumber, setSelectedSiteNumber] = useState<string>(() => {
     if (activeBasket?.site_number) return activeBasket.site_number;
@@ -338,6 +361,7 @@ export const MaterialOrdersModal: React.FC = () => {
   // Digital Signature & Proof of collection modal states
   const [retraitModalOrder, setRetraitModalOrder] = useState<MaterialOrder | null>(null);
   const [signatureData, setSignatureData] = useState<string | null>(null);
+  const [sigStrokeCount, setSigStrokeCount] = useState<number>(0);
   const [proofPhotoUrl, setProofPhotoUrl] = useState<string | null>(null);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [hasDrawnSignature, setHasDrawnSignature] = useState<boolean>(false);
@@ -495,6 +519,12 @@ export const MaterialOrdersModal: React.FC = () => {
       return;
     }
 
+    const projValidation = validateProjectForOutflowOrOrder(site, projects, language);
+    if (!projValidation.valid) {
+      setToastError(projValidation.message || `Le projet ${site} est terminé : sortie impossible`);
+      return;
+    }
+
     const totalUnits = orderCart.reduce((acc, it) => acc + (it.quantity || 0), 0);
     const siteProj = projects.find((p) => p.project_number.toUpperCase() === site.toUpperCase());
     const basketName = activeBasket?.name || (tr(language, 'Panier en cours', 'Active basket'));
@@ -543,8 +573,13 @@ export const MaterialOrdersModal: React.FC = () => {
       basket.site_number ||
       (basket.id === activeOrderBasketId ? (useCustomSite ? customSiteNumber : selectedSiteNumber) : undefined) ||
       departmentProjects[0]?.project_number ||
-      projects[0]?.project_number ||
+      activeProjects[0]?.project_number ||
       'CH-00';
+    const projValidation = validateProjectForOutflowOrOrder(effectiveSite, projects, language);
+    if (!projValidation.valid) {
+      setToastError(projValidation.message || `Le projet ${effectiveSite} est terminé : sortie impossible`);
+      return;
+    }
     const totalUnits = basket.items.reduce((acc: number, it: MaterialOrderItem) => acc + (it.quantity || 0), 0);
     const totalCost = basket.items.reduce((acc: number, it: MaterialOrderItem) => acc + (it.quantity || 0) * (it.unit_price || 0), 0);
     const siteProj = projects.find((p) => p.project_number.toUpperCase() === effectiveSite.toUpperCase());
@@ -624,21 +659,10 @@ export const MaterialOrdersModal: React.FC = () => {
         return;
       }
 
-      // Check ownership or delegation
-      const isDelegatedToMe =
-        Boolean(matched.pickup_delegate_id && String(matched.pickup_delegate_id) === String(currentUser?.id)) ||
-        Boolean(matched.pickup_delegate_name && currentUser?.name && matched.pickup_delegate_name.toLowerCase() === currentUser.name.toLowerCase());
-      const isMine =
-        isSuperAdmin ||
-        isDelegatedToMe ||
-        String(matched.requester_id) === String(currentUser?.id) ||
-        (matched.requester_name && currentUser?.name && matched.requester_name.toLowerCase() === currentUser.name.toLowerCase());
-
-      if (!isMine) {
+      // v60 point 8.2: Si le QR code de retrait est scanné par un autre utilisateur, ne pas ouvrir la validation de retrait
+      if (!canUserValidateOrderPickup(currentUser, matched)) {
         playScanBeep(false);
-        setScanErrorMessage(
-          tr(language, `⚠️ Cette commande (${matched.order_number}) appartient à « ${matched.requester_name} ». Vous ne pouvez confirmer le retrait que pour vos propres commandes ou celles qui vous ont été formellement déléguées.`, `This order belongs to ${matched.requester_name}. You can only collect your own orders or orders delegated to you.`)
-        );
+        setScanErrorMessage(ORDER_PICKUP_QR_UNAUTHORIZED_MESSAGE);
         return;
       }
 
@@ -648,7 +672,7 @@ export const MaterialOrdersModal: React.FC = () => {
       stopCamera();
       setIsPickupScannerOpen(false);
     },
-    [orders, currentUser, isSuperAdmin, language, stopCamera]
+    [orders, currentUser, language, stopCamera]
   );
 
   const handleProcessScannedCodeRef = useRef(handleProcessScannedCode);
@@ -906,6 +930,13 @@ export const MaterialOrdersModal: React.FC = () => {
       }
     }
 
+    const canIncludeSig = canUserViewOrderSignature({
+      user: currentUser,
+      order,
+      departments,
+      projects,
+    });
+
     const html = generateOrderSlipHtml({
       orderNumber: order.order_number,
       siteNumber: order.site_number,
@@ -916,6 +947,10 @@ export const MaterialOrdersModal: React.FC = () => {
       items: order.items,
       qrCodeDataUrl: qrUrl,
       notes: order.notes,
+      signatureDataUrl: order.signature_data || null,
+      signedByName: order.collected_by || order.requester_name,
+      signedAt: order.collected_at || null,
+      canIncludeSignature: canIncludeSig,
     });
     printHtmlViaIframe(html);
   };
@@ -980,6 +1015,7 @@ export const MaterialOrdersModal: React.FC = () => {
     ctx.stroke();
 
     lastPosRef.current = currentPos;
+    setSigStrokeCount((prev) => prev + 1);
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1008,6 +1044,7 @@ export const MaterialOrdersModal: React.FC = () => {
       }
     }
     setHasDrawnSignature(false);
+    setSigStrokeCount(0);
     setSignatureData(null);
   };
 
@@ -1022,14 +1059,29 @@ export const MaterialOrdersModal: React.FC = () => {
   };
 
   const handleInitiateCollection = (order: MaterialOrder) => {
+    if (!canUserValidateOrderPickup(currentUser, order)) {
+      setToastError(getOrderPickupReservedMessage(order, language));
+      return;
+    }
     setRetraitModalOrder(order);
     setSignatureData(null);
+    setSigStrokeCount(0);
     setProofPhotoUrl(null);
     setHasDrawnSignature(false);
   };
 
   const handleFinalizeCollection = async () => {
     if (!retraitModalOrder) return;
+    if (!isValidPickupSignature(signatureData, sigStrokeCount)) {
+      setToastError(
+        tr(
+          language,
+          'Veuillez apposer une signature valide sur le pavé tactile avant de confirmer le retrait.',
+          'Please draw a valid signature before confirming pickup.'
+        )
+      );
+      return;
+    }
     setIsSubmittingRetrait(true);
     try {
       const res = await markOrderCollected(retraitModalOrder.id, {
@@ -1396,7 +1448,7 @@ export const MaterialOrdersModal: React.FC = () => {
                                         }}
                                         className="text-[11px] font-extrabold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-slate-800 dark:text-slate-100 outline-none max-w-[210px] truncate cursor-pointer hover:border-orange-500 shadow-2xs"
                                       >
-                                        {(departmentProjects.length > 0 ? departmentProjects : projects).map((p) => (
+                                        {(departmentProjects.length > 0 ? departmentProjects : activeProjects).map((p) => (
                                           <option key={p.id} value={p.project_number}>
                                             {p.project_number} — {p.project_name}
                                           </option>
@@ -1592,7 +1644,7 @@ export const MaterialOrdersModal: React.FC = () => {
                                     }}
                                     className="w-full text-[10px] font-extrabold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-slate-800 dark:text-slate-100 outline-none truncate cursor-pointer hover:border-orange-500 shadow-2xs"
                                   >
-                                    {(departmentProjects.length > 0 ? departmentProjects : projects).map((p) => (
+                                    {(departmentProjects.length > 0 ? departmentProjects : activeProjects).map((p) => (
                                       <option key={p.id} value={p.project_number}>
                                         {p.project_number} — {p.project_name}
                                       </option>
@@ -1992,9 +2044,10 @@ export const MaterialOrdersModal: React.FC = () => {
                                 {item.product_name}
                               </div>
                               <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
-                                <span className="font-mono font-semibold text-orange-600 dark:text-orange-400">
-                                  {item.product_ref}
-                                </span>
+                                <ProductRefLink
+                                  productId={item.product_id}
+                                  reference={item.product_ref}
+                                />
                                 {item.depot_name && (
                                   <span className="text-slate-500 dark:text-slate-400">
                                     • 🏢 {item.depot_name}
@@ -2208,7 +2261,8 @@ export const MaterialOrdersModal: React.FC = () => {
                 {/* Submit Button */}
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || writeDisabledByAuth}
+                  title={writeDisabledByAuth ? NO_AUTH_SESSION_BANNER_MESSAGE : undefined}
                   className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-extrabold text-sm shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
@@ -2396,22 +2450,35 @@ export const MaterialOrdersModal: React.FC = () => {
                         <Printer className="w-3.5 h-3.5 text-slate-500" />
                         <span>{tr(language, 'Imprimer Bon', 'Print Slip')}</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleStartPickupScanner}
-                        className="py-2 px-3.5 rounded-xl bg-white dark:bg-slate-800 text-emerald-800 dark:text-emerald-300 font-bold text-xs border border-emerald-300 dark:border-emerald-700 shadow-2xs flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
-                      >
-                        <Camera className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>{tr(language, 'Scanner Étagère', 'Scan Shelf')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleConfirmCollection(selectedDetailOrder.id)}
-                        className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-md shadow-emerald-600/30 flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
-                      >
-                        <PackageCheck className="w-4 h-4" />
-                        <span>{tr(language, 'Confirmer Retrait', 'Confirm Pickup')}</span>
-                      </button>
+                      {canUserValidateOrderPickup(currentUser, selectedDetailOrder) ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleStartPickupScanner}
+                            className="py-2 px-3.5 rounded-xl bg-white dark:bg-slate-800 text-emerald-800 dark:text-emerald-300 font-bold text-xs border border-emerald-300 dark:border-emerald-700 shadow-2xs flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+                          >
+                            <Camera className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>{tr(language, 'Scanner Étagère', 'Scan Shelf')}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={writeDisabledByAuth}
+                            title={writeDisabledByAuth ? NO_AUTH_SESSION_BANNER_MESSAGE : undefined}
+                            onClick={() => handleConfirmCollection(selectedDetailOrder.id)}
+                            className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-md shadow-emerald-600/30 flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-50"
+                          >
+                            <PackageCheck className="w-4 h-4" />
+                            <span>{tr(language, 'Confirmer Retrait', 'Confirm Pickup')}</span>
+                          </button>
+                        </>
+                      ) : (
+                        <div
+                          data-testid="order-pickup-reserved-notice"
+                          className="py-2 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-800 text-xs font-bold"
+                        >
+                          {getOrderPickupReservedMessage(selectedDetailOrder, language)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -2473,7 +2540,7 @@ export const MaterialOrdersModal: React.FC = () => {
                         <span>Prise en charge du retrait :</span>
                         {selectedDetailOrder.pickup_delegate_name ? (
                           <span className="px-2 py-0.5 rounded-md bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-200 text-[11px] font-extrabold border border-purple-300 dark:border-purple-800">
-                            Délégué à {selectedDetailOrder.pickup_delegate_name} ({selectedDetailOrder.pickup_delegate_department || 'Département'})
+                            Retrait délégué à {selectedDetailOrder.pickup_delegate_name} ({selectedDetailOrder.pickup_delegate_department || 'Département'})
                           </span>
                         ) : (
                           <span className="text-slate-500 font-bold">Demandeur initial ({selectedDetailOrder.requester_name})</span>
@@ -2509,9 +2576,13 @@ export const MaterialOrdersModal: React.FC = () => {
                     )}
                 </div>
 
-                {/* Point 5.2 : Bloc « Traçabilité » de la commande */}
+                {/* Point 5.2 & v60 point 8.7/8.8 : Bloc « Traçabilité » de la commande et signature de retrait */}
                 {(() => {
-                  const trace = buildOrderTraceabilityDetails(selectedDetailOrder, language);
+                  const trace = buildOrderTraceabilityDetails(selectedDetailOrder, language, {
+                    currentUser,
+                    departments,
+                    projects,
+                  });
                   return (
                     <div
                       data-testid="order-traceability-block"
@@ -2580,6 +2651,55 @@ export const MaterialOrdersModal: React.FC = () => {
                           )}
                         </div>
                       </div>
+
+                      {/* v60 points 8.7 & 8.8 : Signature de retrait en lecture seule selon les droits */}
+                      {(selectedDetailOrder.status === 'COLLECTED' || trace.hasSignature) && (
+                        <div
+                          data-testid="order-traceability-signature"
+                          className="p-3 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2"
+                        >
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-1">
+                              <PenTool className="w-3 h-3 text-emerald-600" />
+                              <span>{tr(language, 'Signature de retrait', 'Pickup Signature')}</span>
+                            </span>
+                            {selectedDetailOrder.status === 'COLLECTED' && (
+                              <button
+                                type="button"
+                                onClick={() => handlePrintRequesterSlip(selectedDetailOrder)}
+                                className="py-1 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                              >
+                                <Printer className="w-3 h-3" />
+                                <span>{tr(language, 'Imprimer Bon', 'Print Slip')}</span>
+                              </button>
+                            )}
+                          </div>
+                          {trace.hasSignature ? (
+                            trace.canViewSignature && trace.signatureData ? (
+                              <div className="space-y-1.5">
+                                <div className="p-2 bg-white rounded-xl border border-slate-200 flex items-center justify-center">
+                                  <img
+                                    src={trace.signatureData}
+                                    alt="Signature de retrait"
+                                    className="max-h-24 object-contain"
+                                  />
+                                </div>
+                                <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                                  {trace.signedByLabel}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                {tr(language, 'Retrait signé', 'Signed pickup')}
+                              </div>
+                            )
+                          ) : (
+                            <div className="text-xs text-slate-400 italic">
+                              {tr(language, 'Aucune signature enregistrée', 'No signature recorded')}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -2609,7 +2729,8 @@ export const MaterialOrdersModal: React.FC = () => {
                             <span className="truncate">{it.product_name}</span>
                           </div>
                           <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                            Réf: {it.product_ref} {it.brand ? `• ${it.brand}` : ''}
+                            Réf: <ProductRefLink productId={it.product_id} reference={it.product_ref} />{' '}
+                            {it.brand ? `• ${it.brand}` : ''}
                           </div>
 
                           {it.unavailable && (
@@ -2620,7 +2741,14 @@ export const MaterialOrdersModal: React.FC = () => {
 
                           {it.substituted && (
                             <div className="mt-1 p-1 px-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-[10.5px] font-bold border border-amber-200 dark:border-amber-800">
-                              🔄 Substitué par le magasin : <strong>{it.substituted_with_ref} - {it.substituted_with_name}</strong>
+                              🔄 Substitué par le magasin :{' '}
+                              <strong>
+                                <ProductRefLink
+                                  productId={it.substituted_with_id}
+                                  reference={it.substituted_with_ref}
+                                />{' '}
+                                - {it.substituted_with_name}
+                              </strong>
                             </div>
                           )}
                         </div>
@@ -2891,7 +3019,7 @@ export const MaterialOrdersModal: React.FC = () => {
                           <div className="flex items-center gap-1.5">
                             <Users className="w-3.5 h-3.5 text-purple-600 shrink-0" />
                             <span>
-                              Retrait confié à : <strong>{order.pickup_delegate_name}</strong>
+                              Retrait délégué à <strong>{order.pickup_delegate_name}</strong>
                               {order.pickup_delegate_department ? ` (${order.pickup_delegate_department})` : ''}
                             </span>
                           </div>
@@ -2914,7 +3042,9 @@ export const MaterialOrdersModal: React.FC = () => {
                             {order.items.map((it, idx) => (
                               <div key={idx} className="py-1.5 flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200">
                                 <div className="truncate pr-2">
-                                  <span className="font-mono font-bold text-orange-600 dark:text-orange-400 mr-1.5">[{it.product_ref}]</span>
+                                  <span className="font-mono font-bold text-orange-600 dark:text-orange-400 mr-1.5">
+                                    [<ProductRefLink productId={it.product_id} reference={it.product_ref} />]
+                                  </span>
                                   <span>{it.product_name}</span>
                                 </div>
                                 <span className="font-extrabold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded-md text-[11px] shrink-0">
@@ -3079,7 +3209,7 @@ export const MaterialOrdersModal: React.FC = () => {
                               className="mt-1 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 justify-end cursor-pointer"
                             >
                               <FileCheck className="w-3 h-3 text-blue-500" />
-                              <span>{tr(language, 'Preuve / Signature', 'Proof / Signature')}</span>
+                              <span>{tr(language, 'Retrait signé', 'Signed pickup')}</span>
                             </button>
                           )}
                         </div>
@@ -3446,8 +3576,8 @@ export const MaterialOrdersModal: React.FC = () => {
                     >
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="px-1.5 py-0.5 rounded-md bg-orange-50 dark:bg-orange-950/60 font-mono font-bold text-orange-600 dark:text-orange-400 text-[11px] shrink-0">
-                            {prod.reference}
+                          <span className="px-1.5 py-0.5 rounded-md bg-orange-50 dark:bg-orange-950/60 text-[11px] shrink-0">
+                            <ProductRefLink productId={prod.id} reference={prod.reference} />
                           </span>
                           <span className="font-bold text-slate-900 dark:text-white text-xs sm:text-[13px] leading-snug break-words">
                             {prod.brand} {prod.model}
@@ -3637,17 +3767,15 @@ export const MaterialOrdersModal: React.FC = () => {
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
               <button
                 type="button"
-                disabled={isSubmittingRetrait}
+                disabled={isSubmittingRetrait || !isValidPickupSignature(signatureData, sigStrokeCount)}
                 onClick={handleFinalizeCollection}
-                className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md shadow-emerald-600/30 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer disabled:opacity-50"
+                className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md shadow-emerald-600/30 flex items-center justify-center gap-2 transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <PackageCheck className="w-4 h-4" />
                 <span>
                   {isSubmittingRetrait
                     ? (tr(language, 'Validation en cours...', 'Confirming...'))
-                    : hasDrawnSignature
-                    ? (tr(language, 'Valider le Retrait avec Signature', 'Confirm with Signature'))
-                    : (tr(language, 'Valider le Retrait', 'Confirm Pickup'))}
+                    : (tr(language, 'Confirmer le retrait', 'Confirm Pickup'))}
                 </span>
               </button>
 
@@ -3703,14 +3831,37 @@ export const MaterialOrdersModal: React.FC = () => {
               <div>Par : <strong>{viewProofOrder.collected_by || viewProofOrder.requester_name}</strong></div>
             </div>
 
-            {/* Signature image */}
+            {/* Signature image (v60 points 8.7 & 8.8 : uniquement pour les personnes autorisées) */}
             {viewProofOrder.signature_data && (
-              <div className="space-y-1">
-                <span className="text-[11px] font-bold text-slate-500 block">Signature numérique enregistrée :</span>
-                <div className="p-3 bg-white rounded-2xl border border-slate-200 flex items-center justify-center">
-                  <img src={viewProofOrder.signature_data} alt="Signature demandeur" className="max-h-28 object-contain" />
+              canUserViewOrderSignature({
+                user: currentUser,
+                order: viewProofOrder,
+                departments,
+                projects,
+              }) ? (
+                <div className="space-y-1">
+                  <span className="text-[11px] font-bold text-slate-500 block">
+                    Signé par {viewProofOrder.collected_by || viewProofOrder.requester_name}
+                    {viewProofOrder.collected_at
+                      ? ` le ${new Date(viewProofOrder.collected_at).toLocaleString('fr-FR', {
+                          dateStyle: 'short',
+                          timeStyle: 'short',
+                        })}`
+                      : ''}
+                  </span>
+                  <div className="p-3 bg-white rounded-2xl border border-slate-200 flex items-center justify-center">
+                    <img
+                      src={viewProofOrder.signature_data}
+                      alt="Signature demandeur"
+                      className="max-h-28 object-contain"
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-emerald-800 dark:text-emerald-200">
+                  Retrait signé
+                </div>
+              )
             )}
 
             {/* Photo proof */}

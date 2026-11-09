@@ -13,6 +13,30 @@
 -- Idempotent : peut être relancé sans risque.
 -- =========================================================================
 
+-- Aides d'audit (acteur courant + IP) : définies ici pour que le script 19 soit autonome.
+DROP FUNCTION IF EXISTS public._tot_order_actor() CASCADE;
+CREATE OR REPLACE FUNCTION public._tot_order_actor()
+RETURNS TABLE(a_id text, a_name text, a_trigram text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT u.id::text, u.name::text, u.trigram::text
+  FROM public.core_users u
+  WHERE u.auth_user_id = auth.uid()
+  LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public._tot_order_ip()
+RETURNS text
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_h text;
+BEGIN
+  BEGIN
+    v_h := current_setting('request.headers', true)::json ->> 'x-forwarded-for';
+  EXCEPTION WHEN OTHERS THEN
+    v_h := NULL;
+  END;
+  RETURN NULLIF(btrim(split_part(COALESCE(v_h, ''), ',', 1)), '');
+END $$;
+
 CREATE OR REPLACE FUNCTION public._tot_order_trace_emit(
   p_type text, p_severity text, p_title text, p_description text,
   p_order_id text, p_order_number text, p_site text, p_depot text, p_details jsonb
@@ -20,7 +44,7 @@ CREATE OR REPLACE FUNCTION public._tot_order_trace_emit(
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_actor record;
 BEGIN
-  SELECT * INTO v_actor FROM public._tot_audit_actor();
+  SELECT * INTO v_actor FROM public._tot_order_actor();
   INSERT INTO public.core_audit_logs
     (id, app, type, category, user_id, user_name, user_trigram, site_number, depot_name,
      title, description, meta, action, severity, details, ip_address, created_at)
@@ -32,7 +56,7 @@ BEGIN
                        'label', p_order_number) || coalesce(p_details, '{}'::jsonb),
     p_type, p_severity,
     jsonb_build_object('order_id', p_order_id, 'order_number', p_order_number) || coalesce(p_details, '{}'::jsonb),
-    public._tot_audit_ip(), now());
+    public._tot_order_ip(), now());
 END $$;
 
 CREATE OR REPLACE FUNCTION public._tot_order_trace() RETURNS trigger
@@ -44,7 +68,7 @@ DECLARE
   v_transferred boolean;
 BEGIN
   BEGIN
-    SELECT * INTO v_actor FROM public._tot_audit_actor();
+    SELECT * INTO v_actor FROM public._tot_order_actor();
     v_has_delegate := NEW.pickup_delegate_id IS NOT NULL AND btrim(NEW.pickup_delegate_id::text) <> '';
     v_base := jsonb_build_object(
       'requester_id', NEW.requester_id, 'requester_name', NEW.requester_name,

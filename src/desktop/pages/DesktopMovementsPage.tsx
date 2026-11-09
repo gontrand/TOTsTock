@@ -41,6 +41,16 @@ import { getClientSupabase, normalizeMovementRecord } from '../../services/clien
 import { logAuditEventServer } from '../../services/auditService';
 import { tr } from '../../i18n/dutchTranslator';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { ProductRefLink } from '../../components/ProductRefLink';
+import {
+  filterVisibleDepotsForUser,
+  formatDepotNameForDisplay,
+} from '../../utils/depotPermissions';
+import {
+  filterProjectsForSelection,
+  formatProjectOptionLabel,
+  validateProjectForOutflowOrOrder,
+} from '../../services/projectStatusService';
 
 export interface DesktopMovementsPageProps {
   selectedDepotFilter?: string;
@@ -67,6 +77,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     depots,
     departments,
     projects,
+    users,
     currentUser,
     supabaseUrl,
     supabaseKey,
@@ -77,6 +88,11 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     language,
     t,
   } = useApp();
+
+  const visibleDepots = useMemo(
+    () => filterVisibleDepotsForUser(depots, currentUser, users),
+    [depots, currentUser, users]
+  );
 
   const isSuperAdmin =
     Number(currentUser?.role_id) === 0 || Number(currentUser?.role_id) === 1;
@@ -487,10 +503,20 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     }).catch(() => {});
   };
 
+  const [movError, setMovError] = useState<string | null>(null);
+
   const performQuickMovementSave = async (): Promise<boolean> => {
     if (!movProductId || movQuantity <= 0) return false;
     const targetProd = productById.get(movProductId);
     if (!targetProd) return false;
+    setMovError(null);
+    if (movType === 'OUT' && movSiteNumber.trim()) {
+      const check = validateProjectForOutflowOrOrder(projects, movSiteNumber.trim());
+      if (!check.allowed) {
+        setMovError(check.errorMessage || check.message || null);
+        return false;
+      }
+    }
     setSubmitting(true);
     try {
       const depotName = movDepot || targetProd.store_name || depots[0]?.name || 'Dépôt Principal';
@@ -507,7 +533,11 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
         setDrawerOpen(false);
         setMovComment('');
         setMovQuantity(1);
+        setMovError(null);
         return true;
+      }
+      if (res.message) {
+        setMovError(res.message);
       }
       return false;
     } finally {
@@ -857,7 +887,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
             className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
           >
             <option value="">{tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}</option>
-            {depots.map((d) => (
+            {visibleDepots.map((d) => (
               <option key={d.id} value={d.name}>
                 {d.name}
               </option>
@@ -928,8 +958,26 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                   const isSelected = selectedMovement?.id === m.id;
                   const mType = getMovType(m);
                   const isTrans = isTransferMovement(m);
-                  const srcDepot = getMovementSourceDepot(m) || getMovDepot(m, prod);
-                  const dstDepot = getMovementDestDepot(m);
+                  const rawSrcDepot = getMovementSourceDepot(m) || getMovDepot(m, prod);
+                  const rawDstDepot = getMovementDestDepot(m);
+                  const srcDepot = formatDepotNameForDisplay(
+                    rawSrcDepot,
+                    currentUser,
+                    depots,
+                    users
+                  );
+                  const dstDepot = formatDepotNameForDisplay(
+                    rawDstDepot,
+                    currentUser,
+                    depots,
+                    users
+                  );
+                  const displayMovDepot = formatDepotNameForDisplay(
+                    getMovDepot(m, prod),
+                    currentUser,
+                    depots,
+                    users
+                  );
                   const batchId = getMovementBatchId(m);
                   const prevBatchId =
                     idx > 0 ? getMovementBatchId(filteredMovements[idx - 1]) : null;
@@ -1020,8 +1068,11 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                             {getMovProductName(m, prod)}
                           </div>
                           {(prod?.reference || m.product_ref) && (
-                            <div className="font-mono text-[11px] text-slate-500">
-                              {prod?.reference || m.product_ref}
+                            <div className="mt-0.5">
+                              <ProductRefLink
+                                productId={prod?.id ? String(prod.id) : m.product_id}
+                                reference={prod?.reference || m.product_ref}
+                              />
                             </div>
                           )}
                         </td>
@@ -1042,7 +1093,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                               {srcDepot} → {dstDepot}
                             </span>
                           ) : (
-                            getMovDepot(m, prod) || '—'
+                            displayMovDepot || '—'
                           )}
                         </td>
                         <td className="py-2.5 px-3">
@@ -1156,9 +1207,14 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
               <div className="flex justify-between">
                 <span className="text-slate-500">{tr(language, 'Dépôt', 'Depot', 'Depot')}</span>
                 <span className="font-semibold text-slate-800 dark:text-slate-200">
-                  {getMovDepot(
-                    selectedMovement,
-                    productById.get(String(selectedMovement.product_id))
+                  {formatDepotNameForDisplay(
+                    getMovDepot(
+                      selectedMovement,
+                      productById.get(String(selectedMovement.product_id))
+                    ),
+                    currentUser,
+                    depots,
+                    users
                   ) || '—'}
                 </span>
               </div>
@@ -1205,8 +1261,8 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                   const p = productById.get(String(selectedMovement.product_id))!;
                   return (
                     <>
-                      <div className="font-mono text-xs font-bold text-orange-600">
-                        {p.reference}
+                      <div>
+                        <ProductRefLink productId={p.id} reference={p.reference} />
                       </div>
                       <div className="font-bold text-slate-900 dark:text-white">
                         {p.brand} {p.model}
@@ -1357,7 +1413,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                     recentKey="depots"
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                   >
-                    {depots.map((d) => (
+                    {visibleDepots.map((d) => (
                       <option key={d.id} value={d.name}>
                         {d.name}
                       </option>
@@ -1366,45 +1422,54 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                 </div>
               </div>
 
-              {movType === 'OUT' && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      {tr(language, 'Département', 'Department', 'Afdeling')}
-                    </label>
-                    <SearchableSelect
-                      value={movDepartment}
-                      onChange={(val) => setMovDepartment(val)}
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
-                    >
-                      <option value="">{tr(language, '— Aucun —', '— None —', '— Geen —')}</option>
-                      {departments.map((d) => (
-                        <option key={d.id} value={d.name}>
-                          {d.name}
-                        </option>
-                      ))}
-                    </SearchableSelect>
-                  </div>
-                  <div>
-                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      {tr(language, 'Chantier / Projet', 'Job site / Project', 'Werf / Project')}
-                    </label>
-                    <input
-                      type="text"
-                      list="desktop-mov-projects"
-                      value={movSiteNumber}
-                      onChange={(e) => setMovSiteNumber(e.target.value)}
-                      placeholder="Ex: CH-2026-01"
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono"
-                    />
-                    <datalist id="desktop-mov-projects">
-                      {projects.map((pr) => (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {tr(language, 'Département', 'Department', 'Afdeling')}
+                  </label>
+                  <SearchableSelect
+                    value={movDepartment}
+                    onChange={(val) => setMovDepartment(val)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                  >
+                    <option value="">{tr(language, '— Aucun —', '— None —', '— Geen —')}</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.name}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </SearchableSelect>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {tr(language, 'Chantier / Projet', 'Job site / Project', 'Werf / Project')}
+                  </label>
+                  <input
+                    type="text"
+                    list="desktop-mov-projects"
+                    value={movSiteNumber}
+                    onChange={(e) => {
+                      setMovSiteNumber(e.target.value);
+                      setMovError(null);
+                    }}
+                    placeholder="Ex: CH-2026-01"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono"
+                  />
+                  <datalist id="desktop-mov-projects">
+                    {filterProjectsForSelection(projects, movType === 'OUT' ? 'OUT' : 'IN').map(
+                      (pr) => (
                         <option key={pr.id} value={pr.project_number}>
-                          {pr.project_name}
+                          {formatProjectOptionLabel(pr, movType === 'OUT' ? 'OUT' : 'IN')}
                         </option>
-                      ))}
-                    </datalist>
-                  </div>
+                      )
+                    )}
+                  </datalist>
+                </div>
+              </div>
+
+              {movError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-xs font-bold text-rose-700 dark:text-rose-300">
+                  {movError}
                 </div>
               )}
 

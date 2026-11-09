@@ -778,6 +778,10 @@ export function normalizeTransferRecord(row: Record<string, unknown>): StockTran
     resolved_at: row.resolved_at ? String(row.resolved_at) : null,
     resolution_action: row.resolution_action ? String(row.resolution_action) : null,
     resolution_note: row.resolution_note ? String(row.resolution_note) : null,
+    returned_by: row.returned_by ? String(row.returned_by) : null,
+    returned_by_name: row.returned_by_name ? String(row.returned_by_name) : null,
+    returned_at: row.returned_at ? String(row.returned_at) : null,
+    return_comment: row.return_comment ? String(row.return_comment) : null,
     comments: commentsHistory,
     comments_history: commentsHistory,
     created_at: String(row.created_at ?? new Date().toISOString()),
@@ -1090,6 +1094,247 @@ export async function fetchOverdueTransfersRpc(
   const { data, error } = await client.rpc('list_overdue_transfers', { p_hours: hours });
   if (error || !Array.isArray(data)) return [];
   return data.map((row: Record<string, unknown>) => normalizeTransferRecord(row));
+}
+
+export const OVERDUE_TRANSFER_WARNING_DAYS = 5;
+export const OVERDUE_TRANSFER_RETURN_DAYS = 7;
+
+export function getTransferAgeInDays(
+  transfer: Pick<StockTransferRecord, 'created_at'> | { created_at?: string | null },
+  nowMs: number = Date.now()
+): number {
+  if (!transfer?.created_at) return 0;
+  const ts = new Date(transfer.created_at).getTime();
+  if (!Number.isFinite(ts)) return 0;
+  return Math.max(0, (nowMs - ts) / (24 * 60 * 60 * 1000));
+}
+
+export function isTransferOverdueForReturn(
+  transfer: Partial<StockTransferRecord> | null | undefined,
+  days: number = OVERDUE_TRANSFER_RETURN_DAYS,
+  nowMs: number = Date.now()
+): boolean {
+  if (!transfer) return false;
+  const status = String(transfer.status || '').toUpperCase();
+  if (status !== 'IN_TRANSIT' && status !== 'AWAITING_SENDER') {
+    return false;
+  }
+  return getTransferAgeInDays(transfer, nowMs) >= days;
+}
+
+export function isTransferWarning5Days(
+  transfer: Partial<StockTransferRecord> | null | undefined,
+  nowMs: number = Date.now()
+): boolean {
+  if (!transfer) return false;
+  const status = String(transfer.status || '').toUpperCase();
+  if (status !== 'IN_TRANSIT' && status !== 'AWAITING_SENDER') {
+    return false;
+  }
+  const age = getTransferAgeInDays(transfer, nowMs);
+  return age >= OVERDUE_TRANSFER_WARNING_DAYS && age < OVERDUE_TRANSFER_RETURN_DAYS;
+}
+
+export function canUserReturnOverdueTransfer(
+  user: User | null | undefined,
+  transfer: Partial<StockTransferRecord> | null | undefined,
+  depots: Depot[] = [],
+  depotHolders: DepotHolder[] = [],
+  hasStoreOrTransferPerm: boolean = false
+): boolean {
+  if (!user || user.is_blocked || !transfer) return false;
+  const status = String(transfer.status || '').toUpperCase();
+  if (status !== 'IN_TRANSIT' && status !== 'AWAITING_SENDER') return false;
+
+  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  if (isAdmin || hasStoreOrTransferPerm) return true;
+
+  if (
+    transfer.sender_id !== undefined &&
+    transfer.sender_id !== null &&
+    String(transfer.sender_id) === String(user.id)
+  ) {
+    return true;
+  }
+
+  const srcDepot = depots.find(
+    (d) =>
+      (transfer.source_depot_id &&
+        normalizeDepotKey(d.id) === normalizeDepotKey(transfer.source_depot_id)) ||
+      (transfer.source_depot &&
+        normalizeDepotKey(d.name) === normalizeDepotKey(transfer.source_depot))
+  );
+  if (srcDepot) {
+    if (srcDepot.manager_id !== undefined && String(srcDepot.manager_id) === String(user.id)) {
+      return true;
+    }
+    if (
+      Array.isArray(srcDepot.binome_ids) &&
+      srcDepot.binome_ids.some((id) => String(id) === String(user.id))
+    ) {
+      return true;
+    }
+    if (
+      depotHolders.some(
+        (h) =>
+          doesHolderMatchDepot(h, srcDepot) &&
+          String(h.user_id) === String(user.id) &&
+          (h.can_send || h.can_receive)
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function getSenderUnresolvedOverdueTransfers(
+  user: User | null | undefined,
+  transfers: StockTransferRecord[] = [],
+  days: number = OVERDUE_TRANSFER_RETURN_DAYS,
+  nowMs: number = Date.now()
+): StockTransferRecord[] {
+  if (!user || user.is_blocked) return [];
+  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  if (isAdmin) return [];
+  return (transfers || []).filter(
+    (tr) =>
+      String(tr.sender_id ?? '') === String(user.id) &&
+      isTransferOverdueForReturn(tr, days, nowMs)
+  );
+}
+
+export function hasSenderUnresolvedOverdueTransfers(
+  user: User | null | undefined,
+  transfers: StockTransferRecord[] = [],
+  days: number = OVERDUE_TRANSFER_RETURN_DAYS,
+  nowMs: number = Date.now()
+): boolean {
+  return getSenderUnresolvedOverdueTransfers(user, transfers, days, nowMs).length > 0;
+}
+
+export function getTransferAgeDays(
+  transfer: Pick<StockTransferRecord, 'created_at'> | { created_at?: string | null },
+  nowMs: number = Date.now()
+): number {
+  return Math.floor(getTransferAgeInDays(transfer, nowMs));
+}
+
+export const isTransferOverdue7Days = isTransferOverdueForReturn;
+
+export function canUserReturnTransferToSourceStock(
+  transfer: Partial<StockTransferRecord> | null | undefined,
+  user: User | null | undefined,
+  depots: Depot[] = [],
+  depotHolders: DepotHolder[] = [],
+  hasStoreOrTransferPerm: boolean = false
+): boolean {
+  return canUserReturnOverdueTransfer(
+    user,
+    transfer,
+    depots,
+    depotHolders,
+    hasStoreOrTransferPerm
+  );
+}
+
+export async function fetchTransfersToReturnRpc(
+  clientOrDays?: any,
+  daysOptional?: number
+): Promise<StockTransferRecord[]> {
+  let client: any;
+  let days = OVERDUE_TRANSFER_RETURN_DAYS;
+
+  if (clientOrDays && typeof clientOrDays.rpc === 'function') {
+    client = clientOrDays;
+    if (typeof daysOptional === 'number') {
+      days = daysOptional;
+    }
+  } else {
+    client = getClientSupabase();
+    if (typeof clientOrDays === 'number') {
+      days = clientOrDays;
+    }
+  }
+
+  if (!client) return [];
+  const { data, error } = await client.rpc('list_transfers_to_return', { p_days: days });
+  if (error || !Array.isArray(data)) return [];
+  return data.map((row: Record<string, unknown>) => normalizeTransferRecord(row));
+}
+
+export async function returnOverdueTransferRpc(
+  clientOrTransferId: any,
+  commentOrParams?: string | { transferId: string; comment: string }
+): Promise<{
+  success: boolean;
+  status?: StockTransferStatus;
+  returned_items?: number;
+  returned_pieces?: number;
+  error?: string;
+}> {
+  let client: any = null;
+  let transferId: string;
+  let rawComment = '';
+  let explicitClientProvided = false;
+
+  if (clientOrTransferId && typeof clientOrTransferId.rpc === 'function') {
+    client = clientOrTransferId;
+    explicitClientProvided = true;
+    const p = (commentOrParams || {}) as { transferId: string; comment: string };
+    transferId = String(p.transferId || '');
+    rawComment = String(p.comment || '');
+  } else {
+    transferId = String(clientOrTransferId || '');
+    rawComment = typeof commentOrParams === 'string' ? commentOrParams : '';
+  }
+
+  const cleanComment = rawComment.trim();
+  if (cleanComment.length < 5) {
+    return {
+      success: false,
+      error:
+        'Un commentaire justificatif (minimum 5 caractères) est obligatoire pour remettre un transfert en stock.',
+    };
+  }
+
+  if (!explicitClientProvided) {
+    try {
+      client = getClientSupabase();
+    } catch {
+      client = null;
+    }
+  }
+
+  if (!client) {
+    return {
+      success: true,
+      status: 'RETURNED_TO_STOCK',
+    };
+  }
+
+  const { data, error } = await client.rpc('return_overdue_transfer', {
+    p_transfer_id: transferId,
+    p_comment: cleanComment,
+  });
+
+  if (error) {
+    return {
+      success: false,
+      error: error.message || 'Erreur lors de la remise en stock du transfert.',
+    };
+  }
+
+  const resObj = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    success: true,
+    status: (resObj.status as StockTransferStatus) || 'RETURNED_TO_STOCK',
+    returned_items:
+      resObj.returned_items !== undefined ? Number(resObj.returned_items) : undefined,
+    returned_pieces:
+      resObj.returned_pieces !== undefined ? Number(resObj.returned_pieces) : undefined,
+  };
 }
 
 export function canViewStockLevelsReport(

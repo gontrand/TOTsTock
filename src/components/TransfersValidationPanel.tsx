@@ -615,6 +615,10 @@ export const TransfersValidationPanel: React.FC<TransfersValidationPanelProps> =
         label: tr(language, 'Annulé', 'Cancelled', 'Geannuleerd'),
         cls: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-300 dark:border-slate-700',
       },
+      RETURNED_TO_STOCK: {
+        label: tr(language, 'Remis en stock source', 'Returned to source stock', 'Teruggeboekt naar bronvoorraad'),
+        cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700',
+      },
     };
     const info = map[t.status] || map.IN_TRANSIT;
     return (
