@@ -537,11 +537,12 @@ interface AppContextType {
   moveOrderBasket: (id: string, direction: 'up' | 'down') => void;
   updateOrderBasketSite: (id: string, siteNumber: string) => void;
   updateOrderBasket: (id: string, updates: Partial<Pick<OrderBasket, 'name' | 'depot_name' | 'site_number' | 'notes'>>) => void;
-  switchAndAddOrderBasket: (product: Product, quantity?: number) => { success: boolean; basketId: string };
+  switchAndAddOrderBasket: (product: Product, quantity?: number, orderDepotName?: string) => { success: boolean; basketId: string };
   addToOrderCart: (
     product: Product,
     quantity?: number,
-    targetBasketId?: string
+    targetBasketId?: string,
+    orderDepotName?: string
   ) => { success: boolean; conflict?: boolean; currentDepot?: string; productDepot?: string; message?: string; basketId?: string };
   updateOrderCartQty: (productId: string | number, quantity: number) => void;
   removeFromOrderCart: (productId: string | number) => void;
@@ -4312,11 +4313,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addToCart = useCallback(
     (product: Product, qty: number = 1, explicitTargetDepot?: string) => {
       // If movement mode is OUT and depot is closed, strictly prevent adding to cart
-      if (scanState.mode === 'OUT' && isDepotClosed(depots, product.store_name)) {
-        console.warn(`Tentative de prélèvement bloquée : Le dépôt « ${product.store_name || 'Principal'} » est fermé / inactif.`);
+      // V61 : en sortie, le dépôt retenu est le dépôt autorisé (ex. camionnette) et non forcément le dépôt par défaut de l'article
+      const outDepot =
+        scanState.mode === 'OUT'
+          ? resolveStockOutDepot(
+              { product, targetDepotName: explicitTargetDepot },
+              getEligibleStockOutDepotsForProduct(product, stockLevels, depots, currentUser, language, departments, users)
+            )
+          : undefined;
+      if (scanState.mode === 'OUT' && isDepotClosed(depots, outDepot || product.store_name)) {
+        console.warn(`Tentative de prélèvement bloquée : Le dépôt « ${outDepot || product.store_name || 'Principal'} » est fermé / inactif.`);
         return;
       }
       const resolvedTargetDepot =
+        (scanState.mode === 'OUT' ? outDepot : undefined) ||
         explicitTargetDepot ||
         (scanState.mode === 'OUT' ? product.store_name || undefined : undefined) ||
         getDefaultStockInDepotForProduct(
@@ -4358,6 +4368,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       userHasPermission,
       departments,
       users,
+      language,
       commitUserBasketsChange,
     ]
   );
@@ -5787,7 +5798,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (
       product: Product,
       quantity: number = 1,
-      targetBasketId?: string
+      targetBasketId?: string,
+      orderDepotName?: string
     ): {
       success: boolean;
       conflict?: boolean;
@@ -5797,7 +5809,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       basketId?: string;
     } => {
       const currentList = orderBasketsRef.current;
-      const productDepot = (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
+      // V61 : magasin choisi par l'utilisateur (titulaires de camionnette / conteneur), sinon dépôt par défaut de l'article
+      const productDepot = (orderDepotName || '').trim() || (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
       const newItem: MaterialOrderItem = {
         product_id: product.id,
         product_ref: product.reference,
@@ -5880,9 +5893,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const switchAndAddOrderBasket = useCallback(
-    (product: Product, quantity: number = 1): { success: boolean; basketId: string } => {
+    (product: Product, quantity: number = 1, orderDepotName?: string): { success: boolean; basketId: string } => {
       const currentList = orderBasketsRef.current;
-      const productDepot = (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
+      const productDepot = (orderDepotName || '').trim() || (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
       // Find an existing basket dedicated to this depot or an empty one
       let targetBasket = currentList.find(
         (b) =>
@@ -5909,7 +5922,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else {
         activeOrderBasketIdRef.current = targetId;
       }
-      addToOrderCart(product, quantity, targetId);
+      addToOrderCart(product, quantity, targetId, productDepot);
       setActiveOrderBasketIdState(targetId);
       return { success: true, basketId: targetId };
     },

@@ -11,6 +11,7 @@ import {
 import { getProductDepotBreakdown } from '../services/desktopInventoryLogic';
 import { renderQrCodeWithTotLogo } from '../utils/qrCodeHelper';
 import { copyToClipboard } from '../services/clipboard';
+import { getEligibleStockOutDepotsForProduct } from '../utils/stockOutDepots';
 
 export function buildProductEditableSignature(product: Product | null | undefined): string {
   if (!product) return '';
@@ -344,7 +345,9 @@ export function useProductDetailController(productIdOverride?: string | null) {
   const canEditProduct = userHasPermission('perm_prod_edit');
   const hasFinancePerm = userHasPermission('perm_dash_finance');
   const canViewPrices = userHasPermission('perm_prod_view_price');
-  const canOut = userHasPermission('perm_mov_out') && borrowCheck.allowed;
+  // V61 : sortie possible si AU MOINS un dépôt (ex. camionnette / conteneur) est autorisé avec du stock
+  const eligibleOutDepots = getEligibleStockOutDepotsForProduct(product, stockLevels, depots, currentUser, language, departments, users);
+  const canOut = userHasPermission('perm_mov_out') && (borrowCheck.allowed || eligibleOutDepots.length > 0);
   const canIn = entryCheck.allowed;
   const canDelete = userHasPermission('perm_prod_delete');
   const canPrintLabels = userHasPermission('perm_menu_print_labels');

@@ -56,6 +56,7 @@ import {
   formatDepotNameForDisplay,
   getEligibleStockInDepotsForProduct,
 } from '../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct } from '../utils/stockOutDepots';
 
 export const ProductDetailModal: React.FC = () => {
   const {
@@ -235,7 +236,9 @@ export const ProductDetailModal: React.FC = () => {
   const canEditProduct = userHasPermission('perm_prod_edit');
   const hasFinancePerm = userHasPermission('perm_dash_finance');
   const canViewPrices = userHasPermission('perm_prod_view_price');
-  const canOut = userHasPermission('perm_mov_out') && borrowCheck.allowed;
+  // V61 : sortie possible si AU MOINS un dépôt (ex. camionnette / conteneur) est autorisé avec du stock
+  const eligibleOutDepots = getEligibleStockOutDepotsForProduct(product, stockLevels, depots, currentUser, language, departments, users);
+  const canOut = userHasPermission('perm_mov_out') && (borrowCheck.allowed || eligibleOutDepots.length > 0);
   const canIn = entryCheck.allowed || eligibleStockInDepots.length > 0;
   const canDelete = userHasPermission('perm_prod_delete');
 
@@ -360,7 +363,7 @@ export const ProductDetailModal: React.FC = () => {
 
   const handleQuickMovement = (type: 'IN' | 'OUT') => {
     if (!product) return;
-    if (type === 'OUT' && !borrowCheck.allowed) {
+    if (type === 'OUT' && !borrowCheck.allowed && eligibleOutDepots.length === 0) {
       alert(borrowCheck.reason || (tr(language, 'Sortie interdite sur ce dépôt.', 'Withdrawal not allowed.')));
       return;
     }
@@ -373,7 +376,9 @@ export const ProductDetailModal: React.FC = () => {
         ? entryCheck.allowed && product.store_name
           ? product.store_name
           : eligibleStockInDepots[0]?.name || product.store_name
-        : product.store_name;
+        : eligibleOutDepots.find((e) => (e.depotName || '').trim().toLowerCase() === (product.store_name || '').trim().toLowerCase())?.depotName ||
+          eligibleOutDepots[0]?.depotName ||
+          product.store_name;
     setScanState({ open: false, mode: type });
     addToCart(product, 1, defaultTargetDepot);
     setBatchCartModalOpen(true);
@@ -620,7 +625,7 @@ export const ProductDetailModal: React.FC = () => {
                   <Lock className="w-3.5 h-3.5 text-amber-600" />
                   <span>{tr(language, 'Dépôt fermé', 'Closed depot')}</span>
                 </div>
-              ) : !borrowCheck.allowed ? (
+              ) : !borrowCheck.allowed && eligibleOutDepots.length === 0 ? (
                 <div
                   className="p-1.5 px-2.5 rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px] font-bold flex items-center gap-1.5 cursor-not-allowed"
                   title={borrowCheck.reason}
@@ -689,7 +694,7 @@ export const ProductDetailModal: React.FC = () => {
           </div>
 
           {/* Bannière de restriction de prélèvement si sortie / emprunt non autorisé */}
-          {!borrowCheck.allowed && (
+          {!borrowCheck.allowed && eligibleOutDepots.length === 0 && (
             <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-start gap-2.5 text-xs text-amber-900 dark:text-amber-200 animate-fadeIn">
               <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
               <div>

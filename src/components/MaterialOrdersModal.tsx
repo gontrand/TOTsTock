@@ -18,7 +18,8 @@ import {
 import { SearchableSelect } from './SearchableSelect';
 import { ProductRefLink } from './ProductRefLink';
 import { MaterialOrder, MaterialOrderItem, OrderBasket } from '../types';
-import { formatCurrency, playScanBeep } from '../utils/crypto';
+import { formatCurrency, playScanBeep, isDepotClosed, isUserAllowedForDepot } from '../utils/crypto';
+import { canUserViewDepot } from '../utils/depotPermissions';
 import {
   computeNextOrderNumber,
   formatOrderDatePrefix,
@@ -114,6 +115,7 @@ export const MaterialOrdersModal: React.FC = () => {
     departments,
     depots,
     subCategories,
+    stockLevels,
     currentUser,
     userHasPermission,
     canViewPrices,
@@ -341,6 +343,22 @@ export const MaterialOrdersModal: React.FC = () => {
   // Quick Add Product Picker states (requested by user to add items from the cart)
   const [isAddProductPickerOpen, setIsAddProductPickerOpen] = useState<boolean>(false);
   const [pickerSearchQuery, setPickerSearchQuery] = useState<string>('');
+  // V61 : choix du magasin de la commande
+  const [orderPickDepot, setOrderPickDepot] = useState<string>('');
+  // Commandes : la liste est toujours proposée (dès qu'il y a plusieurs dépôts accessibles) ; scans : réservée aux titulaires.
+  const showOrderDepotPicker = true;
+  const orderDepotChoices = useMemo(
+    () =>
+      showOrderDepotPicker
+        ? depots.filter(
+            (d) =>
+              !isDepotClosed(depots, d.name) &&
+              isUserAllowedForDepot(currentUser, d.name) &&
+              canUserViewDepot(d, currentUser, users, departments)
+          )
+        : [],
+    [showOrderDepotPicker, depots, currentUser, users, departments]
+  );
   const [pickerSelectedCategory, setPickerSelectedCategory] = useState<string>('ALL');
   const [pickerFeedbackMsg, setPickerFeedbackMsg] = useState<string | null>(null);
 
@@ -756,6 +774,21 @@ export const MaterialOrdersModal: React.FC = () => {
     return orderCart[0]?.depot_name || null;
   }, [orderCart]);
 
+  // V61 : dépôt appliqué au sélecteur d'articles (panier en cours > choix de l'utilisateur)
+  const activePickerDepot = (currentCartDepot || orderPickDepot || '').trim().toLowerCase();
+  const productInPickerDepot = (p: (typeof products)[0]): boolean => {
+    if (!activePickerDepot) return true;
+    const own = (p.store_name || '').trim().toLowerCase();
+    if (!own) return true;
+    if (own === activePickerDepot) return true;
+    return (stockLevels || []).some(
+      (sl) =>
+        String(sl.product_id) === String(p.id) &&
+        (sl.depot_name || '').trim().toLowerCase() === activePickerDepot &&
+        Number(sl.quantity) > 0
+    );
+  };
+
   // Categories available for quick picker
   const subCategoryMap = useMemo(() => {
     const map = new Map<number, string>();
@@ -766,8 +799,7 @@ export const MaterialOrdersModal: React.FC = () => {
   const availablePickerCategories = useMemo(() => {
     const cats = new Set<string>();
     products.forEach((p) => {
-      const pDepot = (p.store_name || '').trim();
-      if (currentCartDepot && pDepot && pDepot !== currentCartDepot) {
+      if (!productInPickerDepot(p)) {
         return;
       }
       const catName = (
@@ -781,7 +813,7 @@ export const MaterialOrdersModal: React.FC = () => {
       return Array.from(cats).sort((a, b) => a.localeCompare(b, 'fr'));
     }
     return subCategories.map((s) => s.name);
-  }, [products, currentCartDepot, subCategoryMap, subCategories]);
+  }, [products, currentCartDepot, orderPickDepot, stockLevels, subCategoryMap, subCategories]);
 
   const effectivePickerCategory = useMemo(() => {
     if (pickerSelectedCategory === 'ALL') return 'ALL';
@@ -793,8 +825,7 @@ export const MaterialOrdersModal: React.FC = () => {
   // Filtered products in picker respecting mono-depot rule
   const pickerProducts = useMemo(() => {
     return products.filter((p) => {
-      const pDepot = (p.store_name || '').trim();
-      if (currentCartDepot && pDepot && pDepot !== currentCartDepot) {
+      if (!productInPickerDepot(p)) {
         return false;
       }
       const catName = p.sub_category_id ? subCategoryMap.get(p.sub_category_id) || '' : p.tags || '';
@@ -814,10 +845,10 @@ export const MaterialOrdersModal: React.FC = () => {
       }
       return true;
     });
-  }, [products, currentCartDepot, subCategoryMap, effectivePickerCategory, pickerSearchQuery]);
+  }, [products, currentCartDepot, orderPickDepot, stockLevels, subCategoryMap, effectivePickerCategory, pickerSearchQuery]);
 
   const handleQuickAddProductToCart = (prod: (typeof products)[0]) => {
-    const res = addToOrderCart(prod, 1);
+    const res = addToOrderCart(prod, 1, undefined, orderPickDepot || undefined);
     if (res.success) {
       setPickerFeedbackMsg(`✓ « ${prod.reference} » ajouté au panier !`);
       setTimeout(() => setPickerFeedbackMsg(null), 2500);
@@ -827,7 +858,7 @@ export const MaterialOrdersModal: React.FC = () => {
         message: `${res.message}\n\n👉 Souhaitez-vous créer ou basculer sur un panier dédié au « ${res.productDepot} » et y ajouter cet article ?`,
         confirmText: tr(language, 'Basculer & Ajouter', 'Switch & Add'),
         onConfirm: () => {
-          switchAndAddOrderBasket(prod, 1);
+          switchAndAddOrderBasket(prod, 1, orderPickDepot || undefined);
           setPickerFeedbackMsg(`✓ Panier pour « ${res.productDepot} » créé/activé avec « ${prod.reference} » !`);
           setTimeout(() => setPickerFeedbackMsg(null), 3000);
         },
@@ -3461,6 +3492,30 @@ export const MaterialOrdersModal: React.FC = () => {
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {/* V61 : Magasin de la commande (affiché automatiquement) */}
+            {showOrderDepotPicker && orderDepotChoices.length > 1 && !currentCartDepot && (
+              <div className="shrink-0 px-3.5 py-2 bg-sky-50 dark:bg-sky-950/40 border-b border-sky-200 dark:border-sky-900/60 space-y-1">
+                <label className="block text-[11px] font-bold text-sky-800 dark:text-sky-300">
+                  🏢 {tr(language, 'Magasin de la commande', 'Order depot', 'Depot van de bestelling')}
+                </label>
+                <SearchableSelect
+                  value={orderPickDepot}
+                  onChange={(val) => setOrderPickDepot(val)}
+                  recentKey="depots"
+                  className="w-full text-xs p-2 rounded-xl bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-800 outline-none font-bold"
+                >
+                  <option value="">
+                    {tr(language, '— Dépôt par défaut de chaque article —', '— Default depot of each item —', '— Standaarddepot van elk artikel —')}
+                  </option>
+                  {orderDepotChoices.map((d) => (
+                    <option key={String(d.id)} value={d.name}>
+                      {d.name}
+                    </option>
+                  ))}
+                </SearchableSelect>
+              </div>
+            )}
 
             {/* Mono-depot banner indicator */}
             {currentCartDepot && (

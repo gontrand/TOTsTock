@@ -40,6 +40,7 @@ import {
   formatDepotNameForDisplay,
   getEligibleStockInDepotsForProduct,
 } from '../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct, resolveStockOutDepot, getUserOutDepotChoices, userHasAssignedVehicleOrContainer } from '../utils/stockOutDepots';
 
 export const ScannerModal: React.FC = () => {
   const {
@@ -78,6 +79,7 @@ export const ScannerModal: React.FC = () => {
   const [scannedAlert, setScannedAlert] = useState<string | null>(null);
   const [hapticsOn, setHapticsOn] = useState<boolean>(() => isHapticsEnabled());
   const [selectedInTargetDepot, setSelectedInTargetDepot] = useState<string>('');
+  const [selectedOutDepot, setSelectedOutDepot] = useState<string>('');
   const isCooldownRef = useRef(false);
 
   const hasGeneralStockIn = userHasPermission('perm_stock_in');
@@ -98,6 +100,16 @@ export const ScannerModal: React.FC = () => {
           ).allowed
       ),
     [depots, currentUser, users, departments, hasGeneralStockIn, language]
+  );
+
+  // V61 : liste « Magasin de sortie » — visible uniquement pour les titulaires / binômes d'une camionnette ou d'un conteneur
+  const showScannerOutDepotSelect = React.useMemo(
+    () => userHasAssignedVehicleOrContainer(currentUser, depots),
+    [currentUser, depots]
+  );
+  const scannerOutDepotChoices = React.useMemo(
+    () => (showScannerOutDepotSelect ? getUserOutDepotChoices(depots, currentUser, language, departments, users) : []),
+    [showScannerOutDepotSelect, depots, currentUser, language, departments, users]
   );
 
   useEffect(() => {
@@ -225,10 +237,24 @@ export const ScannerModal: React.FC = () => {
       isDepotClosed(depots, prod.store_name);
 
       // In OUT mode: validate vehicle borrow rule (only assigned driver and binômes) and general depot permissions
+      let chosenOutDepot: string | undefined = undefined;
       if (scanState.mode === 'OUT') {
+        // V61 : l'article peut être à la fois dans un dépôt fixe (interdit) et dans la camionnette / le conteneur de l'utilisateur
+        const eligibleOut = getEligibleStockOutDepotsForProduct(
+          prod,
+          stockLevels,
+          depots,
+          currentUser,
+          language,
+          departments,
+          users
+        );
+        if (eligibleOut.length > 0) {
+          chosenOutDepot = resolveStockOutDepot({ product: prod, targetDepotName: selectedOutDepot }, eligibleOut);
+        }
         const borrowCheck = canUserBorrowFromDepot(
           currentUser,
-          prod.store_name,
+          chosenOutDepot || prod.store_name,
           depots,
           language,
           departments,
@@ -313,7 +339,7 @@ export const ScannerModal: React.FC = () => {
         if (scanState.mode === 'SEARCH') {
           setActiveProductId(prod.id);
         } else {
-          addToCart(prod, 1, chosenInTargetDepot);
+          addToCart(prod, 1, chosenInTargetDepot ?? chosenOutDepot);
           setBatchCartModalOpen(true);
         }
       }, 500);
@@ -321,6 +347,7 @@ export const ScannerModal: React.FC = () => {
     [
       scanState.mode,
       selectedInTargetDepot,
+      selectedOutDepot,
       hasGeneralStockIn,
       stockLevels,
       products,
@@ -661,6 +688,31 @@ export const ScannerModal: React.FC = () => {
                 )}
               </option>
               {eligibleScannerInDepots.map((d) => (
+                <option key={String(d.id)} value={d.name}>
+                  {formatDepotNameForDisplay(d, users)}
+                </option>
+              ))}
+            </SearchableSelect>
+          </div>
+        )}
+
+        {/* V61 : Magasin de sortie (OUT) — uniquement si l'utilisateur a une camionnette / un conteneur attribué */}
+        {scanState.mode === 'OUT' && scannerOutDepotChoices.length > 1 && (
+          <div className="mt-2 p-2.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-wider text-amber-800 dark:text-amber-300 flex items-center gap-1">
+              <Warehouse className="w-3.5 h-3.5 text-amber-600" />
+              <span>{tr(language, 'Magasin de sortie', 'Withdrawal depot', 'Uitgiftedepot')}</span>
+            </label>
+            <SearchableSelect
+              value={selectedOutDepot}
+              onChange={(val) => setSelectedOutDepot(val)}
+              recentKey="depots"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none"
+            >
+              <option value="">
+                {tr(language, '— Automatique (selon le stock disponible) —', '— Automatic (based on available stock) —', '— Automatisch (volgens beschikbare voorraad) —')}
+              </option>
+              {scannerOutDepotChoices.map((d) => (
                 <option key={String(d.id)} value={d.name}>
                   {formatDepotNameForDisplay(d, users)}
                 </option>

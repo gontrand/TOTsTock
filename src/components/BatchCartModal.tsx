@@ -437,7 +437,7 @@ export const BatchCartModal: React.FC = () => {
                         </span>
                       </div>
                       {isOut ? (
-                        <div className="mt-2 space-y-1">
+                        eligibleOutDepots.length === 1 ? null : <div className="mt-2 space-y-1">
                           <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                             📍 {tr(language, 'Magasin de sortie', 'Withdrawal depot', 'Uitgiftedepot')}
                           </label>

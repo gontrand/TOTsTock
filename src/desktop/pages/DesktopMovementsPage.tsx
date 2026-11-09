@@ -1433,7 +1433,7 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono font-bold"
                   />
                 </div>
-                <div>
+                <div className={movType === 'OUT' && outDepotOptions && outDepotOptions.length === 1 ? 'hidden' : ''}>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {tr(language, 'Dépôt concerné', 'Target depot', 'Betrokken depot')}
                   </label>

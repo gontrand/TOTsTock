@@ -1,6 +1,12 @@
 import type { Product, StockLevel, Depot, User, Department } from '../types';
 import { isUserAllowedForDepot, isDepotClosed } from './crypto';
-import { canUserBorrowFromDepot, canUserViewDepot } from './depotPermissions';
+import {
+  canUserBorrowFromDepot,
+  canUserViewDepot,
+  isDepotVehicleOrContainer,
+  isUserVehicleHolder,
+  isUserVehicleBinome,
+} from './depotPermissions';
 
 /**
  * V61 — Magasins (dépôts) proposés pour une SORTIE de stock :
@@ -14,6 +20,37 @@ export interface StockOutDepotOption {
 }
 
 const norm = (s?: string | null) => (s || '').trim().toLowerCase();
+
+/** V61 — L'utilisateur est titulaire ou binôme d'au moins une camionnette / un conteneur. */
+export function userHasAssignedVehicleOrContainer(
+  user: User | null | undefined,
+  depots: Depot[] | undefined
+): boolean {
+  if (!user) return false;
+  return (depots || []).some(
+    (d) => isDepotVehicleOrContainer(d) && (isUserVehicleHolder(user, d) || isUserVehicleBinome(user, d))
+  );
+}
+
+/**
+ * V61 — Dépôts de sortie utilisables AVANT de connaître l'article (scanner) :
+ * dépôts ouverts, autorisés et sur lesquels l'utilisateur a le droit de prélever.
+ */
+export function getUserOutDepotChoices(
+  depots: Depot[] | undefined,
+  user: User | null | undefined,
+  language: string,
+  departments?: Department[],
+  allUsers?: User[]
+): Depot[] {
+  if (!user) return [];
+  return (depots || []).filter((d) => {
+    if (isDepotClosed(depots, d.name)) return false;
+    if (!isUserAllowedForDepot(user, d.name)) return false;
+    if (!canUserViewDepot(d, user, allUsers || [], departments || [])) return false;
+    return canUserBorrowFromDepot(user, d.name, depots, language, departments, allUsers).allowed;
+  });
+}
 
 export function getEligibleStockOutDepotsForProduct(
   product: Pick<Product, 'id' | 'store_name' | 'quantity'> | null | undefined,
