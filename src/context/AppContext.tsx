@@ -8266,6 +8266,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (client) {
         if (userData.id !== undefined && userData.id !== null) {
           // Update user
+          // V60 : n'envoyer allowed_depots que s'il a réellement changé. Sinon un utilisateur qui possède déjà « * »
+          // (accès à tous les dépôts) ne pouvait plus être modifié par un non-Super Admin (refus serveur sur « * »).
+          const existingForDepots = users.find((u) => String(u.id) === String(userData.id));
+          const normDepots = (v: unknown) =>
+            JSON.stringify((Array.isArray(v) ? v.map(String) : []).slice().sort());
+          const depotsUnchanged =
+            !!existingForDepots &&
+            normDepots(existingForDepots.allowed_depots) === normDepots(userData.allowed_depots);
           const res = await adminUpdateUser(client, {
             id: userData.id,
             name: userData.name,
@@ -8273,7 +8281,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             email: userData.email,
             department: userData.department,
             role_id: userData.role_id,
-            allowed_depots: userData.allowed_depots,
+            allowed_depots: depotsUnchanged ? undefined : userData.allowed_depots,
             is_preparer: userData.is_preparer,
             must_change_pin: userData.must_change_pin,
           });
@@ -8357,7 +8365,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setUsers((prev) => [...prev.filter((u) => String(u.id) !== String(savedUser.id)), savedUser]);
       return { success: true };
     },
-    [supabaseUrl, supabaseKey, currentUser]
+    [supabaseUrl, supabaseKey, currentUser, users]
   );
 
   const deleteUser = useCallback(
