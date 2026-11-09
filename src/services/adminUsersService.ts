@@ -60,9 +60,29 @@ async function invokeAdminUsers(
   await loadEdgeFunctionOverridesFromClientDb(client);
   const fnName = getResolvedEdgeFunctionName('adminUsers');
 
+  // V60 : adaptation au contrat de l'Edge Function admin-users (userId / updates / roleId, block|unblock).
+  // Avant, l'app envoyait { id, ... } à plat : le serveur répondait « ID utilisateur requis » et la modification
+  // (rôle, nom, département…) n'était jamais enregistrée.
+  let sendAction = action;
+  let sendPayload: any = payload;
+  if (payload && typeof payload === 'object') {
+    const uid = payload.userId ?? payload.id;
+    if (action === 'update') {
+      const { id: _id, userId: _uid, ...updates } = payload;
+      sendPayload = { userId: uid, updates };
+    } else if (action === 'setRole') {
+      sendPayload = { userId: uid, roleId: Number(payload.role_id ?? payload.roleId) };
+    } else if (action === 'block') {
+      sendAction = payload.is_blocked === false ? 'unblock' : 'block';
+      sendPayload = { userId: uid };
+    } else if (action === 'delete' || action === 'resetPassword' || action === 'clearMustChangePin') {
+      sendPayload = { ...payload, userId: uid };
+    }
+  }
+
   try {
     const res = await client.functions.invoke(fnName, {
-      body: { action, payload },
+      body: { action: sendAction, payload: sendPayload },
     });
     const data = res.data;
     const error = res.error;
@@ -229,6 +249,11 @@ export async function adminUpdateUser(
     return res;
   }
 
+  // V60 : un refus explicite du serveur (droits, compte protégé…) ne doit JAMAIS être masqué par un faux succès.
+  if (!res.success && res.error && !/introuvable|404|inattendue|communication/i.test(res.error)) {
+    return res;
+  }
+
   // Fallback direct sur la table public.core_users + miroir core_app_settings si l'Edge Function n'est pas déployée ou échoue
   try {
     const updateFields: Record<string, any> = {
@@ -279,24 +304,12 @@ export async function adminUpdateUser(
     console.warn('Fallback direct adminUpdateUser error:', e);
   }
 
-  const fallbackUser: User = {
-    id: payload.id,
-    name: payload.name || 'Utilisateur',
-    trigram: payload.trigram || 'USR',
-    email: payload.email || '',
-    department: payload.department || 'Général',
-    role_id: payload.role_id !== undefined ? Number(payload.role_id) : 4,
-    allowed_depots: payload.allowed_depots || ['*'],
-    is_preparer: Boolean(payload.is_preparer),
-    must_change_pin: Boolean(payload.must_change_pin),
-    is_blocked: false,
-  };
-  await syncUserProfileAndDirectoryToSupabase(client, fallbackUser).catch(() => {});
-  notifyRealtimeDataMutated(TABLES.users);
+  // V60 : rien n'a pu être écrit en base (Edge Function absente + écriture directe interdite par la sécurité) :
+  // on le dit clairement au lieu d'afficher « Modifications appliquées ».
   return {
-    success: true,
-    message: 'Modifications appliquées.',
-    user: fallbackUser,
+    success: false,
+    error:
+      "Modification NON enregistrée : la fonction Edge « admin-users » est introuvable ou en erreur sur votre projet Supabase, et l'écriture directe sur les utilisateurs est interdite par la sécurité. Déployez/mettez à jour la fonction admin-users (Supabase → Edge Functions) puis réessayez.",
   };
 }
 
@@ -370,6 +383,9 @@ export async function adminSetRole(
   const res = await invokeAdminUsers(client, 'setRole', { id, role_id });
   if (res.success) {
     notifyRealtimeDataMutated(TABLES.users);
+    return res;
+  }
+  if (res.error && !/introuvable|404|inattendue|communication/i.test(res.error)) {
     return res;
   }
 

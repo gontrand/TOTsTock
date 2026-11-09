@@ -840,6 +840,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
       resetRoleForm();
       return true;
     }
+    setErrorMessage(
+      "Rôle NON enregistré : le serveur a refusé l'écriture (droit « Gérer les rôles » manquant ou scripts SQL non appliqués)."
+    );
     return false;
   };
 

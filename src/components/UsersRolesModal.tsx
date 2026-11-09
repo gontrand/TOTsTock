@@ -304,7 +304,10 @@ export const UsersRolesModal: React.FC = () => {
       name: roleName.trim(),
       permissions: selectedPerms,
     });
-    if (!ok) return false;
+    if (!ok) {
+      setRoleFormMsg("Rôle NON enregistré : le serveur a refusé l'écriture (droit « Gérer les rôles » manquant ou scripts SQL non appliqués).");
+      return false;
+    }
 
     resetRoleFormState();
     return true;

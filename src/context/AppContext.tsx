@@ -8175,9 +8175,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const client = getClientSupabase(supabaseUrl, supabaseKey);
     if (client) {
-      upsertRoleToSupabase(client, savedRole).catch((err) =>
-        console.warn('Erreur upsert role Supabase:', err)
-      );
+      // V60 : si une session Supabase Auth est active et que le serveur refuse l'écriture (droit « perm_manage_roles »
+      // manquant, script SQL non appliqué…), on annule la modification locale au lieu de la laisser revenir en arrière
+      // silencieusement à la prochaine synchronisation.
+      let hasSession = false;
+      try {
+        const { data: sess } = await client.auth.getSession();
+        hasSession = !!sess?.session?.user;
+      } catch {}
+      let ok = false;
+      try {
+        ok = await upsertRoleToSupabase(client, savedRole);
+      } catch (err) {
+        console.warn('Erreur upsert role Supabase:', err);
+      }
+      if (!ok && hasSession) {
+        const previous = hasId ? roles.find((r) => r.id === role.id) : undefined;
+        setRoles((prev) =>
+          hasId
+            ? prev.map((r) => (r.id === role.id && previous ? previous : r))
+            : prev.filter((r) => r.id !== nextRoleId)
+        );
+        return false;
+      }
     }
     notifyRealtimeDataMutated('roles');
     return true;
