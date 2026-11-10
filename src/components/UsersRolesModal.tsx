@@ -13,6 +13,7 @@ import {
   Shield,
   Search,
   Edit2,
+  Copy,
   Lock,
   Unlock,
   Trash2,
@@ -109,7 +110,15 @@ export const UsersRolesModal: React.FC = () => {
   }, [usersRolesModal.open, activeTab, setUsersRolesModal]);
 
   const isSuperAdmin = Number(currentUser?.role_id) === 0;
-  const isDeptManager = Number(currentUser?.role_id) === 8;
+  // Responsable de département « limité » : déterminé par ses responsabilités (aucun numéro de rôle écrit en dur)
+  const isDeptManager =
+    !isSuperAdmin &&
+    !userHasPermission('perm_manage_roles') &&
+    departments.some(
+      (d) =>
+        String(d.manager_id) === String(currentUser?.id || '') ||
+        Boolean(d.deputy_manager_ids?.some((id) => String(id) === String(currentUser?.id || '')))
+    );
 
   const managedDeptNames = useMemo(() => {
     const callerIdStr = String(currentUser?.id || '');
@@ -471,6 +480,22 @@ export const UsersRolesModal: React.FC = () => {
   const handleRoleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     await performSaveRole();
+  };
+
+  // Duplique un rôle : le formulaire est prérempli (nom « … (copie) » + mêmes permissions) et enregistre un NOUVEAU rôle
+  const handleDuplicateRole = (r: Role) => {
+    const base = `${r.name} (${tr(language, 'copie', 'copy')})`;
+    let candidate = base;
+    let n = 2;
+    while (roles.some((x) => (x.name || '').trim().toLowerCase() === candidate.trim().toLowerCase())) {
+      candidate = `${base} ${n}`;
+      n += 1;
+    }
+    setEditingRoleId(null);
+    setRoleName(candidate);
+    setSelectedPerms([...(r.permissions || [])].filter((p) => p !== '*'));
+    setRoleFormMsg('');
+    scrollToAndFocusForm(roleFormRef.current, roleNameInputRef.current);
   };
 
   const handleEditRole = (r: Role) => {
@@ -1812,6 +1837,14 @@ export const UsersRolesModal: React.FC = () => {
                               title={t('product_edit')}
                             >
                               <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDuplicateRole(r)}
+                              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300"
+                              title={tr(language, 'Dupliquer ce rôle', 'Duplicate this role')}
+                              aria-label={tr(language, 'Dupliquer ce rôle', 'Duplicate this role')}
+                            >
+                              <Copy className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => {

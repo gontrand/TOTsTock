@@ -310,7 +310,7 @@ describe('Prompt v54b — Correctifs app + listes déroulantes avec recherche (S
     });
 
     it('vérifie qu’aucun élément <select> natif ne subsiste dans src/ en dehors de SearchableSelect.tsx et aligne la version 5.16.0 / schéma 2.10.0', () => {
-      expect(APP_VERSION).toBe('5.16.0');
+      expect(APP_VERSION).toBe('5.16.1');
       expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
 
       const allSrcFiles = collectTsFiles(path.join(ROOT_DIR, 'src'));

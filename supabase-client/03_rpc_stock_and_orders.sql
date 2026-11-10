@@ -761,7 +761,7 @@ BEGIN
   IF v_status IN ('PENDING', 'REJECTED') AND v_order.status = 'WAITING_APPROVAL' THEN
     IF v_order.requester_id = v_caller_id AND NOT (
       public.is_super_admin()
-      OR v_caller_role IN (0, 1, 2, 8)
+      OR v_caller_role = 0
       OR public.current_user_has_perm('perm_order_approve')
       OR public.current_user_has_perm('perm_orders_manage')
       OR public.current_user_is_dept_or_proj_manager_for_order(v_order.requester_department, v_order.site_number)
@@ -770,7 +770,7 @@ BEGIN
     END IF;
     IF NOT (
       public.is_super_admin()
-      OR v_caller_role IN (0, 1, 2, 8)
+      OR v_caller_role = 0
       OR (public.is_administrator() AND (v_order.requester_department IS NULL OR EXISTS (SELECT 1 FROM public.core_users u WHERE u.auth_user_id = auth.uid() AND (u.department IS NULL OR LOWER(TRIM(u.department)) = LOWER(TRIM(v_order.requester_department))))))
       OR public.current_user_has_perm('perm_order_approve')
       OR public.current_user_has_perm('perm_orders_manage')

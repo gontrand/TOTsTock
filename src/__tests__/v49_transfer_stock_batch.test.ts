@@ -162,7 +162,7 @@ async function createBootstrappedTransferDb(): Promise<{
 
 describe('Prompt v49 — LOT 1 : SQL 13_transfer_stock_batch.sql, Schéma 2.4.1 & App 5.9.1', () => {
   it('déclare le script 13 dans SQL_STEPS (après 12 et avant 07), exporte SQL_SCRIPT_13_TRANSFER_STOCK_BATCH et aligne APP_VERSION=5.16.0 / EXPECTED_SCHEMA_VERSION=2.10.0', () => {
-    expect(APP_VERSION).toBe('5.16.0');
+    expect(APP_VERSION).toBe('5.16.1');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 

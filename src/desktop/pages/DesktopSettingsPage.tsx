@@ -681,6 +681,21 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setRolePermissions([]);
   };
 
+  // Duplique un rôle : formulaire prérempli (nom « … (copie) » + mêmes permissions), enregistré comme NOUVEAU rôle
+  const startDuplicateRole = (r: Role) => {
+    const base = `${r.name} (copie)`;
+    let candidate = base;
+    let n = 2;
+    while (roles.some((x) => (x.name || '').trim().toLowerCase() === candidate.trim().toLowerCase())) {
+      candidate = `${base} ${n}`;
+      n += 1;
+    }
+    setEditingRoleId(null);
+    setRoleName(candidate);
+    setRolePermissions([...(r.permissions || [])].filter((p) => p !== '*'));
+    scrollToAndFocusForm(roleFormRef.current, roleNameInputRef.current);
+  };
+
   const startEditRole = (r: Role) => {
     setEditingRoleId(r.id);
     setRoleName(r.name || '');
@@ -3089,6 +3104,17 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                             >
                               <Edit3 className="w-3.5 h-3.5" />
                             </button>
+                            {r.id !== 0 && (
+                              <button
+                                type="button"
+                                onClick={() => startDuplicateRole(r)}
+                                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                                title="Dupliquer ce rôle"
+                                aria-label="Dupliquer ce rôle"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             {r.id !== 0 && (
                               <button
                                 type="button"

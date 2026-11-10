@@ -308,13 +308,6 @@ export function filterOrdersByStatusAndSearch(
             }
           }
         }
-        if (Number(currentUser.role_id) === 8 && userDeptStr) {
-          if (reqDeptStr && reqDeptStr === userDeptStr) return true;
-          if (proj) {
-            const projDept = departments.find((d) => d.id === proj.department_id);
-            if (projDept && projDept.name.toLowerCase().trim() === userDeptStr) return true;
-          }
-        }
         return false;
       })();
 
@@ -398,8 +391,6 @@ export function canUserApproveOrRejectOrder(
   if (
     Number(currentUser.id) === 0 ||
     Number(currentUser.role_id) === 0 ||
-    Number(currentUser.role_id) === 1 ||
-    Number(currentUser.role_id) === 2 ||
     hasManageOrdersPerm
   ) {
     return true;
@@ -440,19 +431,6 @@ export function canUserApproveOrRejectOrder(
         return true;
       }
       if (userDept && reqDept && userDept === reqDept) {
-        return true;
-      }
-    }
-  }
-
-  // 3. Rôle 8 (Responsable de Département) pour les commandes de son département ou de ses chantiers
-  if (Number(currentUser.role_id) === 8) {
-    if (userDept && reqDept && userDept === reqDept) {
-      return true;
-    }
-    if (proj && userDept) {
-      const projDept = (departments || []).find((d) => d.id === proj.department_id);
-      if (projDept && (projDept.name || '').trim().toLowerCase() === userDept) {
         return true;
       }
     }

@@ -89,7 +89,7 @@ const ORDERED_CLIENT_SCRIPTS = [
 
 describe('Prompt v53 — Versions 5.16.0 / 2.10.0, Script 16_audit_trail.sql & Edge admin-users', () => {
   it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0 et déclare le script 16 dans SQL_STEPS (après 15 et avant 07)', () => {
-    expect(APP_VERSION).toBe('5.16.0');
+    expect(APP_VERSION).toBe('5.16.1');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 

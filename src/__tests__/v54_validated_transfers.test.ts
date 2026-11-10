@@ -218,10 +218,10 @@ const ORDERED_CLIENT_SCRIPTS = [
 
 describe('Prompt v54 — Versions 5.16.0 / 2.10.0, Script 17_transferts_valides.sql & Lot 1 (Permissions)', () => {
   it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0, RECENT_CHANGELOG et déclare le script 17 dans SQL_STEPS (après 16 et avant 07)', () => {
-    expect(APP_VERSION).toBe('5.16.0');
+    expect(APP_VERSION).toBe('5.16.1');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
-    expect(RECENT_CHANGELOG[0].version).toBe('5.16.0');
+    expect(RECENT_CHANGELOG[0].version).toBe('5.16.1');
     expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.10.0');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));

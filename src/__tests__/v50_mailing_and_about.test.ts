@@ -164,7 +164,7 @@ const ORDERED_CLIENT_SCRIPTS = [
 
 describe('Prompt v50 & v51 — LOT 1 : Cohérence des versions (5.16.0 / 2.10.0), en-têtes SQL 00..18 et build:sql --check', () => {
   it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0, MIN_SUPPORTED_SCHEMA_VERSION=1.0.0 et déclare le script 14 dans SQL_STEPS, supabaseScripts, INSTALL.md et les traductions FR/EN/NL', () => {
-    expect(APP_VERSION).toBe('5.16.0');
+    expect(APP_VERSION).toBe('5.16.1');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
@@ -1412,7 +1412,7 @@ describe('Prompt v50 & v51 — LOT 2.3, 3 & 4 : Presets E-mails (dont Microsoft 
 
   it('expose les 5 dernières versions dans RECENT_CHANGELOG (FR/EN/NL) et génère un diagnostic À propos sans aucun secret', () => {
     expect(RECENT_CHANGELOG.length).toBeGreaterThanOrEqual(5);
-    expect(RECENT_CHANGELOG[0].version).toBe('5.16.0');
+    expect(RECENT_CHANGELOG[0].version).toBe('5.16.1');
     expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.10.0');
     for (const entry of RECENT_CHANGELOG.slice(0, 5)) {
       expect(entry.title.fr.length).toBeGreaterThan(5);

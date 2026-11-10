@@ -1446,7 +1446,7 @@ CREATE POLICY "Authenticated read material_orders"
   FOR SELECT
   TO authenticated
   USING (
-    public.current_user_role() IN (0, 1, 2, 6, 7, 8)
+    public.current_user_role() IN (0, 1, 2, 6, 7)
     OR requester_id::text = public.current_user_id()
     OR (preparer_id IS NOT NULL AND preparer_id::text = public.current_user_id())
     OR (pickup_delegate_id IS NOT NULL AND pickup_delegate_id::text = public.current_user_id())
@@ -1470,7 +1470,7 @@ CREATE POLICY "Authenticated update material_orders"
   FOR UPDATE
   TO authenticated
   USING (
-    public.current_user_role() IN (0, 1, 2, 6, 7, 8)
+    public.current_user_role() IN (0, 1, 2, 6, 7)
     OR requester_id::text = public.current_user_id()
     OR (preparer_id IS NOT NULL AND preparer_id::text = public.current_user_id())
     OR (pickup_delegate_id IS NOT NULL AND pickup_delegate_id::text = public.current_user_id())
@@ -1484,7 +1484,7 @@ CREATE POLICY "Authenticated update material_orders"
     OR public.current_user_is_dept_or_proj_manager_for_order(requester_department, site_number)
   )
   WITH CHECK (
-    public.current_user_role() IN (0, 1, 2, 6, 7, 8)
+    public.current_user_role() IN (0, 1, 2, 6, 7)
     OR requester_id::text = public.current_user_id()
     OR (preparer_id IS NOT NULL AND preparer_id::text = public.current_user_id())
     OR (pickup_delegate_id IS NOT NULL AND pickup_delegate_id::text = public.current_user_id())
@@ -1564,7 +1564,7 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
-  IF v_crole IN (0, 1, 2, 6, 7, 8)
+  IF v_crole = 0
      OR public.current_user_has_perm('perm_order_approve')
      OR public.current_user_has_perm('perm_orders_manage')
      OR public.current_user_is_dept_or_proj_manager_for_order(OLD.requester_department, OLD.site_number) THEN

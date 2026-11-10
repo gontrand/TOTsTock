@@ -110,7 +110,8 @@ GRANT EXECUTE ON FUNCTION public._tot_assert_direct_out_allowed(TEXT, TEXT) TO a
 -- Avant : seule l'application forçait « En attente de validation » quand le total atteint le seuil
 -- du département (core_departments.order_approval_threshold). Un client modifié pouvait envoyer
 -- directement une commande « PENDING ». Désormais le serveur corrige le statut à l'insertion.
--- Validateurs exemptés (identique à l'application) : rôles 0, 1, 2, 8, permission perm_order_approve,
+-- Validateurs exemptés (identique à l'application, aucun numéro de rôle écrit en dur sauf le Super Admin 0) :
+-- permissions perm_order_approve / perm_orders_manage,
 -- responsable / adjoint du département ou du projet concerné.
 -- Département retenu : celui du projet (site_number) sinon celui du compte de l'appelant.
 -- Idempotent : peut être rejoué sans effet de bord.
@@ -181,8 +182,9 @@ BEGIN
 
   v_is_approver :=
     public.is_super_admin()
-    OR v_role IN (0, 1, 2, 8)
+    OR v_role = 0
     OR public.current_user_has_perm('perm_order_approve')
+    OR public.current_user_has_perm('perm_orders_manage')
     OR public.current_user_is_dept_or_proj_manager_for_order(NEW.requester_department, NEW.site_number);
 
   IF NOT v_is_approver THEN

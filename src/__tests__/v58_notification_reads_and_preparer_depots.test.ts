@@ -74,7 +74,7 @@ describe('Prompt v58 — Notifications lues par utilisateur, commandes annulées
   });
 
   it('0. aligne les versions (app 5.16.0, schéma 2.10.0, Android versionCode 12)', () => {
-    expect(APP_VERSION).toBe('5.16.0');
+    expect(APP_VERSION).toBe('5.16.1');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
 
     const pkg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'));
@@ -84,8 +84,8 @@ describe('Prompt v58 — Notifications lues par utilisateur, commandes annulées
     const androidVer = JSON.parse(
       fs.readFileSync(path.resolve(process.cwd(), 'android/version-code.json'), 'utf8')
     );
-    expect(pkg.version).toBe('5.16.0');
-    expect(desktopPkg.version).toBe('5.16.0');
+    expect(pkg.version).toBe('5.16.1');
+    expect(desktopPkg.version).toBe('5.16.1');
     expect(androidVer.versionCode).toBeGreaterThanOrEqual(12);
   });
 

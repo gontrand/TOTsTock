@@ -19,6 +19,33 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.16.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-10',
+    title: {
+      fr: 'Validation des commandes par permission, duplication de rôle, cadre de fenêtre moderne & poste d’impression permanent',
+      en: 'Permission-based order approval, role duplication, modern window frame & always-on print station',
+      nl: 'Bestelgoedkeuring op basis van rechten, rol dupliceren, modern venster & permanent afdrukstation',
+    },
+    highlights: {
+      fr: [
+        'La validation des commandes ne dépend plus d’un numéro de rôle : seules la permission « Valider ou Refuser une Commande » (et les responsables de département ou de chantier) comptent, avec contrôle du seuil côté serveur.',
+        'Bouton « Dupliquer » pour créer un rôle à partir d’un rôle existant sans repartir de zéro.',
+        'Cadre de fenêtre desktop moderne (barre de titre intégrée, menu ☰), panneau latéral de l’inventaire sans fiche modale superposée et poste d’impression actif en arrière-plan.',
+      ],
+      en: [
+        'Order approval no longer depends on a role number: only the "Approve or reject an order" permission (and department or project managers) counts, with server-side threshold enforcement.',
+        '"Duplicate" button to create a role from an existing one without starting from scratch.',
+        'Modern desktop window frame (integrated title bar, ☰ menu), inventory side panel without a stacked modal, and print station running in the background.',
+      ],
+      nl: [
+        'Bestelgoedkeuring hangt niet meer af van een rolnummer: alleen het recht "Bestelling goedkeuren of weigeren" (en afdelings- of projectverantwoordelijken) telt, met drempelcontrole aan serverzijde.',
+        'Knop "Dupliceren" om een rol te maken op basis van een bestaande rol.',
+        'Modern desktopvenster (geïntegreerde titelbalk, ☰-menu), zijpaneel van de voorraad zonder gestapelde modal en afdrukstation dat op de achtergrond actief blijft.',
+      ],
+    },
+  },
+  {
     version: '5.16.0',
     schemaVersion: '2.10.0',
     date: '2026-11-14',

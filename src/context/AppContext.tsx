@@ -6046,10 +6046,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser &&
           (Number(currentUser.id) === 0 ||
             Number(currentUser.role_id) === 0 ||
-            Number(currentUser.role_id) === 1 ||
-            Number(currentUser.role_id) === 2 ||
-            Number(currentUser.role_id) === 8 ||
             userHasPermission('perm_order_approve') ||
+            userHasPermission('perm_orders_manage') ||
             (proj &&
               (String(proj.manager_id) === userIdStr ||
                 proj.deputy_manager_ids?.some((id) => String(id) === userIdStr))) ||
@@ -6760,12 +6758,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (order: MaterialOrder): boolean => {
       if (!currentUser) return false;
       const isSuperAdmin = Number(currentUser.role_id) === 0 || Number(currentUser.id) === 0;
-      // Super Admin, Administrateur (rôle 1 ou 2) ou détenteur de la permission 'perm_order_approve'
+      // Super Admin ou détenteur de la permission « Valider ou Refuser une Commande » (aucun numéro de rôle écrit en dur)
       if (
         isSuperAdmin ||
-        Number(currentUser.role_id) === 1 ||
-        Number(currentUser.role_id) === 2 ||
-        userHasPermission('perm_order_approve')
+        userHasPermission('perm_order_approve') ||
+        userHasPermission('perm_orders_manage')
       ) {
         return true;
       }
@@ -6803,19 +6800,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
           // Correspondance avec le département de l'utilisateur connecté s'il est du même service
           if (userDeptStr && requesterDeptStr && userDeptStr === requesterDeptStr) {
-            return true;
-          }
-        }
-      }
-
-      // 3. Rôle 8 (Responsable de Département) pour les commandes de son propre département ou de ses chantiers
-      if (Number(currentUser.role_id) === 8 && userDeptStr) {
-        if (requesterDeptStr && requesterDeptStr === userDeptStr) {
-          return true;
-        }
-        if (proj) {
-          const projDept = departments.find((d) => d.id === proj.department_id);
-          if (projDept && projDept.name.toLowerCase().trim() === userDeptStr) {
             return true;
           }
         }
