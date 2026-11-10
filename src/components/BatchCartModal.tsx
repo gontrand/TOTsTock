@@ -354,16 +354,33 @@ export const BatchCartModal: React.FC = () => {
           ) : (
             batchCart.map((item) => {
               const p = item.product;
-              const eligibleInDepots = !isOut
-                ? getEligibleStockInDepotsForProduct(
-                    p,
-                    currentUser,
-                    depots,
-                    stockLevels,
-                    hasGeneralStockIn,
-                    departments,
-                    users
+              const eligibleInDepots: { depotName: string; currentQty: number; rackLocation?: string }[] = !isOut
+                ? (
+                    getEligibleStockInDepotsForProduct(
+                      p,
+                      stockLevels,
+                      depots,
+                      currentUser,
+                      hasGeneralStockIn,
+                      departments,
+                      users
+                    ) as Array<{ name?: string; depotName?: string }>
                   )
+                    .map((d) => (d.depotName || d.name || '').trim())
+                    .filter((n) => n.length > 0)
+                    .map((name) => {
+                      const sl = (stockLevels || []).find(
+                        (l) =>
+                          String(l.product_id) === String(p.id) &&
+                          (l.depot_name || '').trim().toLowerCase() === name.toLowerCase()
+                      );
+                      const isMain = (p.store_name || '').trim().toLowerCase() === name.toLowerCase();
+                      return {
+                        depotName: name,
+                        currentQty: sl ? Number(sl.quantity) || 0 : isMain ? Number(p.quantity) || 0 : 0,
+                        rackLocation: (sl as { rack_location?: string } | undefined)?.rack_location,
+                      };
+                    })
                 : [];
               const eligibleOutDepots = isOut
                 ? getEligibleStockOutDepotsForProduct(p, stockLevels, depots, currentUser, language, departments, users)
