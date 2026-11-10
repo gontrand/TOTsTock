@@ -11,6 +11,7 @@ import {
   subscribeDesktopMenuCommand,
 } from '../services/desktopBridge';
 import { tr } from '../i18n/dutchTranslator';
+import { getSavedPrintStationId } from '../services/printStationService';
 import { SUPPORTED_LANGUAGES } from '../i18n/translations';
 import { useApp } from '../context/AppContext';
 import { PLAN_LABELS, normalizeToCanonicalPlan } from '../types';
@@ -182,6 +183,13 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   } = useApp();
 
   // Persisted sidebar collapse state
+  const [printStationStarted, setPrintStationStarted] = useState<boolean>(() => {
+    try {
+      return !!getSavedPrintStationId();
+    } catch {
+      return false;
+    }
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
       const val = readLocalPreferenceValue('desktop_sidebar_collapsed');
@@ -497,6 +505,10 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     isPreparer ||
     userHasPermission('perm_menu_order_prep');
   const canPrintLabels = userHasPermission('perm_menu_print_labels');
+  useEffect(() => {
+    if (activePage === 'print_station') setPrintStationStarted(true);
+  }, [activePage]);
+  const printStationKeepAlive = printStationStarted && canPrintLabels;
   const canUsers = userHasPermission('perm_manage_users') || userHasPermission('perm_manage_roles');
   const canManageDepots = userHasPermission('perm_manage_depots');
   const canCategories = userHasPermission('perm_manage_categories');
@@ -2032,8 +2044,13 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
               })
             ) : null)}
 
-          {activePage === 'print_station' &&
-            (renderPrintStationPage ? renderPrintStationPage() : null)}
+          {/* Le poste d'impression reste monté (masqué) pour continuer à signaler sa présence
+              et à recevoir les étiquettes quand on change de page. */}
+          {printStationKeepAlive && renderPrintStationPage && (
+            <div className={activePage === 'print_station' ? 'h-full' : 'hidden'}>
+              {renderPrintStationPage()}
+            </div>
+          )}
 
           {activePage === 'reports' &&
             (renderReportsPage ? (

@@ -102,7 +102,15 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   const canExportCsv = userHasPermission('perm_mov_export_csv') || userHasPermission('perm_prod_view');
 
   // Le panneau latéral remplace la fiche modale tant que cette page est affichée
-  useEffect(() => registerDesktopInlinePanel(), []);
+  useEffect(() => {
+    const unregister = registerDesktopInlinePanel();
+    return () => {
+      // En quittant la page, on ferme aussi le panneau : sinon la fiche modale s'ouvrirait à sa place.
+      setActiveProductId(null);
+      unregister();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Filter state (same defaults as mobile InventoryView)
   const [filterPaneOpen, setFilterPaneOpen] = useState(true);

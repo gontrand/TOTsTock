@@ -879,6 +879,7 @@ function createMainWindow() {
       webSecurity: true,
       devTools: isDevMode,
       spellcheck: false,
+      backgroundThrottling: false,
     },
   });
 
