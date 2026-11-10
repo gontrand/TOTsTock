@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { generateSecureRandomHex } from '../utils/crypto';
+import { BILLING_CONFIG, BANK_DETAILS_CONFIGURED, VAT_PERCENT_LABEL, PLAN_PRICES_HT, computeInvoiceAmounts, formatEuro } from '../config/billingConfig';
 import { copyToClipboard } from '../services/clipboard';
 import {
   X,
@@ -225,6 +226,14 @@ export const CompanySetupModal: React.FC = () => {
     invoiceId: string;
   } | null>(null);
   const [showQuoteView, setShowQuoteView] = useState(false);
+  // Référence du devis : générée UNE SEULE FOIS à l'ouverture du devis (et non à chaque affichage de l'écran)
+  const [quoteRef, setQuoteRef] = useState<string>('');
+  const makeInvoiceRef = () =>
+    `${BILLING_CONFIG.invoicePrefix}-${new Date().getFullYear()}-${generateSecureRandomHex(2).toUpperCase()}`;
+  const openQuoteView = () => {
+    setQuoteRef((prev) => prev || makeInvoiceRef());
+    setShowQuoteView(true);
+  };
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const [copiedSubKey, setCopiedSubKey] = useState(false);
   const [dbLicenseStatus, setDbLicenseStatus] = useState<ClientDatabaseLicenseStatus | null>(null);
@@ -271,6 +280,7 @@ export const CompanySetupModal: React.FC = () => {
     setSubContactName(currentUser?.name || '');
     setSubSuccessInfo(null);
     setShowQuoteView(false);
+    setQuoteRef('');
     setSubscriptionError(null);
     setSubscriptionModalOpen(true);
   };
@@ -327,7 +337,7 @@ export const CompanySetupModal: React.FC = () => {
           key: activeKey,
           expires: new Date(expiresAt).toLocaleDateString(tr(language, 'fr-FR', 'en-US', 'nl-NL'), { day: '2-digit', month: 'long', year: 'numeric' }),
           amount: priceStr,
-          invoiceId: `FAC-TOT-${new Date().getFullYear()}-${generateSecureRandomHex(2)}`,
+          invoiceId: quoteRef || makeInvoiceRef(),
         });
         setLicenseMsg({
           type: 'success',
@@ -336,7 +346,7 @@ export const CompanySetupModal: React.FC = () => {
       } else {
         // Règle d'Autorité Unique : le client ne génère JAMAIS de fausse licence locale.
         // Affichage du bon de commande / devis proforma pour validation commerciale par l'éditeur.
-        setShowQuoteView(true);
+        openQuoteView();
         setLicenseMsg({
           type: 'info',
           text: tr(language, `Bon de commande / Devis proforma généré. Seul le serveur éditeur est habilité à émettre votre clé officielle et à débloquer vos quotas.`, `Purchase order / Proforma quote generated. The publisher server is the sole authority to issue the official license key.`),
@@ -4798,21 +4808,29 @@ ON CONFLICT (id) DO UPDATE SET
                       </div>
                       <p className="text-[11px] text-blue-800/90 dark:text-blue-300/90">
                         {tr(language, `Votre bon de commande a été généré sous la référence `, `Your order has been generated under reference `)}
-                        <strong>FAC-TOT-{new Date().getFullYear()}-{generateSecureRandomHex(2)}</strong>.
+                        <strong>{quoteRef}</strong>.
                       </p>
                       <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 text-[10.5px] space-y-1.5 border border-blue-100 dark:border-blue-900 font-mono">
                         <div className="flex justify-between">
                           <span className="text-slate-500">{tr(language, 'Bénéficiaire :', 'Beneficiary:')}</span>
-                          <span className="font-bold">TOT Stock SAS</span>
+                          <span className="font-bold">{BILLING_CONFIG.beneficiary}</span>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">{tr(language, 'IBAN Virement :', 'Bank Transfer IBAN:')}</span>
-                          <span className="font-bold">FR76 3000 4001 2345 6789 0123 456</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">BIC / SWIFT :</span>
-                          <span className="font-bold">BNPAFRPPXXX</span>
-                        </div>
+                        {BANK_DETAILS_CONFIGURED ? (
+                          <>
+                            <div className="flex justify-between">
+                              <span className="text-slate-500">{tr(language, 'IBAN Virement :', 'Bank Transfer IBAN:')}</span>
+                              <span className="font-bold">{BILLING_CONFIG.iban}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-500">BIC / SWIFT :</span>
+                              <span className="font-bold">{BILLING_CONFIG.bic}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-slate-500 font-sans italic">
+                            {tr(language, 'Coordonnées bancaires communiquées sur demande avec la facture.', 'Bank details provided on request with the invoice.')}
+                          </div>
+                        )}
                         <div className="flex justify-between">
                           <span className="text-slate-500">{tr(language, 'Objet du virement :', 'Transfer subject:')}</span>
                           <span className="font-bold">LICENCE TOT-{selectedSubPlan.toUpperCase()} {subCompany || orgName}</span>
@@ -5044,31 +5062,19 @@ ON CONFLICT (id) DO UPDATE SET
                           {tr(language, `Forfait ${selectedSubPlan.toUpperCase()}`, `Plan ${selectedSubPlan.toUpperCase()}`)} ({subBillingCycle === 'annual' ? (tr(language, '12 mois', '12 mos')) : (tr(language, '1 mois', '1 mo'))}) :
                         </span>
                         <span className="font-black text-slate-900 dark:text-white">
-                          {selectedSubPlan === 'sta'
-                            ? (subBillingCycle === 'annual' ? '390,00 € HT' : '39,00 € HT')
-                            : selectedSubPlan === 'pro'
-                            ? (subBillingCycle === 'annual' ? '890,00 € HT' : '89,00 € HT')
-                            : (subBillingCycle === 'annual' ? '1 990,00 € HT' : '199,00 € HT')}
+                          {formatEuro(computeInvoiceAmounts(PLAN_PRICES_HT[selectedSubPlan][subBillingCycle === 'annual' ? 'annual' : 'monthly']).ht)} HT
                         </span>
                       </div>
                       <div className="flex justify-between items-center text-[11px] text-slate-400">
-                        <span>{tr(language, 'TVA 20% :', 'VAT 20%:')}</span>
+                        <span>{tr(language, `TVA ${VAT_PERCENT_LABEL} :`, `VAT ${VAT_PERCENT_LABEL}:`)}</span>
                         <span>
-                          {selectedSubPlan === 'sta'
-                            ? (subBillingCycle === 'annual' ? '78,00 €' : '7,80 €')
-                            : selectedSubPlan === 'pro'
-                            ? (subBillingCycle === 'annual' ? '178,00 €' : '17,80 €')
-                            : (subBillingCycle === 'annual' ? '398,00 €' : '39,80 €')}
+                          {formatEuro(computeInvoiceAmounts(PLAN_PRICES_HT[selectedSubPlan][subBillingCycle === 'annual' ? 'annual' : 'monthly']).vat)}
                         </span>
                       </div>
                       <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-slate-700 font-black text-slate-900 dark:text-white">
                         <span>{tr(language, 'Total TTC :', 'Total (incl. VAT):')}</span>
                         <span className="text-orange-600 dark:text-orange-400 text-sm">
-                          {selectedSubPlan === 'sta'
-                            ? (subBillingCycle === 'annual' ? '468,00 € TTC' : '46,80 € TTC')
-                            : selectedSubPlan === 'pro'
-                            ? (subBillingCycle === 'annual' ? '1 068,00 € TTC' : '106,80 € TTC')
-                            : (subBillingCycle === 'annual' ? '2 388,00 € TTC' : '238,80 € TTC')}
+                          {formatEuro(computeInvoiceAmounts(PLAN_PRICES_HT[selectedSubPlan][subBillingCycle === 'annual' ? 'annual' : 'monthly']).ttc)} TTC
                         </span>
                       </div>
                     </div>
@@ -5077,7 +5083,7 @@ ON CONFLICT (id) DO UPDATE SET
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1 pb-[env(safe-area-inset-bottom)]">
                       <button
                         type="button"
-                        onClick={() => setShowQuoteView(true)}
+                        onClick={openQuoteView}
                         className="py-2.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center justify-center gap-1.5"
                       >
                         <FileText className="w-3.5 h-3.5" />
