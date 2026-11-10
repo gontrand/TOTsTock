@@ -8,14 +8,15 @@ describe('v47 — Affichage du sélecteur "Ajouter des Articles au Panier"', () 
 
   it('filtre availablePickerCategories selon les produits disponibles dans le dépôt actif', () => {
     expect(content).toContain('const availablePickerCategories = useMemo(() => {');
-    expect(content).toContain('if (currentCartDepot && pDepot && pDepot !== currentCartDepot)');
+    expect(content).toContain('const productInPickerDepot');
+    expect(content).toContain('currentCartDepot || orderPickDepot');
     expect(content).toContain('const effectivePickerCategory = useMemo(() => {');
   });
 
   it('empêche les pastilles de catégories de déborder sur plusieurs lignes et préserve la hauteur de la liste d’articles', () => {
     const pickerStart = content.indexOf('{isAddProductPickerOpen && (');
     expect(pickerStart).toBeGreaterThan(-1);
-    const pickerSection = content.slice(pickerStart, pickerStart + 8500);
+    const pickerSection = content.slice(pickerStart, pickerStart + 12000);
 
     // Le conteneur de filtres de catégories utilise un défilement horizontal sur une seule ligne (overflow-x-auto whitespace-nowrap) et non flex-wrap
     expect(pickerSection).toContain('overflow-x-auto no-scrollbar pb-0.5 text-[10px] font-bold whitespace-nowrap');

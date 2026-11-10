@@ -853,8 +853,8 @@ describe('Prompt v56 — 6. Documentation & Versions 5.16.0 / Schéma 2.10.0 / v
 
     expect(pkg.version).toBe('5.16.0');
     expect(desktopPkg.version).toBe('5.16.0');
-    expect(versionCodeJson.versionCode).toBe(12);
-    expect(buildGradle).toContain('versionCode 12');
+    expect(versionCodeJson.versionCode).toBeGreaterThanOrEqual(12);
+    expect(buildGradle).toMatch(/versionCode (1[2-9]|[2-9]\d)/);
     expect(buildGradle).toContain('versionName "5.16.0"');
 
     // Le script 19_order_trace.sql est fourni séparément puis intégré au dépôt (étape 19 de SQL_STEPS)

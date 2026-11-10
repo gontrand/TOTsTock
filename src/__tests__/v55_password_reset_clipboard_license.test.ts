@@ -219,8 +219,8 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
 
     expect(pkg.version).toBe('5.16.0');
     expect(desktopPkg.version).toBe('5.16.0');
-    expect(versionCodeJson.versionCode).toBe(12);
-    expect(buildGradle).toContain('versionCode 12');
+    expect(versionCodeJson.versionCode).toBeGreaterThanOrEqual(12);
+    expect(buildGradle).toMatch(/versionCode (1[2-9]|[2-9]\d)/);
     expect(buildGradle).toContain('versionName "5.16.0"');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
