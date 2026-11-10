@@ -91,6 +91,7 @@ export async function runPrintJobsSqlTests() {
     '19_order_trace.sql',
     '20_notification_reads.sql',
     '21_vehicules_transferts_regles.sql',
+    '22_departement_logistique.sql',
     '07_app_compat.sql',
   ];
 
@@ -171,6 +172,7 @@ export async function runPrintJobsSqlTests() {
     '19_order_trace.sql',
     '20_notification_reads.sql',
     '21_vehicules_transferts_regles.sql',
+    '22_departement_logistique.sql',
     '07_app_compat.sql',
   ];
   for (const s of v100Scripts) {
@@ -602,6 +604,7 @@ export async function runPrintJobsSqlTests() {
     '19_order_trace.sql',
     '20_notification_reads.sql',
     '21_vehicules_transferts_regles.sql',
+    '22_departement_logistique.sql',
     '07_app_compat.sql',
   ]) {
     await db.exec(readClientScript(scriptToReplay));
@@ -971,6 +974,7 @@ export async function runPrintJobsSqlTests() {
     '19_order_trace.sql',
     '20_notification_reads.sql',
     '21_vehicules_transferts_regles.sql',
+    '22_departement_logistique.sql',
     '07_app_compat.sql',
   ];
 
@@ -1726,6 +1730,7 @@ export async function runLegacySchemaSqlTests() {
     '19_order_trace.sql',
     '20_notification_reads.sql',
     '21_vehicules_transferts_regles.sql',
+    '22_departement_logistique.sql',
     '07_app_compat.sql',
   ];
 
