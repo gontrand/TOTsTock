@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   powerMonitor,
   protocol,
@@ -789,6 +790,7 @@ function openSecondaryWindow(route = 'inventory') {
     minHeight: 600,
     title: 'TOT Stock',
     show: false,
+    ...getModernFrameOptions('dark'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -817,6 +819,45 @@ function openSecondaryWindow(route = 'inventory') {
   return { ok: true };
 }
 
+const TITLEBAR_HEIGHT = 56;
+const TITLEBAR_COLORS = {
+  light: { color: '#ffffff', symbolColor: '#334155', background: '#f8fafc' },
+  dark: { color: '#0f172a', symbolColor: '#e2e8f0', background: '#020617' },
+};
+
+/**
+ * Cadre moderne : barre de titre native masquée, boutons réduire/agrandir/fermer
+ * conservés (overlay) et colorés comme l'en-tête de l'application.
+ * macOS : feux tricolores intégrés. Le menu reste accessible via le bouton ☰ (et Alt).
+ */
+function getModernFrameOptions(mode = 'dark') {
+  const c = TITLEBAR_COLORS[mode] || TITLEBAR_COLORS.dark;
+  const base = { backgroundColor: c.background, autoHideMenuBar: true };
+  if (process.platform === 'darwin') {
+    return { ...base, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 20 } };
+  }
+  return {
+    ...base,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: c.color, symbolColor: c.symbolColor, height: TITLEBAR_HEIGHT },
+  };
+}
+
+function applyWindowTheme(win, mode) {
+  const m = mode === 'light' ? 'light' : 'dark';
+  const c = TITLEBAR_COLORS[m];
+  try {
+    nativeTheme.themeSource = m;
+    if (!win || win.isDestroyed()) return;
+    win.setBackgroundColor(c.background);
+    if (process.platform !== 'darwin' && typeof win.setTitleBarOverlay === 'function') {
+      win.setTitleBarOverlay({ color: c.color, symbolColor: c.symbolColor, height: TITLEBAR_HEIGHT });
+    }
+  } catch {
+    // non bloquant
+  }
+}
+
 function createMainWindow() {
   const savedBounds = sanitizeWindowBounds(readJsonFileSafe(getWindowStatePath()));
 
@@ -829,7 +870,7 @@ function createMainWindow() {
     minHeight: 600,
     title: 'TOT Stock',
     show: false,
-    autoHideMenuBar: false,
+    ...getModernFrameOptions('dark'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -1294,6 +1335,21 @@ function registerIpcHandlers() {
       stationName: typeof rawStatus?.stationName === 'string' ? rawStatus.stationName.slice(0, 80) : '',
     };
     updateTrayContextMenu();
+    return { ok: true };
+  });
+
+  ipcMain.handle('tot:set-window-theme', async (event, rawMode) => {
+    if (!assertAuthorizedSender(event)) return { ok: false };
+    applyWindowTheme(BrowserWindow.fromWebContents(event.sender), rawMode);
+    return { ok: true };
+  });
+
+  ipcMain.handle('tot:show-app-menu', async (event) => {
+    if (!assertAuthorizedSender(event)) return { ok: false };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const menu = Menu.getApplicationMenu();
+    if (!win || !menu) return { ok: false };
+    menu.popup({ window: win, x: 12, y: TITLEBAR_HEIGHT - 6 });
     return { ok: true };
   });
 

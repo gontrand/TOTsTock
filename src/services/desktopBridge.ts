@@ -151,6 +151,8 @@ export interface TotDesktopBridge {
     paused: boolean;
   }) => Promise<{ ok: boolean }>;
   setMenuLocale?: (locale: 'fr' | 'en' | 'nl') => Promise<{ ok: boolean }>;
+  setWindowTheme?: (mode: 'light' | 'dark') => Promise<{ ok: boolean }>;
+  showAppMenu?: () => Promise<{ ok: boolean }>;
   onMenuCommand?: (callback: (command: DesktopMenuCommandId) => void) => () => void;
   getOrCreateSafeStorageKey?: () => Promise<{
     ok: boolean;
@@ -530,6 +532,28 @@ export async function setDesktopMenuLocale(locale: 'fr' | 'en' | 'nl'): Promise<
   if (bridge && typeof bridge.setMenuLocale === 'function') {
     try {
       await bridge.setMenuLocale(locale);
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+export async function setDesktopWindowTheme(mode: 'light' | 'dark'): Promise<void> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.setWindowTheme === 'function') {
+    try {
+      await bridge.setWindowTheme(mode);
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+export async function showDesktopAppMenu(): Promise<void> {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.showAppMenu === 'function') {
+    try {
+      await bridge.showAppMenu();
     } catch {
       // Ignore
     }

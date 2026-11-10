@@ -309,3 +309,7 @@ button > svg.lucide:not(.absolute) {
     color: #000000 !important;
   }
 }
+
+/* Cadre fenêtre desktop (Electron) : zone de glisser-déposer de la barre supérieure */
+.app-drag { -webkit-app-region: drag; }
+.app-no-drag { -webkit-app-region: no-drag; }

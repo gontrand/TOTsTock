@@ -45,6 +45,8 @@ const desktopApi = Object.freeze({
       typeof route === 'string' ? { route } : route
     ),
   updateTrayStatus: (status) => ipcRenderer.invoke('tot:update-tray-status', status),
+  setWindowTheme: (mode) => ipcRenderer.invoke('tot:set-window-theme', mode),
+  showAppMenu: () => ipcRenderer.invoke('tot:show-app-menu'),
   setMenuLocale: (locale) => ipcRenderer.invoke('tot:set-menu-locale', locale),
   onMenuCommand: (callback) => {
     if (typeof callback !== 'function') {

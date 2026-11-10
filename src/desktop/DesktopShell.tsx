@@ -4,6 +4,9 @@ import {
   DesktopMenuCommandId,
   getDesktopSystemSettings,
   setDesktopMenuLocale,
+  setDesktopWindowTheme,
+  showDesktopAppMenu,
+  getDesktopPlatform,
   setDesktopSystemSettings,
   subscribeDesktopMenuCommand,
 } from '../services/desktopBridge';
@@ -369,6 +372,11 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
   useEffect(() => {
     setDesktopMenuLocale(language);
   }, [language]);
+
+  // Cadre moderne : colore les boutons de fenêtre selon le thème de l'application
+  useEffect(() => {
+    setDesktopWindowTheme(theme === 'dark' ? 'dark' : 'light');
+  }, [theme]);
 
   useEffect(() => {
     const triggerInventoryCsvExport = () => {
@@ -1096,9 +1104,27 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
       {/* Main Content Area (Top Bar + Page Viewport) */}
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         {/* Top Bar */}
-        <header className="h-14 px-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between gap-4 shrink-0 no-print">
+        <header
+          className="app-drag h-14 pl-3 pr-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between gap-4 shrink-0 no-print select-none"
+          style={
+            getDesktopPlatform() && getDesktopPlatform() !== 'darwin'
+              ? { paddingRight: 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 16px)' }
+              : undefined
+          }
+        >
           {/* Left: Global Search / Command Palette Trigger + Depot Filter */}
-          <div className="flex items-center gap-3 flex-1 max-w-xl">
+          <div className="app-no-drag flex items-center gap-3 flex-1 max-w-xl">
+            {getDesktopPlatform() && getDesktopPlatform() !== 'darwin' && (
+              <button
+                type="button"
+                onClick={() => void showDesktopAppMenu()}
+                aria-label="Menu"
+                title="Menu (Alt)"
+                className="p-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0"
+              >
+                <span aria-hidden="true" className="block w-4 text-center leading-none text-base">☰</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setCommandPaletteOpen(true)}
@@ -1178,7 +1204,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
           </div>
 
           {/* Right: Sync Status, License, Notifications, Language, Theme, User Menu */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="app-no-drag flex items-center gap-2.5 shrink-0">
             {/* Sync / Offline Indicator + Rejected Queue Popover */}
             <div className="relative">
               <button
