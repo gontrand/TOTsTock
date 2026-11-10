@@ -1440,10 +1440,17 @@ export function normalizeDepartmentRecord(d: any): Department {
 }
 
 export function normalizeProjectRecord(p: any): Project {
+  const rawStatus = String(p?.status || '').trim().toUpperCase();
+  const status = rawStatus === 'CLOSED' ? 'CLOSED' : 'IN_PROGRESS';
   return {
     ...p,
     project_number: String(p?.project_number ?? ''),
     project_name: String(p?.project_name ?? ''),
+    status,
+    closed_at: p?.closed_at != null ? String(p.closed_at) : null,
+    closed_by: p?.closed_by != null ? p.closed_by : null,
+    closed_by_name: p?.closed_by_name != null ? String(p.closed_by_name) : null,
+    close_note: p?.close_note != null ? String(p.close_note) : null,
   };
 }
 
@@ -2344,6 +2351,31 @@ export async function fetchLiveOperationalData(
   return result;
 }
 
+export const PERMISSION_DENIED_READABLE_MESSAGE =
+  'Droit refusé par le serveur (session expirée ou non liée). Reconnectez-vous.';
+
+export const NO_AUTH_SESSION_BANNER_MESSAGE =
+  'Session serveur absente : connectez-vous avec un compte lié à Supabase Auth (e-mail confirmé). Les enregistrements sont refusés tant que ce n\'est pas fait.';
+
+/**
+ * Traduit `permission denied for table|function|schema|relation X` en message lisible (v60 §10.4),
+ * tout en conservant intacts les messages métiers des triggers / contraintes SQL (`23514`, `22023`, `42501` métier).
+ */
+export function translatePermissionDeniedError(
+  errorOrMessage: any,
+  fallback = 'Une erreur est survenue.'
+): string {
+  if (!errorOrMessage) return fallback;
+  const msg =
+    typeof errorOrMessage === 'string'
+      ? errorOrMessage
+      : String(errorOrMessage?.message || errorOrMessage?.details || errorOrMessage || '');
+  if (/permission denied for (?:table|function|schema|sequence|relation)\b/i.test(msg)) {
+    return PERMISSION_DENIED_READABLE_MESSAGE;
+  }
+  return msg || fallback;
+}
+
 /**
  * Cleanly formats PostgreSQL / Supabase errors, especially RLS code 42501 (insufficient_privilege).
  */
@@ -2351,6 +2383,21 @@ export function formatPostgresErrorMessage(error: any, fallback = 'Une erreur es
   if (!error) return fallback;
   const code = String(error.code || error.statusCode || '');
   const msg = String(error.message || error.details || error || '');
+  if (/permission denied for (?:table|function|schema|sequence|relation)\b/i.test(msg)) {
+    return PERMISSION_DENIED_READABLE_MESSAGE;
+  }
+  // Conserver tels quels les messages métiers explicites (23514, 22023, ou 42501 avec message métier français)
+  if (code === '23514' || code === '22023') {
+    return msg || fallback;
+  }
+  if (
+    code === '42501' &&
+    msg &&
+    !msg.toLowerCase().includes('permission denied') &&
+    !msg.toLowerCase().includes('row-level security')
+  ) {
+    return msg;
+  }
   if (
     code === '42501' ||
     msg.includes('42501') ||
@@ -2358,7 +2405,7 @@ export function formatPostgresErrorMessage(error: any, fallback = 'Une erreur es
     msg.toLowerCase().includes('violates row-level security') ||
     msg.toLowerCase().includes('row-level security policy')
   ) {
-    return 'Action refusée (Code Postgres 42501) : Vos privilèges ou rôle actuel ne vous permettent pas d\'effectuer cette modification (politique de sécurité RLS).';
+    return PERMISSION_DENIED_READABLE_MESSAGE;
   }
   return msg || fallback;
 }
@@ -2733,7 +2780,13 @@ export async function upsertDepartmentToSupabase(
       require_order_approval: Boolean(dep.require_order_approval),
       order_approval_threshold: dep.order_approval_threshold !== undefined ? Number(dep.order_approval_threshold) : 0,
     };
-    const { error } = await client.from(depTable).upsert([payload]);
+    // V61 : colonne is_logistics_dept (script 22). Si elle n'existe pas encore, on réessaie sans elle.
+    let { error } = await client
+      .from(depTable)
+      .upsert([{ ...payload, is_logistics_dept: Boolean(dep.is_logistics_dept) }]);
+    if (error) {
+      ({ error } = await client.from(depTable).upsert([payload]));
+    }
     if (error) {
       // Fallback for legacy schemas missing require_order_approval or order_approval_threshold
       const legacyDep1 = {
@@ -3464,35 +3517,20 @@ export async function upsertOrderToSupabase(
     const updateFields = buildUpdateFields(currentOrderNumber);
     const legacyUpdateFields = stripLegacyFields(updateFields);
 
-    // 1. Try UPDATE by id first (existing order)
-    const { data: updatedById, error: updErr } = await client
-      .from(orderTable)
-      .update(updateFields)
-      .eq('id', order.id)
-      .select('id, order_number');
-
-    if (updErr && isNetworkOrFetchError(updErr)) {
-      return { success: false, error: updErr.message, isNetworkError: true };
-    }
-
-    if (!updErr && updatedById && updatedById.length > 0) {
-      const confirmedNumber = updatedById[0]?.order_number || currentOrderNumber;
-      mirrorOrderToSettings(client, {
-        ...order,
-        order_number: confirmedNumber,
-        updated_at: nowIso,
-      }).catch(() => {});
-      return { success: true, orderNumber: confirmedNumber };
-    }
-
-    if (updErr) {
-      const { data: updatedLegacyById, error: updLegacyErr } = await client
-        .from(orderTable)
-        .update(legacyUpdateFields)
+    // 1. Try UPDATE by id first (existing order) if client.from(orderTable).update is available
+    const initialBuilder: any = client.from(orderTable);
+    if (initialBuilder && typeof initialBuilder.update === 'function') {
+      const { data: updatedById, error: updErr } = await initialBuilder
+        .update(updateFields)
         .eq('id', order.id)
         .select('id, order_number');
-      if (!updLegacyErr && updatedLegacyById && updatedLegacyById.length > 0) {
-        const confirmedNumber = updatedLegacyById[0]?.order_number || currentOrderNumber;
+
+      if (updErr && isNetworkOrFetchError(updErr)) {
+        return { success: false, error: updErr.message, isNetworkError: true };
+      }
+
+      if (!updErr && updatedById && updatedById.length > 0) {
+        const confirmedNumber = updatedById[0]?.order_number || currentOrderNumber;
         mirrorOrderToSettings(client, {
           ...order,
           order_number: confirmedNumber,
@@ -3500,10 +3538,59 @@ export async function upsertOrderToSupabase(
         }).catch(() => {});
         return { success: true, orderNumber: confirmedNumber };
       }
+
+      if (updErr) {
+        const errCode = String(updErr.code || '');
+        // Si la base refuse la mise à jour pour raison métier / droits / signature manquante / projet terminé (42501, 23514, 22023, P0001),
+        // remonter immédiatement le message tel quel sans retomber sur transition_order_status ni upsert.
+        if (
+          errCode === '42501' ||
+          errCode === '23514' ||
+          errCode === '22023' ||
+          errCode === 'P0001'
+        ) {
+          return {
+            success: false,
+            error: translatePermissionDeniedError(updErr),
+            isNetworkError: false,
+          };
+        }
+
+        const { data: updatedLegacyById, error: updLegacyErr } = await client
+          .from(orderTable)
+          .update(legacyUpdateFields)
+          .eq('id', order.id)
+          .select('id, order_number');
+        if (!updLegacyErr && updatedLegacyById && updatedLegacyById.length > 0) {
+          const confirmedNumber = updatedLegacyById[0]?.order_number || currentOrderNumber;
+          mirrorOrderToSettings(client, {
+            ...order,
+            order_number: confirmedNumber,
+            updated_at: nowIso,
+          }).catch(() => {});
+          return { success: true, orderNumber: confirmedNumber };
+        }
+        if (updLegacyErr) {
+          const legacyCode = String(updLegacyErr.code || '');
+          if (
+            legacyCode === '42501' ||
+            legacyCode === '23514' ||
+            legacyCode === '22023' ||
+            legacyCode === 'P0001'
+          ) {
+            return {
+              success: false,
+              error: translatePermissionDeniedError(updLegacyErr),
+              isNetworkError: false,
+            };
+          }
+        }
+      }
     }
 
     // 2. Fallback via SECURITY DEFINER RPC transition_order_status if existing row is being transitioned
-    if (order.status && order.status !== 'WAITING_APPROVAL') {
+    // (Sauf pour COLLECTED qui exige d'envoyer status='COLLECTED' et signature_data dans la MÊME requête UPDATE)
+    if (order.status && order.status !== 'WAITING_APPROVAL' && order.status !== 'COLLECTED') {
       try {
         const { data: rpcRes, error: rpcErr } = await client.rpc('transition_order_status', {
           p_operation_id: crypto.randomUUID(),
@@ -3513,7 +3600,10 @@ export async function upsertOrderToSupabase(
           p_comment: order.rejection_reason || order.notes || null,
         });
         if (!rpcErr && rpcRes) {
-          await client.from(orderTable).update(updateFields).eq('id', order.id);
+          const updAfterRpc: any = client.from(orderTable);
+          if (updAfterRpc && typeof updAfterRpc.update === 'function') {
+            await updAfterRpc.update(updateFields).eq('id', order.id);
+          }
           mirrorOrderToSettings(client, {
             ...order,
             order_number: currentOrderNumber,
@@ -3530,36 +3620,38 @@ export async function upsertOrderToSupabase(
 
     for (let attempt = 0; attempt < 5; attempt++) {
       // Check if another order with a DIFFERENT id already owns currentOrderNumber on the server
-      const { data: conflictingRows, error: checkErr } = await client
-        .from(orderTable)
-        .select('id, order_number')
-        .ilike('order_number', currentOrderNumber);
+      const checkBuilder: any = client.from(orderTable);
+      if (checkBuilder && typeof checkBuilder.select === 'function') {
+        const { data: conflictingRows, error: checkErr } = await checkBuilder
+          .select('id, order_number')
+          .ilike('order_number', currentOrderNumber);
 
-      if (checkErr && isNetworkOrFetchError(checkErr)) {
-        return { success: false, error: checkErr.message, isNetworkError: true };
-      }
-
-      const hasConflict =
-        Array.isArray(conflictingRows) &&
-        conflictingRows.some((r) => String(r.id) !== String(order.id));
-
-      if (hasConflict) {
-        const { data: allDayRows } = await client
-          .from(orderTable)
-          .select('order_number')
-          .ilike('order_number', `%-CMD-${datePrefix}-%`);
-        const takenSet = new Set<string>([currentOrderNumber]);
-        if (Array.isArray(allDayRows)) {
-          for (const r of allDayRows) {
-            if (r?.order_number) takenSet.add(String(r.order_number).trim().toUpperCase());
-          }
+        if (checkErr && isNetworkOrFetchError(checkErr)) {
+          return { success: false, error: checkErr.message, isNetworkError: true };
         }
-        currentOrderNumber = computeNextOrderNumber(
-          order.site_number,
-          datePrefix,
-          takenSet,
-          isOfflineNumber
-        );
+
+        const hasConflict =
+          Array.isArray(conflictingRows) &&
+          conflictingRows.some((r) => String(r.id) !== String(order.id));
+
+        if (hasConflict) {
+          const { data: allDayRows } = await client
+            .from(orderTable)
+            .select('order_number')
+            .ilike('order_number', `%-CMD-${datePrefix}-%`);
+          const takenSet = new Set<string>([currentOrderNumber]);
+          if (Array.isArray(allDayRows)) {
+            for (const r of allDayRows) {
+              if (r?.order_number) takenSet.add(String(r.order_number).trim().toUpperCase());
+            }
+          }
+          currentOrderNumber = computeNextOrderNumber(
+            order.site_number,
+            datePrefix,
+            takenSet,
+            isOfflineNumber
+          );
+        }
       }
 
       const attemptUpdateFields = buildUpdateFields(currentOrderNumber);
@@ -3585,6 +3677,20 @@ export async function upsertOrderToSupabase(
 
       if (isNetworkOrFetchError(error)) {
         return { success: false, error: error.message, isNetworkError: true };
+      }
+
+      const errCode = String(error.code || '');
+      if (
+        errCode === '42501' ||
+        errCode === '23514' ||
+        errCode === '22023' ||
+        errCode === 'P0001'
+      ) {
+        return {
+          success: false,
+          error: translatePermissionDeniedError(error),
+          isNetworkError: false,
+        };
       }
 
       // Duplicate order_number constraint violation (23505) -> increment and retry
@@ -3627,6 +3733,21 @@ export async function upsertOrderToSupabase(
       const { error: err2 } = await client.from(orderTable).upsert([legacyFullPayload], { onConflict: 'id' });
       if (err2 && isNetworkOrFetchError(err2)) {
         return { success: false, error: err2.message, isNetworkError: true };
+      }
+      if (err2) {
+        const err2Code = String(err2.code || '');
+        if (
+          err2Code === '42501' ||
+          err2Code === '23514' ||
+          err2Code === '22023' ||
+          err2Code === 'P0001'
+        ) {
+          return {
+            success: false,
+            error: translatePermissionDeniedError(err2),
+            isNetworkError: false,
+          };
+        }
       }
       if (
         err2 &&

@@ -1399,6 +1399,8 @@ export async function runPrintJobsSqlTests() {
     '08_print_jobs.sql',
     '11_suite_tables.sql',
     '12_user_preferences.sql',
+    // Le script 02 supprime en cascade les règles dépendant de current_user_id() : on rejoue aussi le script 20
+    '20_notification_reads.sql',
     '07_app_compat.sql',
   ];
 
