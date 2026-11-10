@@ -53,6 +53,7 @@ import {
   Department,
   Depot,
   LicensePlan,
+  MaterialOrder,
   PLAN_TIERS,
   Project,
   Role,
@@ -60,6 +61,14 @@ import {
   normalizeToCanonicalPlan,
   plan_limits,
 } from '../../types';
+import {
+  canUserManageProjectStatus,
+  filterProjectsByStatusTab,
+  formatClosedProjectBadgeText,
+  getNonFinalOrdersForProject,
+  isProjectClosed,
+} from '../../services/projectStatusService';
+import { NO_AUTH_SESSION_BANNER_MESSAGE } from '../../services/clientSupabase';
 import { MENU_PERMISSION_GROUPS } from '../../data/permissionMatrix';
 import { DesktopSettingsSection } from '../types';
 import {
@@ -372,6 +381,10 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     deleteDepartment,
     saveProject,
     deleteProject,
+    closeProject,
+    reopenProject,
+    orders,
+    hasAuthSession,
     wipeDeviceAndSignOut,
     autoLogoutMinutes,
     setAutoLogoutMinutes,
@@ -471,6 +484,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   const [deptManagerId, setDeptManagerId] = useState<string>('');
   const [deptDeputyIds, setDeptDeputyIds] = useState<string[]>([]);
   const [deptIsPreparer, setDeptIsPreparer] = useState(false);
+  const [deptIsLogistics, setDeptIsLogistics] = useState(false);
   const [deptRequireApproval, setDeptRequireApproval] = useState(false);
   const [deptApprovalThreshold, setDeptApprovalThreshold] = useState('300');
 
@@ -490,6 +504,16 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   const [projDeputyIds, setProjDeputyIds] = useState<string[]>([]);
 
   const [projSearch, setProjSearch] = useState('');
+  const [projStatusTab, setProjStatusTab] = useState<'IN_PROGRESS' | 'CLOSED' | 'ALL'>('IN_PROGRESS');
+  const [projectStatusModal, setProjectStatusModal] = useState<{
+    project: Project;
+    mode: 'CLOSE' | 'REOPEN';
+    note: string;
+    loading: boolean;
+    errorMessage: string | null;
+    blockingOrders: MaterialOrder[];
+  } | null>(null);
+  const writeDisabledNoSession = Boolean(isSupabaseConnected && !hasAuthSession);
   const [projDeptManagerFilter, setProjDeptManagerFilter] = useState<string>('ALL');
   const [projSiteManagerFilter, setProjSiteManagerFilter] = useState<string>('ALL');
   const [projSortBy, setProjSortBy] = useState<
@@ -713,6 +737,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setDeptManagerId('');
     setDeptDeputyIds([]);
     setDeptIsPreparer(false);
+    setDeptIsLogistics(false);
     setDeptRequireApproval(false);
     setDeptApprovalThreshold('300');
   };
@@ -725,6 +750,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     );
     setDeptDeputyIds((d.deputy_manager_ids || []).map((id) => String(id)));
     setDeptIsPreparer(Boolean(d.is_preparer_dept));
+    setDeptIsLogistics(Boolean(d.is_logistics_dept));
     setDeptRequireApproval(Boolean(d.require_order_approval));
     setDeptApprovalThreshold(String(d.order_approval_threshold ?? 300));
     scrollToAndFocusForm(deptFormRef.current, deptNameInputRef.current);
@@ -817,6 +843,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
       resetRoleForm();
       return true;
     }
+    setErrorMessage(
+      "Rôle NON enregistré : le serveur a refusé l'écriture (droit « Gérer les rôles » manquant ou scripts SQL non appliqués)."
+    );
     return false;
   };
 
@@ -929,6 +958,11 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
       manager_id: deptManagerId || null,
       deputy_manager_ids: deptDeputyIds,
       is_preparer_dept: deptIsPreparer,
+      is_logistics_dept: deptIsLogistics,
+      // Conserver l'option KPI globaux (ce formulaire ne la modifie pas : elle était remise à « non » à chaque enregistrement)
+      allow_global_kpis: Boolean(
+        editingDeptId !== null && departments.find((x) => x.id === editingDeptId)?.allow_global_kpis
+      ),
       require_order_approval: deptRequireApproval,
       order_approval_threshold: Math.max(0, Number(deptApprovalThreshold) || 0),
     });
@@ -1364,8 +1398,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   const filteredAndSortedProjects = useMemo(() => {
     if (selectedDeptForProjects === 'NONE') return [];
     const q = projSearch.trim().toLowerCase();
+    const statusFiltered = filterProjectsByStatusTab(projects, projStatusTab);
 
-    const list = projects.filter((p) => {
+    const list = statusFiltered.filter((p) => {
       // Filtre par département sélectionné (ou 'ALL' via le bouton Tous)
       if (
         selectedDeptForProjects !== 'ALL' &&
@@ -1456,10 +1491,53 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     users,
     selectedDeptForProjects,
     projSearch,
+    projStatusTab,
     projDeptManagerFilter,
     projSiteManagerFilter,
     projSortBy,
   ]);
+
+  const handleConfirmDesktopProjectStatusChange = async () => {
+    if (!projectStatusModal) return;
+    const { project, mode, note } = projectStatusModal;
+    setProjectStatusModal((prev) => (prev ? { ...prev, loading: true, errorMessage: null } : null));
+
+    if (mode === 'CLOSE') {
+      const res = await closeProject(project.project_number, note);
+      if (!res.success) {
+        setProjectStatusModal((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                errorMessage: res.error || 'Fermeture refusée.',
+                blockingOrders:
+                  res.blockingOrders || getNonFinalOrdersForProject(orders, project.project_number),
+              }
+            : null
+        );
+        return;
+      }
+      setProjectStatusModal(null);
+      setSaveMessage(`Projet [${project.project_number}] marqué comme terminé.`);
+    } else {
+      const res = await reopenProject(project.project_number, note);
+      if (!res.success) {
+        setProjectStatusModal((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                errorMessage: res.error || 'Réouverture refusée.',
+              }
+            : null
+        );
+        return;
+      }
+      setProjectStatusModal(null);
+      setSaveMessage(`Projet [${project.project_number}] rouvert.`);
+    }
+  };
 
   // License & Quotas computed info
   const signedQuotas = useMemo(() => {
@@ -3757,6 +3835,22 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     </label>
                   </div>
 
+                  <div className="col-span-12 flex items-start gap-2">
+                    <label className="flex items-center gap-2 font-bold cursor-pointer">
+                      <input
+                        type="checkbox"
+                        data-testid="dept-is-logistics"
+                        checked={deptIsLogistics}
+                        onChange={(e) => setDeptIsLogistics(e.target.checked)}
+                        className="rounded text-orange-600"
+                      />
+                      <span>🚚 {tr(language, 'Logistique : sortie directe sur les dépôts fixes', 'Logistics: direct withdrawal from fixed depots', 'Logistiek: rechtstreekse uitgifte uit vaste depots')}</span>
+                    </label>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                      {tr(language, 'Les autres utilisateurs passent par une commande. Camionnettes et conteneurs inchangés.', 'Other users must place an order. Vehicles and containers unchanged.', 'Andere gebruikers plaatsen een bestelling. Bestelwagens en containers ongewijzigd.')}
+                    </span>
+                  </div>
+
                   <div className="col-span-5 flex items-center gap-2">
                     <label className="flex items-center gap-2 font-bold cursor-pointer">
                       <input
@@ -4042,6 +4136,37 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </div>
                 </form>
 
+                {/* Filtre En cours / Terminés / Tous */}
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700">
+                    {(
+                      [
+                        { id: 'IN_PROGRESS', label: 'En cours' },
+                        { id: 'CLOSED', label: 'Terminés' },
+                        { id: 'ALL', label: 'Tous' },
+                      ] as const
+                    ).map((tabItem) => (
+                      <button
+                        key={tabItem.id}
+                        type="button"
+                        onClick={() => {
+                          setProjStatusTab(tabItem.id);
+                          if (selectedDeptForProjects === 'NONE') {
+                            setSelectedDeptForProjects('ALL');
+                          }
+                        }}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                          projStatusTab === tabItem.id
+                            ? 'bg-orange-600 text-white shadow-2xs'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
+                        }`}
+                      >
+                        {tabItem.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Barre de filtres avancés sur les Chantiers / Projets */}
                 <div className="grid grid-cols-12 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 items-center">
                   <div className="col-span-3 relative">
@@ -4197,40 +4322,124 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         ? users.find((u) => String(u.id) === String(dept.manager_id))
                         : undefined;
                       const mgr = users.find((u) => String(u.id) === String(p.manager_id));
+                      const closed = isProjectClosed(p);
+                      const closedBadgeText = formatClosedProjectBadgeText(p);
+                      const canManageStatus = canUserManageProjectStatus(currentUser, p, departments);
                       return (
                         <div
                           key={p.id}
-                          className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                          className={`p-3.5 rounded-xl border flex items-center justify-between gap-2 ${
+                            closed
+                              ? 'border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/50 opacity-90'
+                              : 'border-slate-200 dark:border-slate-800'
+                          }`}
                         >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-mono font-bold text-orange-600">
                                 {p.project_number}
                               </span>
                               <span className="font-bold text-slate-900 dark:text-white truncate">
                                 {p.project_name}
                               </span>
+                              {closed && closedBadgeText ? (
+                                <span className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold">
+                                  {closedBadgeText}
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                                  En cours
+                                </span>
+                              )}
                             </div>
                             <div className="text-[11px] text-slate-500 truncate">
                               {dept ? dept.name : '—'}
                               {deptMgr ? ` (Resp. dép: ${deptMgr.trigram})` : ''} • Chef :{' '}
                               {mgr ? `${mgr.name} (${mgr.trigram})` : '—'}
                             </div>
+                            {closed && p.close_note && (
+                              <div className="text-[10px] text-slate-500 italic truncate">
+                                Note de clôture : {p.close_note}
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
+                            {canManageStatus &&
+                              (closed ? (
+                                <button
+                                  type="button"
+                                  disabled={writeDisabledNoSession}
+                                  title={
+                                    writeDisabledNoSession
+                                      ? NO_AUTH_SESSION_BANNER_MESSAGE
+                                      : 'Rouvrir le projet'
+                                  }
+                                  onClick={() =>
+                                    setProjectStatusModal({
+                                      project: p,
+                                      mode: 'REOPEN',
+                                      note: '',
+                                      loading: false,
+                                      errorMessage: null,
+                                      blockingOrders: [],
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  <span>Rouvrir le projet</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={writeDisabledNoSession}
+                                  title={
+                                    writeDisabledNoSession
+                                      ? NO_AUTH_SESSION_BANNER_MESSAGE
+                                      : 'Terminer le projet'
+                                  }
+                                  onClick={() =>
+                                    setProjectStatusModal({
+                                      project: p,
+                                      mode: 'CLOSE',
+                                      note: '',
+                                      loading: false,
+                                      errorMessage: null,
+                                      blockingOrders: getNonFinalOrdersForProject(
+                                        orders,
+                                        p.project_number
+                                      ),
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 text-amber-800 dark:text-amber-300 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                >
+                                  <Lock className="w-3.5 h-3.5" />
+                                  <span>Terminer le projet</span>
+                                </button>
+                              ))}
                             <button
                               type="button"
+                              disabled={writeDisabledNoSession}
                               onClick={() => startEditProj(p)}
-                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
-                              title="Modifier ce chantier"
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+                              title={
+                                writeDisabledNoSession
+                                  ? NO_AUTH_SESSION_BANNER_MESSAGE
+                                  : 'Modifier ce chantier'
+                              }
                             >
                               <Edit3 className="w-3.5 h-3.5" />
                             </button>
                             <button
                               type="button"
+                              disabled={writeDisabledNoSession}
                               onClick={() => deleteProject(p.id)}
-                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-rose-50 text-rose-600 cursor-pointer"
-                              title="Supprimer ce chantier"
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-rose-50 text-rose-600 cursor-pointer disabled:opacity-50"
+                              title={
+                                writeDisabledNoSession
+                                  ? NO_AUTH_SESSION_BANNER_MESSAGE
+                                  : 'Supprimer ce chantier'
+                              }
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -4238,6 +4447,132 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {projectStatusModal && (
+                  <div className="fixed inset-0 z-110 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                        <h4 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                          {projectStatusModal.mode === 'CLOSE' ? (
+                            <>
+                              <Lock className="w-4 h-4 text-amber-600" />
+                              <span>
+                                Terminer le projet [{projectStatusModal.project.project_number}]
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <RotateCcw className="w-4 h-4 text-emerald-600" />
+                              <span>
+                                Rouvrir le projet [{projectStatusModal.project.project_number}]
+                              </span>
+                            </>
+                          )}
+                        </h4>
+                        <button
+                          type="button"
+                          onClick={() => setProjectStatusModal(null)}
+                          className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="text-xs text-slate-600 dark:text-slate-300 space-y-2">
+                        <p>
+                          <strong>{projectStatusModal.project.project_name}</strong>
+                        </p>
+                        {projectStatusModal.mode === 'CLOSE' ? (
+                          <p>
+                            Une fois terminé, aucune nouvelle commande ni sortie de stock ne sera
+                            autorisée sur ce projet (les retours en stock restent possibles).
+                          </p>
+                        ) : (
+                          <p>
+                            La réouverture permettra de nouveau les commandes et sorties de matériel
+                            sur ce chantier.
+                          </p>
+                        )}
+                      </div>
+
+                      {projectStatusModal.errorMessage && (
+                        <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 font-bold flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />
+                          <span>{projectStatusModal.errorMessage}</span>
+                        </div>
+                      )}
+
+                      {projectStatusModal.mode === 'CLOSE' &&
+                        projectStatusModal.blockingOrders.length > 0 && (
+                          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-2">
+                            <div className="font-bold">
+                              Commandes non terminées sur ce projet (
+                              {projectStatusModal.blockingOrders.length}) :
+                            </div>
+                            <ul className="space-y-1 max-h-36 overflow-y-auto">
+                              {projectStatusModal.blockingOrders.map((bo) => (
+                                <li
+                                  key={bo.id}
+                                  className="flex items-center justify-between gap-2 bg-white/80 dark:bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-amber-200/70 dark:border-amber-800/70"
+                                >
+                                  <span className="font-semibold truncate">
+                                    #{String(bo.id).slice(-6)} — {bo.requester_name} ({bo.status})
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 mb-1">
+                          Note (optionnelle)
+                        </label>
+                        <textarea
+                          value={projectStatusModal.note}
+                          onChange={(e) =>
+                            setProjectStatusModal((prev) =>
+                              prev ? { ...prev, note: e.target.value } : null
+                            )
+                          }
+                          rows={2}
+                          placeholder={
+                            projectStatusModal.mode === 'CLOSE'
+                              ? 'Ex: Fin de chantier, réception client validée...'
+                              : 'Ex: Travaux supplémentaires demandés...'
+                          }
+                          className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none"
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setProjectStatusModal(null)}
+                          className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type="button"
+                          disabled={projectStatusModal.loading}
+                          onClick={handleConfirmDesktopProjectStatusChange}
+                          className={`px-4 py-2 rounded-xl text-xs font-bold text-white shadow-sm cursor-pointer disabled:opacity-50 ${
+                            projectStatusModal.mode === 'CLOSE'
+                              ? 'bg-amber-600 hover:bg-amber-700'
+                              : 'bg-emerald-600 hover:bg-emerald-700'
+                          }`}
+                        >
+                          {projectStatusModal.loading
+                            ? 'Traitement...'
+                            : projectStatusModal.mode === 'CLOSE'
+                            ? 'Confirmer la clôture'
+                            : 'Confirmer la réouverture'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -4367,7 +4702,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   }`}
                 >
                   <Terminal className="w-4 h-4" />
-                  <span>3. Scripts SQL (01 à 12) & Diagnostic</span>
+                  <span>3. Scripts SQL (01 à 21) & Diagnostic</span>
                 </button>
                 <button
                   type="button"
@@ -5523,13 +5858,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                     )}
                   </div>
 
-                  {/* Catalogue des scripts SQL 01 à 08 */}
+                  {/* Catalogue des scripts SQL 01 à 21 */}
                   <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                           <Terminal className="w-5 h-5 text-orange-600" />
-                          Scripts SQL Officiels Supabase (01 à 16)
+                          Scripts SQL Officiels Supabase (01 à 21)
                         </h3>
                         <p className="text-[11px] text-slate-500">
                           Copiez et exécutez ces scripts dans l’Éditeur SQL Supabase (SQL Editor) pour installer ou mettre à jour votre base
@@ -5538,7 +5873,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          const orderedIds = ['01', '09', '02', '03', '04', '05', '06', '08', '11', '12', '13', '14', '15', '16', '07'];
+                          const orderedIds = ['01', '09', '02', '03', '04', '05', '06', '08', '11', '12', '13', '14', '15', '16', '17', '18', '07'];
                           const allScripts = orderedIds
                             .map((id) => SQL_SCRIPTS_CATALOG.find((s) => s.id === id))
                             .filter((s): s is NonNullable<typeof s> => Boolean(s))
@@ -5547,22 +5882,22 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                 `-- =====================================================================\n-- ${s.filename} : ${s.title}\n-- =====================================================================\n${s.sql}`
                             )
                             .join('\n\n');
-                          copyToClipboard(allScripts, 'sql_all_01_16');
+                          copyToClipboard(allScripts, 'sql_all_01_21');
                           setSaveMessage(
-                            'Script complet d’installation (01 à 16 assemblés dans l’ordre d’exécution) copié dans le presse-papiers.'
+                            'Script complet d’installation (01 à 21 assemblés dans l’ordre d’exécution) copié dans le presse-papiers.'
                           );
                         }}
                         className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-orange-600 text-white font-bold cursor-pointer transition"
                       >
-                        {copiedKey === 'sql_all_01_16' ? (
+                        {copiedKey === 'sql_all_01_21' ? (
                           <>
                             <Check className="w-4 h-4 text-emerald-400" />
-                            <span>Script complet 01–16 copié !</span>
+                            <span>Script complet 01–21 copié !</span>
                           </>
                         ) : (
                           <>
                             <Copy className="w-4 h-4" />
-                            <span>Copier tout le pack SQL (01 à 16)</span>
+                            <span>Copier tout le pack SQL (01 à 21)</span>
                           </>
                         )}
                       </button>
@@ -5750,6 +6085,24 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   </li>
                   <li>
                     <strong>Confidentialité absolue des secrets</strong> : aucun mot de passe, code PIN, clé API, secret SMTP/Graph, jeton signé ou contenu brut de lignes exportées n’est jamais transmis ni stocké dans le journal ; les champs sensibles sont systématiquement masqués par <code>***</code>.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+                <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  Retrait signé des commandes, Projets « En cours / Terminés » &amp; Session serveur
+                </h3>
+                <ul className="space-y-2 text-slate-600 dark:text-slate-300 list-disc pl-5 leading-relaxed">
+                  <li>
+                    <strong>Retrait d’une commande réservé au demandeur ou à son délégué avec signature obligatoire</strong> : le passage d’une commande prête (<code>READY</code>) à enlevée (<code>COLLECTED</code>) ne peut être validé que par le <strong>demandeur</strong> (<code>requester_id</code>) ou le <strong>délégué de retrait</strong> (<code>pickup_delegate_id</code>), accompagné d’une signature manuscrite valide envoyée dans la même requête que le statut. L’image de la signature n’est consultable (dans le détail, la traçabilité et le bon imprimé) que par le demandeur, le délégué, le préparateur de la commande, le responsable de département (et suppléants), le conducteur de travaux du projet (et suppléants) et les administrateurs (rôles 0 et 1). Le journal d’audit ne stocke jamais l’image, uniquement la mention <code>signature présente</code>.
+                  </li>
+                  <li>
+                    <strong>Projets « En cours » (<code>IN_PROGRESS</code>) et « Terminés » (<code>CLOSED</code>)</strong> : la clôture et la réouverture d’un chantier s’effectuent via les RPC serveur <code>close_project(p_project_number, p_note)</code> et <code>reopen_project(p_project_number, p_note)</code> (réservées aux administrateurs, responsables de département/suppléants et conducteurs de travaux/suppléants). La clôture est refusée tant qu’il reste des commandes non terminées sur le projet. Un projet terminé est exclu des listes de sortie de stock et de nouvelles commandes (message <em>« Le projet X est terminé : sortie impossible »</em>), mais reste sélectionnable pour les retours en stock (<em>« Projet terminé — retour uniquement »</em>). Si un véhicule ou conteneur reste rattaché à un projet terminé, l’alerte <em>« Projet terminé : pensez à rapatrier le matériel »</em> s’affiche.
+                  </li>
+                  <li>
+                    <strong>Bandeau « Session serveur absente » &amp; erreurs <code>permission denied</code></strong> : lorsque l’application est connectée à Supabase mais qu’aucune session Supabase Auth active n’est présente, un bandeau orange permanent invite à se reconnecter avec un compte lié à Supabase Auth (e-mail confirmé) et désactive les boutons d’enregistrement pour éviter les rejets RLS (code SQL <code>42501</code>).
                   </li>
                 </ul>
               </div>

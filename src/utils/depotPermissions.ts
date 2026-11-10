@@ -901,7 +901,44 @@ export function getEligibleStockInDepotsForProduct(
 /**
  * Valeur par défaut du sélecteur « Dépôt à alimenter » lors d'une entrée de stock (v59 §4).
  */
-export function getDefaultStockInDepotForProduct(params: EligibleStockInParams): string {
+export function getDefaultStockInDepotForProduct(params: EligibleStockInParams): string;
+export function getDefaultStockInDepotForProduct(
+  product: Partial<Product> | null | undefined,
+  user: User | null | undefined,
+  depots: Depot[] | undefined,
+  stockLevels: StockLevel[] | undefined,
+  hasGeneralStockInPerm: boolean,
+  departments?: Department[],
+  allUsers?: User[],
+  projects?: Project[]
+): string;
+export function getDefaultStockInDepotForProduct(
+  arg1: any,
+  user?: any,
+  depots?: any,
+  stockLevels?: any,
+  hasGeneralStockInPerm?: any,
+  departments?: any,
+  allUsers?: any,
+  projects?: any
+): string {
+  // Appel par objet { product, user, depots, ... } ou appel positionnel (utilisé par le panier et AppContext)
+  const isObjectCall =
+    arg1 &&
+    typeof arg1 === 'object' &&
+    ('hasGeneralStockInPerm' in arg1 || 'stockLevels' in arg1 || 'depots' in arg1 || 'user' in arg1);
+  const params: EligibleStockInParams = isObjectCall
+    ? arg1
+    : ({
+        product: arg1,
+        user,
+        depots: depots || [],
+        stockLevels: stockLevels || [],
+        hasGeneralStockInPerm: Boolean(hasGeneralStockInPerm),
+        departments: departments || [],
+        allUsers: allUsers || [],
+        projects: projects || [],
+      } as EligibleStockInParams);
   const eligible = getEligibleStockInDepotsForProduct(params);
   const userVehicles = getUserVehicles(params.user, params.depots);
   if (userVehicles.length > 0) {

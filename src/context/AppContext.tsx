@@ -246,7 +246,13 @@ import {
   saveDepotHoldersRpc,
   fetchStockTransfersFromServer,
   computeTransferBadgeCounts,
+  fetchTransfersToReturnRpc,
+  returnOverdueTransferRpc,
+  isTransferOverdueForReturn,
+  hasSenderUnresolvedOverdueTransfers,
 } from '../services/transferService';
+import { getDefaultStockInDepotForProduct } from '../utils/depotPermissions';
+import { getEligibleStockOutDepotsForProduct, resolveStockOutDepot } from '../utils/stockOutDepots';
 import {
   verifyDevicePinWithLockout,
   wipeDeviceLocalData,
@@ -277,9 +283,23 @@ import {
   loadMyDismissedKeys,
   subscribeNotificationDismissals,
 } from '../services/notificationReadService';
+import {
+  canUserValidateOrderPickup,
+  getOrderPickupReservedMessage,
+  isValidPickupSignature,
+} from '../services/orderTraceabilityService';
+import {
+  canUserManageProjectStatus,
+  closeProjectViaRpc,
+  getNonFinalOrdersForProject,
+  normalizeProjectStatus,
+  reopenProjectViaRpc,
+  validateProjectForOutflowOrOrder,
+} from '../services/projectStatusService';
 
 interface AppContextType {
   currentUser: User | null;
+  hasAuthSession: boolean;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   activeTab: 'home' | 'search' | 'movements' | 'plus';
@@ -320,7 +340,12 @@ interface AppContextType {
     holders: Array<{ user_id: string | number; can_send: boolean; can_receive: boolean }>
   ) => Promise<{ success: boolean; error?: string }>;
   transfers: StockTransferRecord[];
+  transfersToReturn: StockTransferRecord[];
   refreshTransfers: () => Promise<void>;
+  returnOverdueTransfer: (
+    transferId: string,
+    comment: string
+  ) => Promise<{ success: boolean; message?: string; error?: string }>;
   transfersModalOpen: boolean;
   setTransfersModalOpen: (open: boolean) => void;
   transferBadgeCount: number;
@@ -445,8 +470,9 @@ interface AppContextType {
   deleteProduct: (productId: string) => Promise<boolean>;
 
   // Cart & Movements
-  addToCart: (product: Product, qty?: number) => void;
+  addToCart: (product: Product, qty?: number, targetDepotName?: string) => void;
   updateCartQty: (productId: string, qty: number) => void;
+  updateCartItemDepot: (productId: string, targetDepotName: string) => void;
   removeFromCart: (productId: string) => void;
   clearCart: () => void;
   confirmBatchMovements: (
@@ -511,11 +537,12 @@ interface AppContextType {
   moveOrderBasket: (id: string, direction: 'up' | 'down') => void;
   updateOrderBasketSite: (id: string, siteNumber: string) => void;
   updateOrderBasket: (id: string, updates: Partial<Pick<OrderBasket, 'name' | 'depot_name' | 'site_number' | 'notes'>>) => void;
-  switchAndAddOrderBasket: (product: Product, quantity?: number) => { success: boolean; basketId: string };
+  switchAndAddOrderBasket: (product: Product, quantity?: number, orderDepotName?: string) => { success: boolean; basketId: string };
   addToOrderCart: (
     product: Product,
     quantity?: number,
-    targetBasketId?: string
+    targetBasketId?: string,
+    orderDepotName?: string
   ) => { success: boolean; conflict?: boolean; currentDepot?: string; productDepot?: string; message?: string; basketId?: string };
   updateOrderCartQty: (productId: string | number, quantity: number) => void;
   removeFromOrderCart: (productId: string | number) => void;
@@ -590,6 +617,14 @@ interface AppContextType {
   // Projects CRUD
   saveProject: (proj: Partial<Project>) => Promise<boolean>;
   deleteProject: (id: number) => Promise<boolean>;
+  closeProject: (
+    projectNumber: string,
+    note?: string | null
+  ) => Promise<{ success: boolean; message: string; error?: string; blockingOrders?: MaterialOrder[] }>;
+  reopenProject: (
+    projectNumber: string,
+    note?: string | null
+  ) => Promise<{ success: boolean; message: string; error?: string }>;
 
   // Roles CRUD
   saveRole: (role: Partial<Role>) => Promise<boolean>;
@@ -1250,6 +1285,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [transfers]);
 
   const [transfersModalOpen, setTransfersModalOpen] = useState(false);
+  const [serverTransfersToReturn, setServerTransfersToReturn] = useState<StockTransferRecord[]>([]);
 
   // Current Logged In User (encrypted when local encryption is active)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -3510,6 +3546,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Authentication with Supabase Auth (signInWithPassword) + local PBKDF2 quick unlock
   const [passwordRecoveryMode, setPasswordRecoveryMode] = useState<boolean>(false);
+  const [hasAuthSession, setHasAuthSession] = useState<boolean>(true);
 
   // Listen for Supabase PASSWORD_RECOVERY events or recovery URL hashes
   useEffect(() => {
@@ -3518,11 +3555,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setLoginModalOpen(true);
     }
     const client = getClientSupabase(supabaseUrl, supabaseKey);
-    if (!client) return;
-    const { data: authListener } = client.auth.onAuthStateChange((event) => {
+    if (!client) {
+      setHasAuthSession(true);
+      return;
+    }
+    client.auth
+      .getSession()
+      .then(({ data }) => {
+        if (data?.session?.user) {
+          setHasAuthSession(true);
+        } else if (
+          currentUser &&
+          (Number(currentUser.id) === 0 || !currentUser.auth_user_id)
+        ) {
+          setHasAuthSession(false);
+        }
+      })
+      .catch(() => {});
+    const { data: authListener } = client.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
         setPasswordRecoveryMode(true);
         setLoginModalOpen(true);
+      }
+      if (session?.user) {
+        setHasAuthSession(true);
       }
     });
     return () => {
@@ -3530,7 +3586,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         authListener?.subscription?.unsubscribe();
       } catch {}
     };
-  }, [supabaseUrl, supabaseKey]);
+  }, [supabaseUrl, supabaseKey, currentUser]);
 
   const login = useCallback(
     async (emailOrUserId: string | number, passwordOrPin: string, isLocalUnlock = false) => {
@@ -3600,6 +3656,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           try {
             localStorage.setItem(LAST_ACTIVITY_TS_KEY, String(Date.now()));
           } catch {}
+          setHasAuthSession(true);
           setCurrentUser(u);
           setLoginModalOpen(false);
           setActiveTab('home');
@@ -3684,6 +3741,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               must_change_pin: false,
             };
             localStorage.setItem('tot_last_login_email', 'admin@tot-stock.app');
+            setHasAuthSession(false);
             setCurrentUser(defaultAdmin);
             localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(defaultAdmin));
             setLoginModalOpen(false);
@@ -3897,16 +3955,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           localStorage.setItem(LAST_ACTIVITY_TS_KEY, String(Date.now()));
         } catch {}
+        setHasAuthSession(Boolean(resolvedAuthUser));
         setCurrentUser(activeProfile);
         localStorage.setItem(`${LOCAL_PREFIX}current_user`, JSON.stringify(activeProfile));
         setLoginModalOpen(false);
         setActiveTab('home');
 
-        logLoginEventServer(
-          'LOGIN_SUCCESS',
-          { mode: 'supabase_auth', role_id: activeProfile.role_id },
-          client
-        ).catch(() => {});
+        if (resolvedAuthUser) {
+          logLoginEventServer(
+            'LOGIN_SUCCESS',
+            { mode: 'supabase_auth', role_id: activeProfile.role_id },
+            client
+          ).catch(() => {});
+        }
 
         // Audit log connection
         logActivity({
@@ -4250,28 +4311,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Cart Management
   const addToCart = useCallback(
-    (product: Product, qty: number = 1) => {
+    (product: Product, qty: number = 1, explicitTargetDepot?: string) => {
       // If movement mode is OUT and depot is closed, strictly prevent adding to cart
-      if (scanState.mode === 'OUT' && isDepotClosed(depots, product.store_name)) {
-        console.warn(`Tentative de prélèvement bloquée : Le dépôt « ${product.store_name || 'Principal'} » est fermé / inactif.`);
+      // V61 : en sortie, le dépôt retenu est le dépôt autorisé (ex. camionnette) et non forcément le dépôt par défaut de l'article
+      const outDepot =
+        scanState.mode === 'OUT'
+          ? resolveStockOutDepot(
+              { product, targetDepotName: explicitTargetDepot },
+              getEligibleStockOutDepotsForProduct(product, stockLevels, depots, currentUser, language, departments, users)
+            )
+          : undefined;
+      if (scanState.mode === 'OUT' && isDepotClosed(depots, outDepot || product.store_name)) {
+        console.warn(`Tentative de prélèvement bloquée : Le dépôt « ${outDepot || product.store_name || 'Principal'} » est fermé / inactif.`);
         return;
       }
+      const resolvedTargetDepot =
+        (scanState.mode === 'OUT' ? outDepot : undefined) ||
+        explicitTargetDepot ||
+        (scanState.mode === 'OUT' ? product.store_name || undefined : undefined) ||
+        getDefaultStockInDepotForProduct(
+          product,
+          currentUser,
+          depots,
+          stockLevels,
+          userHasPermission('perm_stock_in'),
+          departments,
+          users
+        );
       const prev = batchCartRef.current;
       const existing = prev.find((item) => item.product.id === product.id);
       const nextCart = existing
         ? prev.map((item) =>
-            item.product.id === product.id ? { ...item, qtyActual: item.qtyActual + qty } : item
+            item.product.id === product.id
+              ? {
+                  ...item,
+                  qtyActual: item.qtyActual + qty,
+                  targetDepotName: explicitTargetDepot || item.targetDepotName || resolvedTargetDepot,
+                }
+              : item
           )
-        : [...prev, { product, qtyActual: qty }];
+        : [
+            ...prev,
+            {
+              product,
+              qtyActual: qty,
+              targetDepotName: resolvedTargetDepot,
+            },
+          ];
       commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, nextCart);
     },
-    [scanState.mode, depots, commitUserBasketsChange]
+    [
+      scanState.mode,
+      depots,
+      currentUser,
+      stockLevels,
+      userHasPermission,
+      departments,
+      users,
+      language,
+      commitUserBasketsChange,
+    ]
   );
 
   const updateCartQty = useCallback(
     (productId: string, qty: number) => {
       const nextCart = batchCartRef.current.map((item) =>
         item.product.id === productId ? { ...item, qtyActual: Math.max(0, qty) } : item
+      );
+      commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, nextCart);
+    },
+    [commitUserBasketsChange]
+  );
+
+  const updateCartItemDepot = useCallback(
+    (productId: string, targetDepotName: string) => {
+      const cleanDepot = (targetDepotName || '').trim();
+      const nextCart = batchCartRef.current.map((item) =>
+        item.product.id === productId
+          ? {
+              ...item,
+              targetDepotName: cleanDepot,
+            }
+          : item
       );
       commitUserBasketsChange(orderBasketsRef.current, activeOrderBasketIdRef.current, nextCart);
     },
@@ -4325,7 +4446,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Validate stock availability, closed depot check, and depot authorization for OUT
       if (mode === 'OUT') {
         for (const item of cartItems) {
-          const targetDepot = item.product.store_name || 'Dépôt Principal';
+          // V61 : magasin de sortie choisi dans le panier (sinon dépôt par défaut de l'article)
+          const targetDepot = resolveStockOutDepot(
+            item,
+            getEligibleStockOutDepotsForProduct(item.product, stockLevels, depots, currentUser, language, departments, users)
+          );
           // 1. Strict check: closed / inactive depot
           if (isDepotClosed(depots, targetDepot)) {
             return {
@@ -4386,9 +4511,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (mode === 'IN') {
         const hasGeneralStockIn = userHasPermission('perm_stock_in');
         for (const item of cartItems) {
+          const itemTargetDepot = (
+            item.targetDepotName ||
+            item.product.store_name ||
+            'Dépôt Principal'
+          ).trim();
           const entryCheck = canUserEnterStockInDepot(
             currentUser,
-            item.product.store_name,
+            itemTargetDepot,
             depots,
             hasGeneralStockIn,
             language,
@@ -4410,9 +4540,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      // Determine Department from Project
+      // Determine Department from Project & block OUT movements on CLOSED projects (v60)
       let depName = currentUser?.department || '';
       if (mode === 'OUT' && siteNumber) {
+        const projValidation = validateProjectForOutflowOrOrder(siteNumber, projects, language);
+        if (!projValidation.valid) {
+          return {
+            success: false,
+            message:
+              projValidation.message ||
+              `Le projet ${siteNumber} est terminé : sortie impossible`,
+          };
+        }
         const foundProj = projects.find(
           (p) => p.project_number.toLowerCase() === siteNumber.toLowerCase()
         );
@@ -4435,7 +4574,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           products.find((p) => String(p.id) === String(item.product.id)) || item.product;
         const previousQty = Number(latestProd.quantity) || 0;
         const newQty = mode === 'OUT' ? Math.max(0, previousQty - delta) : previousQty + delta;
-        const targetDepot = item.product.store_name || latestProd.store_name || 'Dépôt Principal';
+        const targetDepot =
+          mode === 'IN'
+            ? (item.targetDepotName || item.product.store_name || latestProd.store_name || 'Dépôt Principal').trim()
+            : resolveStockOutDepot(
+                item,
+                getEligibleStockOutDepotsForProduct(latestProd, stockLevels, depots, currentUser, language, departments, users)
+              );
         const prevDepotLevel = stockLevels.find(
           (sl) =>
             String(sl.product_id) === String(latestProd.id) &&
@@ -4682,6 +4827,154 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => clearInterval(timer);
   }, [supabaseUrl, supabaseKey, refreshTransfers]);
 
+  // v59 Section 5 : Vérification des transferts > 7 jours à remettre en stock au démarrage et toutes les heures
+  const refreshTransfersToReturn = useCallback(async () => {
+    const client = getClientSupabase(supabaseUrl, supabaseKey);
+    if (!client) return;
+    try {
+      const list = await fetchTransfersToReturnRpc(client, 7);
+      if (Array.isArray(list)) {
+        setServerTransfersToReturn(list);
+      }
+    } catch {}
+  }, [supabaseUrl, supabaseKey]);
+
+  useEffect(() => {
+    if (!supabaseUrl || !supabaseKey) return;
+    refreshTransfersToReturn().catch(() => {});
+    const hourlyTimer = setInterval(() => {
+      refreshTransfersToReturn().catch(() => {});
+    }, 60 * 60 * 1000);
+    return () => clearInterval(hourlyTimer);
+  }, [supabaseUrl, supabaseKey, refreshTransfersToReturn]);
+
+  const transfersToReturn = useMemo(() => {
+    const map = new Map<string, StockTransferRecord>();
+    for (const t of serverTransfersToReturn) {
+      if (isTransferOverdueForReturn(t, 7)) {
+        map.set(String(t.id), t);
+      }
+    }
+    for (const t of transfers) {
+      if (isTransferOverdueForReturn(t, 7)) {
+        map.set(String(t.id), t);
+      } else if (map.has(String(t.id)) && t.status !== 'IN_TRANSIT' && t.status !== 'AWAITING_SENDER') {
+        map.delete(String(t.id));
+      }
+    }
+    return Array.from(map.values());
+  }, [serverTransfersToReturn, transfers]);
+
+  const returnOverdueTransfer = useCallback(
+    async (
+      transferId: string,
+      comment: string
+    ): Promise<{ success: boolean; message?: string; error?: string }> => {
+      const cleanComment = String(comment || '').trim();
+      if (cleanComment.length < 5) {
+        const msg = tr(
+          language,
+          'Un commentaire justificatif (minimum 5 caractères) est obligatoire pour remettre un transfert en stock.',
+          'A justification comment (minimum 5 characters) is mandatory to return a transfer to stock.',
+          'Een verplichte toelichting (minimaal 5 tekens) is vereist om een overdracht terug in voorraad te nemen.'
+        );
+        return { success: false, message: msg, error: msg };
+      }
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const res = await returnOverdueTransferRpc(client, {
+        transferId,
+        comment: cleanComment,
+      });
+
+      if (!res.success) {
+        return {
+          success: false,
+          message: res.error,
+          error: res.error,
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      const targetTransfer =
+        transfersRef.current.find((t) => String(t.id) === String(transferId)) ||
+        serverTransfersToReturn.find((t) => String(t.id) === String(transferId));
+
+      if (targetTransfer) {
+        const srcDepotName = (targetTransfer.source_depot || 'Dépôt Principal').trim();
+        for (const line of targetTransfer.items || []) {
+          const qtyToRestore = Number(line.quantity_sent ?? line.quantity ?? 0);
+          if (qtyToRestore <= 0) continue;
+          setProducts((prev) =>
+            prev.map((p) =>
+              String(p.id) === String(line.product_id)
+                ? { ...p, quantity: (Number(p.quantity) || 0) + qtyToRestore }
+                : p
+            )
+          );
+          setStockLevels((prev) => {
+            const existing = prev.find(
+              (sl) =>
+                String(sl.product_id) === String(line.product_id) &&
+                sl.depot_name.trim().toLowerCase() === srcDepotName.toLowerCase()
+            );
+            const nextDepotQty = (existing ? Number(existing.quantity) || 0 : 0) + qtyToRestore;
+            return applyMovementToStockLevelsList(prev, {
+              productId: String(line.product_id),
+              depotName: srcDepotName,
+              newDepotQty: nextDepotQty,
+            });
+          });
+        }
+      }
+
+      setTransfers((prev) =>
+        prev.map((t) =>
+          String(t.id) === String(transferId)
+            ? {
+                ...t,
+                status: 'RETURNED_TO_STOCK',
+                returned_by: currentUser ? String(currentUser.id) : null,
+                returned_by_name: currentUser ? currentUser.name : null,
+                returned_at: nowIso,
+                return_comment: cleanComment,
+                updated_at: nowIso,
+              }
+            : t
+        )
+      );
+      setServerTransfersToReturn((prev) =>
+        prev.filter((t) => String(t.id) !== String(transferId))
+      );
+
+      if (client) {
+        refreshTransfers().catch(() => {});
+        refreshTransfersToReturn().catch(() => {});
+        syncFromSupabase().catch(() => {});
+      }
+
+      return {
+        success: true,
+        message: tr(
+          language,
+          'Transfert remis en stock dans le dépôt source.',
+          'Transfer returned to source depot stock.',
+          'Overdracht teruggeplaatst in de voorraad van het brondepot.'
+        ),
+      };
+    },
+    [
+      language,
+      supabaseUrl,
+      supabaseKey,
+      serverTransfersToReturn,
+      currentUser,
+      refreshTransfers,
+      refreshTransfersToReturn,
+      syncFromSupabase,
+    ]
+  );
+
   const transferBadgeCount = useMemo(() => {
     const counts = computeTransferBadgeCounts(
       transfers,
@@ -4712,6 +5005,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       message: string;
       items?: any[];
     }> => {
+      if (hasSenderUnresolvedOverdueTransfers(currentUser, transfersRef.current, 7)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            "Vous avez au moins un transfert non validé depuis plus de 7 jours. Remettez les produits en stock ou faites valider la réception avant d'envoyer un nouveau transfert.",
+            'You have at least one unvalidated transfer older than 7 days. Return products to stock or validate reception before sending a new transfer.',
+            'U heeft minstens één niet-gevalideerde overdracht van meer dan 7 dagen oud. Plaats de producten terug in voorraad voordat u een nieuwe overdracht verzendt.'
+          ),
+        };
+      }
+
       const srcDepot = (params.sourceDepotName || '').trim();
       const dstDepot = (params.destDepotName || '').trim();
 
@@ -5493,7 +5798,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (
       product: Product,
       quantity: number = 1,
-      targetBasketId?: string
+      targetBasketId?: string,
+      orderDepotName?: string
     ): {
       success: boolean;
       conflict?: boolean;
@@ -5503,7 +5809,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       basketId?: string;
     } => {
       const currentList = orderBasketsRef.current;
-      const productDepot = (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
+      // V61 : magasin choisi par l'utilisateur (titulaires de camionnette / conteneur), sinon dépôt par défaut de l'article
+      const productDepot = (orderDepotName || '').trim() || (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
       const newItem: MaterialOrderItem = {
         product_id: product.id,
         product_ref: product.reference,
@@ -5586,9 +5893,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const switchAndAddOrderBasket = useCallback(
-    (product: Product, quantity: number = 1): { success: boolean; basketId: string } => {
+    (product: Product, quantity: number = 1, orderDepotName?: string): { success: boolean; basketId: string } => {
       const currentList = orderBasketsRef.current;
-      const productDepot = (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
+      const productDepot = (orderDepotName || '').trim() || (product.store_name || '').trim() || (tr(language, 'Dépôt Principal', 'Main Depot'));
       // Find an existing basket dedicated to this depot or an empty one
       let targetBasket = currentList.find(
         (b) =>
@@ -5615,7 +5922,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else {
         activeOrderBasketIdRef.current = targetId;
       }
-      addToOrderCart(product, quantity, targetId);
+      addToOrderCart(product, quantity, targetId, productDepot);
       setActiveOrderBasketIdState(targetId);
       return { success: true, basketId: targetId };
     },
@@ -5691,6 +5998,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       const effectiveSite = (siteNumber || basketToSubmit?.site_number || 'CH-00').trim().toUpperCase();
       const cleanSite = effectiveSite;
+
+      // Block new orders on CLOSED projects (v60)
+      const projValidation = validateProjectForOutflowOrOrder(cleanSite, projects, language);
+      if (!projValidation.valid) {
+        return {
+          success: false,
+          message:
+            projValidation.message ||
+            `Le projet ${cleanSite} est terminé : sortie impossible`,
+        };
+      }
 
       const now = new Date();
       const datePrefix = formatOrderDatePrefix(now);
@@ -6040,16 +6358,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { success: false, message: tr(language, 'Commande introuvable.', 'Order not found.') };
       }
 
+      // v60 point 8.1: Seul le demandeur ou son délégué peut valider le retrait
+      if (!canUserValidateOrderPickup(currentUser, existingOrder)) {
+        return {
+          success: false,
+          message: getOrderPickupReservedMessage(existingOrder, language),
+        };
+      }
+
+      // v60 point 8.3: Signature obligatoire (canevas non vide et pas un simple point)
+      const sigData = options?.signatureData || existingOrder.signature_data || null;
+      if (!isValidPickupSignature(sigData)) {
+        return {
+          success: false,
+          message: tr(
+            language,
+            'La signature du demandeur ou de son délégué est obligatoire pour valider le retrait de la commande.',
+            'Requester or delegate signature is required to confirm order pickup.'
+          ),
+        };
+      }
+
       const now = new Date().toISOString();
       const order: MaterialOrder = {
         ...existingOrder,
         status: 'COLLECTED',
         collected_at: now,
         collected_by: currentUser ? currentUser.name : existingOrder.requester_name,
-        signature_data: options?.signatureData || existingOrder.signature_data || null,
+        signature_data: sigData,
         proof_photo_url: options?.proofPhotoUrl || existingOrder.proof_photo_url || null,
         updated_at: now,
       };
+
+      // v60 point 8.3 & 8.5: Envoyer status = 'COLLECTED' et signature_data dans la même requête UPDATE
+      // et en cas d'erreur du trigger (42501 ou 23514), retourner le message serveur tel quel sans marquer la commande retirée localement
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        const ordRes = await upsertOrderToSupabase(client, order).catch((err) => ({
+          success: false,
+          isNetworkError: isNetworkOrFetchError(err),
+          error: formatPostgresErrorMessage(err, 'Retrait de commande'),
+        }));
+        if (!ordRes.success) {
+          if (ordRes.isNetworkError) {
+            enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
+          } else {
+            return {
+              success: false,
+              message: ordRes.error || 'Retrait refusé par le serveur.',
+            };
+          }
+        }
+      } else {
+        enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
+      }
 
       setOrders((prev) => prev.map((o) => (o.id === orderId ? order : o)));
 
@@ -6102,32 +6464,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // 3. Add to movements list
       setMovements((prev) => [...newMovements, ...prev]);
 
-      // 4. Log activity
+      // 4. Log activity (jamais l'image de signature dans le journal d'audit, uniquement l'indicateur « signature présente »)
       logActivity({
         type: 'STOCK_OUT',
         category: 'MOVEMENTS',
         title: 'Retrait Commande Validé',
         description: `Matériel retiré pour la commande ${order.order_number} (${order.items.length} références)${
-          options?.signatureData ? ' [Émargé avec signature]' : ''
+          sigData ? ' [signature présente]' : ''
         }${options?.proofPhotoUrl ? ' [Photo preuve jointe]' : ''} - Sortie stock validée chantier ${order.site_number}`,
         user_name: currentUser?.name || order.requester_name,
         depot_name: order.depot_name,
         badgeText: 'Retiré',
+        meta: {
+          details: `order_id=${order.id}; order_number=${order.order_number}; signature=${
+            sigData ? 'signature présente' : 'absente'
+          }`,
+        },
       });
-
-      // 5. Sync order + stock movements + product quantities to Supabase (or queue offline) via commitStockMovement (LOT 1)
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
-      if (client && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-        const ordRes = await upsertOrderToSupabase(client, order).catch(() => ({
-          success: false,
-          isNetworkError: true,
-        }));
-        if (!ordRes.success && ordRes.isNetworkError) {
-          enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
-        }
-      } else {
-        enqueueSyncOperation(TABLES.materialOrders, 'UPDATE', order).catch(() => {});
-      }
 
       let firstRejectionMsg: string | null = null;
       for (const mov of newMovements) {
@@ -7622,7 +7975,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const n = Number(p.id);
         return Number.isFinite(n) && n < 2000000000 && n > max ? n : max;
       }, 0) + 1;
+    const existingProj = proj.id ? projects.find((p) => p.id === proj.id) : undefined;
     const savedProj: Project = {
+      ...existingProj,
       ...proj,
       id: nextProjId,
       department_id: proj.department_id || 1,
@@ -7630,6 +7985,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       project_name,
       manager_id: proj.manager_id || null,
       deputy_manager_ids: proj.deputy_manager_ids || [],
+      status: normalizeProjectStatus(proj.status ?? existingProj?.status),
+      closed_at: proj.closed_at !== undefined ? proj.closed_at : existingProj?.closed_at ?? null,
+      closed_by: proj.closed_by !== undefined ? proj.closed_by : existingProj?.closed_by ?? null,
+      closed_by_name:
+        proj.closed_by_name !== undefined
+          ? proj.closed_by_name
+          : existingProj?.closed_by_name ?? null,
+      close_note:
+        proj.close_note !== undefined ? proj.close_note : existingProj?.close_note ?? null,
     };
     setProjects((prev) =>
       proj.id ? prev.map((p) => (p.id === proj.id ? savedProj : p)) : [...prev, savedProj]
@@ -7661,6 +8025,155 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [supabaseUrl, supabaseKey, userHasPermission]);
 
+  const closeProject = useCallback(
+    async (
+      projectNumber: string,
+      note?: string | null
+    ): Promise<{ success: boolean; message: string; error?: string; blockingOrders?: MaterialOrder[] }> => {
+      const cleanNumber = String(projectNumber || '').trim();
+      const targetProj = projects.find(
+        (p) => p.project_number.trim().toLowerCase() === cleanNumber.toLowerCase()
+      );
+      if (!targetProj) {
+        const msg = tr(language, `Projet ${cleanNumber} introuvable.`, `Project ${cleanNumber} not found.`);
+        return {
+          success: false,
+          message: msg,
+          error: msg,
+        };
+      }
+      if (!canUserManageProjectStatus(currentUser, targetProj, departments)) {
+        const msg = tr(
+          language,
+          'Seul un administrateur, le chef de service ou le responsable du projet peut terminer ce projet.',
+          'Only an administrator, department manager or project manager can close this project.'
+        );
+        return {
+          success: false,
+          message: msg,
+          error: msg,
+        };
+      }
+
+      const blockingOrders = getNonFinalOrdersForProject(cleanNumber, orders);
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+
+      if (!client && blockingOrders.length > 0) {
+        const msg = `Impossible de terminer le projet ${targetProj.project_number} : ${blockingOrders.length} commande(s) sont encore en cours (${blockingOrders
+          .map((o) => o.order_number)
+          .join(', ')}).`;
+        return {
+          success: false,
+          message: msg,
+          error: msg,
+          blockingOrders,
+        };
+      }
+
+      const rpcRes = await closeProjectViaRpc(client, targetProj.project_number, note, currentUser);
+      if (!rpcRes.success) {
+        return {
+          success: false,
+          message: rpcRes.message,
+          error: rpcRes.message,
+          blockingOrders: blockingOrders.length > 0 ? blockingOrders : undefined,
+        };
+      }
+
+      const nowIso = rpcRes.project?.closed_at || new Date().toISOString();
+      const closedById =
+        rpcRes.project?.closed_by ?? (currentUser ? String(currentUser.id) : null);
+      const closedByName =
+        rpcRes.project?.closed_by_name ?? (currentUser ? currentUser.name : null);
+      const cleanNote = note && note.trim() ? note.trim() : null;
+
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.id === targetProj.id
+            ? {
+                ...p,
+                status: 'CLOSED',
+                closed_at: nowIso,
+                closed_by: closedById,
+                closed_by_name: closedByName,
+                close_note: cleanNote,
+              }
+            : p
+        )
+      );
+      notifyRealtimeDataMutated('projects');
+      return {
+        success: true,
+        message: rpcRes.message,
+      };
+    },
+    [projects, currentUser, departments, orders, supabaseUrl, supabaseKey, language]
+  );
+
+  const reopenProject = useCallback(
+    async (
+      projectNumber: string,
+      note?: string | null
+    ): Promise<{ success: boolean; message: string; error?: string }> => {
+      const cleanNumber = String(projectNumber || '').trim();
+      const targetProj = projects.find(
+        (p) => p.project_number.trim().toLowerCase() === cleanNumber.toLowerCase()
+      );
+      if (!targetProj) {
+        const msg = tr(language, `Projet ${cleanNumber} introuvable.`, `Project ${cleanNumber} not found.`);
+        return {
+          success: false,
+          message: msg,
+          error: msg,
+        };
+      }
+      if (!canUserManageProjectStatus(currentUser, targetProj, departments)) {
+        const msg = tr(
+          language,
+          'Seul un administrateur, le chef de service ou le responsable du projet peut rouvrir ce projet.',
+          'Only an administrator, department manager or project manager can reopen this project.'
+        );
+        return {
+          success: false,
+          message: msg,
+          error: msg,
+        };
+      }
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const rpcRes = await reopenProjectViaRpc(client, targetProj.project_number, note, currentUser);
+      if (!rpcRes.success) {
+        return {
+          success: false,
+          message: rpcRes.message,
+          error: rpcRes.message,
+        };
+      }
+
+      const cleanNote = note && note.trim() ? note.trim() : null;
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.id === targetProj.id
+            ? {
+                ...p,
+                status: 'IN_PROGRESS',
+                closed_at: null,
+                closed_by: null,
+                closed_by_name: null,
+                close_note: cleanNote,
+              }
+            : p
+        )
+      );
+      notifyRealtimeDataMutated('projects');
+      return {
+        success: true,
+        message: rpcRes.message,
+      };
+    },
+    [projects, currentUser, departments, supabaseUrl, supabaseKey, language]
+  );
+
   // Roles CRUD
   const saveRole = useCallback(async (role: Partial<Role>) => {
     const name = role.name?.trim();
@@ -7684,9 +8197,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const client = getClientSupabase(supabaseUrl, supabaseKey);
     if (client) {
-      upsertRoleToSupabase(client, savedRole).catch((err) =>
-        console.warn('Erreur upsert role Supabase:', err)
-      );
+      // V60 : si une session Supabase Auth est active et que le serveur refuse l'écriture (droit « perm_manage_roles »
+      // manquant, script SQL non appliqué…), on annule la modification locale au lieu de la laisser revenir en arrière
+      // silencieusement à la prochaine synchronisation.
+      let hasSession = false;
+      try {
+        const { data: sess } = await client.auth.getSession();
+        hasSession = !!sess?.session?.user;
+      } catch {}
+      let ok = false;
+      try {
+        ok = await upsertRoleToSupabase(client, savedRole);
+      } catch (err) {
+        console.warn('Erreur upsert role Supabase:', err);
+      }
+      if (!ok && hasSession) {
+        const previous = hasId ? roles.find((r) => r.id === role.id) : undefined;
+        setRoles((prev) =>
+          hasId
+            ? prev.map((r) => (r.id === role.id && previous ? previous : r))
+            : prev.filter((r) => r.id !== nextRoleId)
+        );
+        return false;
+      }
     }
     notifyRealtimeDataMutated('roles');
     return true;
@@ -7755,6 +8288,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (client) {
         if (userData.id !== undefined && userData.id !== null) {
           // Update user
+          // V60 : n'envoyer allowed_depots que s'il a réellement changé. Sinon un utilisateur qui possède déjà « * »
+          // (accès à tous les dépôts) ne pouvait plus être modifié par un non-Super Admin (refus serveur sur « * »).
+          const existingForDepots = users.find((u) => String(u.id) === String(userData.id));
+          const normDepots = (v: unknown) =>
+            JSON.stringify((Array.isArray(v) ? v.map(String) : []).slice().sort());
+          const depotsUnchanged =
+            !!existingForDepots &&
+            normDepots(existingForDepots.allowed_depots) === normDepots(userData.allowed_depots);
           const res = await adminUpdateUser(client, {
             id: userData.id,
             name: userData.name,
@@ -7762,7 +8303,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             email: userData.email,
             department: userData.department,
             role_id: userData.role_id,
-            allowed_depots: userData.allowed_depots,
+            allowed_depots: depotsUnchanged ? undefined : userData.allowed_depots,
             is_preparer: userData.is_preparer,
             must_change_pin: userData.must_change_pin,
           });
@@ -7846,7 +8387,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setUsers((prev) => [...prev.filter((u) => String(u.id) !== String(savedUser.id)), savedUser]);
       return { success: true };
     },
-    [supabaseUrl, supabaseKey, currentUser]
+    [supabaseUrl, supabaseKey, currentUser, users]
   );
 
   const deleteUser = useCallback(
@@ -8104,6 +8645,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const contextValue = useMemo<AppContextType>(
     () => ({
       currentUser,
+      hasAuthSession,
       theme,
       toggleTheme,
       activeTab,
@@ -8129,6 +8671,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       depotHolders,
       saveDepotHolders,
       transfers,
+      transfersToReturn,
+      returnOverdueTransfer,
       refreshTransfers,
       transfersModalOpen,
       setTransfersModalOpen,
@@ -8218,6 +8762,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteProduct,
       addToCart,
       updateCartQty,
+      updateCartItemDepot,
       removeFromCart,
       clearCart,
       confirmBatchMovements,
@@ -8283,6 +8828,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteDepartment,
       saveProject,
       deleteProject,
+      closeProject,
+      reopenProject,
       saveRole,
       deleteRole,
       resetRolesToRecommended,
@@ -8326,6 +8873,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }),
     [
       currentUser,
+      hasAuthSession,
       pendingScannedConfig,
       autoLogoutMinutes,
       effectiveAutoLogoutMinutes,
@@ -8371,6 +8919,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       depotHolders,
       saveDepotHolders,
       transfers,
+      transfersToReturn,
+      returnOverdueTransfer,
       refreshTransfers,
       transfersModalOpen,
       setTransfersModalOpen,
@@ -8454,6 +9004,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteProduct,
       addToCart,
       updateCartQty,
+      updateCartItemDepot,
       removeFromCart,
       clearCart,
       confirmBatchMovements,
@@ -8519,6 +9070,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteDepartment,
       saveProject,
       deleteProject,
+      closeProject,
+      reopenProject,
       saveRole,
       deleteRole,
       resetRolesToRecommended,

@@ -428,7 +428,10 @@ export async function handleAdminUsersRequest(req: Request): Promise<Response> {
         }
       }
 
-      if (Array.isArray(updates?.allowed_depots) && updates.allowed_depots.includes('*') && !isSuperAdmin) {
+      // Ne pas refuser quand l'utilisateur modifié possède DÉJÀ l'accès universel (simple conservation de la valeur)
+      const targetAlreadyUniversal =
+        Array.isArray((targetUser as any).allowed_depots) && (targetUser as any).allowed_depots.includes('*');
+      if (Array.isArray(updates?.allowed_depots) && updates.allowed_depots.includes('*') && !isSuperAdmin && !targetAlreadyUniversal) {
         return jsonResponse(
           {
             success: false,
