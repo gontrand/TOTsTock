@@ -28,6 +28,7 @@ import { PlusMenuView } from './components/PlusMenuView';
 // Modals
 import { LoginModal } from './components/LoginModal';
 import { ProductDetailModal } from './components/ProductDetailModal';
+import { useDesktopInlinePanelActive } from './services/desktopInlinePanelRegistry';
 import { ProductFormModal } from './components/ProductFormModal';
 import { ScannerModal } from './components/ScannerModal';
 import { BatchCartModal } from './components/BatchCartModal';
@@ -60,6 +61,7 @@ import { StockTransferModal } from './components/StockTransferModal';
 import { TransfersValidationPanel } from './components/TransfersValidationPanel';
 
 const MainLayout: React.FC = () => {
+  const desktopInlinePanelActive = useDesktopInlinePanelActive();
   const layoutMode = useLayoutMode();
   useEffect(() => {
     setupGlobalHapticFeedback();
@@ -199,7 +201,7 @@ const MainLayout: React.FC = () => {
           </div>
         )}
         <DesktopWorkspace />
-        {activeProductId && <ProductDetailModal />}
+        {activeProductId && !desktopInlinePanelActive && <ProductDetailModal />}
         {batchCartModalOpen && <BatchCartModal />}
         {diagnosticModalOpen && <DiagnosticModal />}
         {qrConfigGenModalOpen && <QrConfigGenModal />}

@@ -24,6 +24,7 @@ import {
   toggleSelectAllVisible,
 } from '../../services/desktopInventoryLogic';
 import { DesktopProductDetailPanel } from '../components/DesktopProductDetailPanel';
+import { registerDesktopInlinePanel } from '../../services/desktopInlinePanelRegistry';
 import { DesktopProductFormDrawer } from '../components/DesktopProductFormDrawer';
 import { SearchableSelect } from '../../components/SearchableSelect';
 import { requestGuardedNavigation } from '../../services/unsavedChangesGuard';
@@ -99,6 +100,9 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   const canViewPrices = userHasPermission('perm_prod_view_price');
   const canPrintLabels = userHasPermission('perm_menu_print_labels');
   const canExportCsv = userHasPermission('perm_mov_export_csv') || userHasPermission('perm_prod_view');
+
+  // Le panneau latéral remplace la fiche modale tant que cette page est affichée
+  useEffect(() => registerDesktopInlinePanel(), []);
 
   // Filter state (same defaults as mobile InventoryView)
   const [filterPaneOpen, setFilterPaneOpen] = useState(true);
