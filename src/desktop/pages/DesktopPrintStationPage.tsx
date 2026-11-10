@@ -27,6 +27,7 @@ import {
   rpcCancelPrintJob,
   rpcClaimPrintJobs,
   rpcCompletePrintJob,
+  rpcDeletePrintStation,
   rpcListPrintStations,
   rpcListStationPrintJobs,
   rpcPurgePrintJobs,
@@ -73,6 +74,8 @@ export const DesktopPrintStationPage: React.FC = () => {
   const [stationRecord, setStationRecord] = useState<PrintStationRecord | null>(
     null
   );
+  const [allStations, setAllStations] = useState<PrintStationRecord[]>([]);
+  const [stationsOpen, setStationsOpen] = useState(false);
   const [jobs, setJobs] = useState<PrintJobRecord[]>([]);
   const [selectedJob, setSelectedJob] = useState<PrintJobRecord | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string>('');
@@ -125,6 +128,7 @@ export const DesktopPrintStationPage: React.FC = () => {
       const stationsRes = await rpcListPrintStations();
       const foundStation = stationsRes.stations.find((s) => s.id === reg.stationId) || null;
       setStationRecord(foundStation);
+      if (!stationsRes.error) setAllStations(stationsRes.stations);
 
       const listRes = await rpcListStationPrintJobs(reg.stationId, 30);
       if (!listRes.error) {
@@ -301,6 +305,8 @@ export const DesktopPrintStationPage: React.FC = () => {
               >
                 {paused
                   ? tr(language, 'En pause', 'Paused', 'Gepauzeerd')
+                  : stationRecord && !stationRecord.is_online
+                  ? tr(language, 'Poste hors ligne', 'Station offline', 'Station offline')
                   : tr(language, 'Poste en ligne', 'Station online', 'Station online')}
               </span>
             </div>
@@ -650,6 +656,88 @@ export const DesktopPrintStationPage: React.FC = () => {
             )}
           </div>
 
+          {/* Postes d'impression : état réel et suppression */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setStationsOpen((v) => !v)}
+              className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+              aria-expanded={stationsOpen}
+            >
+              <span>
+                {tr(language, "Postes d'impression", 'Print stations', 'Afdrukstations')} ({allStations.length}) —{' '}
+                {allStations.filter((s) => s.is_online).length} {tr(language, 'en ligne', 'online', 'online')}
+              </span>
+              <span aria-hidden="true">{stationsOpen ? '▲' : '▼'}</span>
+            </button>
+            {stationsOpen && (
+              <div className="border-t border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                {allStations.length === 0 && (
+                  <div className="px-4 py-3 text-slate-500">
+                    {tr(language, 'Aucun poste enregistré.', 'No station registered.', 'Geen station geregistreerd.')}
+                  </div>
+                )}
+                {allStations.map((st) => {
+                  const isCurrent = st.id === (stationRecord?.id || stationId);
+                  return (
+                    <div key={st.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 dark:text-white truncate">
+                          <span className={st.is_online ? 'text-emerald-500' : 'text-slate-400'} aria-hidden="true">
+                            {st.is_online ? '● ' : '○ '}
+                          </span>
+                          {st.name}
+                          {isCurrent && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 text-[10px]">
+                              {tr(language, 'ce poste', 'this station', 'dit station')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {st.depot_name || tr(language, 'Tous dépôts', 'All depots', 'Alle depots')}
+                          {' • '}
+                          {st.is_online
+                            ? tr(language, 'en ligne', 'online', 'online')
+                            : tr(language, 'hors ligne', 'offline', 'offline')}
+                          {st.last_seen_at ? ` • ${new Date(st.last_seen_at).toLocaleString(locale)}` : ''}
+                          {' • '}
+                          {st.pending_count} {tr(language, 'en attente', 'pending', 'in wachtrij')}
+                        </div>
+                      </div>
+                      {!isCurrent && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const msg = tr(
+                              language,
+                              `Supprimer le poste « ${st.name} » et ses demandes d'impression ?`,
+                              `Delete station "${st.name}" and its print jobs?`,
+                              `Station "${st.name}" en de bijbehorende afdrukopdrachten verwijderen?`
+                            );
+                            if (!window.confirm(msg)) return;
+                            const res = await rpcDeletePrintStation(st.id);
+                            setStatusMessage(
+                              res.ok
+                                ? tr(language, 'Poste supprimé.', 'Station deleted.', 'Station verwijderd.')
+                                : res.error ||
+                                    tr(language, 'Suppression impossible.', 'Deletion failed.', 'Verwijderen mislukt.')
+                            );
+                            await refreshStationAndJobs();
+                          }}
+                          className="p-1.5 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer shrink-0"
+                          title={tr(language, 'Supprimer ce poste', 'Delete this station', 'Dit station verwijderen')}
+                          aria-label={tr(language, 'Supprimer ce poste', 'Delete this station', 'Dit station verwijderen')}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Queue & History Table */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex-1 flex flex-col min-h-[260px]">
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
@@ -749,6 +837,11 @@ export const DesktopPrintStationPage: React.FC = () => {
                             <span className="inline-flex items-center gap-1 text-rose-600 font-bold">
                               <XCircle className="w-3.5 h-3.5" />
                               {tr(language, 'Échec', 'Failed', 'Mislukt')}
+                              {job.error ? (
+                                <span className="font-normal text-[10px] text-rose-500 ml-1 max-w-[220px] truncate" title={job.error}>
+                                  {job.error}
+                                </span>
+                              ) : null}
                             </span>
                           ) : (
                             <span className="font-bold text-amber-600">

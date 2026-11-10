@@ -877,6 +877,67 @@ $$;
 REVOKE ALL ON FUNCTION public.purge_print_jobs() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.purge_print_jobs() TO authenticated, service_role;
 
+-- 5.7b delete_print_station(p_station uuid) : supprime un poste d'impression (et ses demandes, ON DELETE CASCADE)
+-- Autorisé : propriétaire du poste, administrateurs (rôles 0 et 1) ou permission universelle '*'.
+DROP FUNCTION IF EXISTS public.delete_print_station(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION public.delete_print_station(p_station UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user_id TEXT;
+  v_role_id INT;
+  v_is_blocked BOOLEAN;
+  v_perms TEXT[];
+  v_owner TEXT;
+  v_is_admin BOOLEAN := FALSE;
+  v_deleted INT := 0;
+BEGIN
+  IF current_setting('request.jwt.claim.role', true) = 'service_role' OR session_user = 'postgres' THEN
+    v_is_admin := TRUE;
+  ELSE
+    SELECT u.id::text, u.role_id, COALESCE(u.is_blocked, false)
+    INTO v_user_id, v_role_id, v_is_blocked
+    FROM public.core_users u
+    WHERE (u.auth_user_id = auth.uid() OR u.id::text = auth.uid()::text)
+    LIMIT 1;
+
+    IF v_user_id IS NULL OR v_is_blocked THEN
+      RAISE EXCEPTION 'Accès refusé : utilisateur non authentifié ou compte bloqué.'
+        USING ERRCODE = '42501';
+    END IF;
+
+    IF v_role_id IN (0, 1) THEN
+      v_is_admin := TRUE;
+    ELSE
+      SELECT r.permissions INTO v_perms FROM public.core_roles r WHERE r.id::text = v_role_id::text LIMIT 1;
+      IF v_perms IS NOT NULL AND '*' = ANY(v_perms) THEN
+        v_is_admin := TRUE;
+      END IF;
+    END IF;
+  END IF;
+
+  SELECT s.owner_user_id INTO v_owner FROM public.stk_print_stations s WHERE s.id = p_station;
+  IF v_owner IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  IF NOT v_is_admin AND v_owner IS DISTINCT FROM v_user_id THEN
+    RAISE EXCEPTION 'Permission refusée : seul le propriétaire du poste ou un administrateur peut le supprimer.'
+      USING ERRCODE = '42501';
+  END IF;
+
+  DELETE FROM public.stk_print_stations WHERE id = p_station;
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+  RETURN v_deleted > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.delete_print_station(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.delete_print_station(UUID) TO authenticated, service_role;
+
 -- 5.8 get_print_job_status(p_job uuid) (pour le suivi côté Scanner mobile)
 CREATE OR REPLACE FUNCTION public.get_print_job_status(p_job UUID)
 RETURNS TABLE (

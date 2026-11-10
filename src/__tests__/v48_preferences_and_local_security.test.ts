@@ -135,7 +135,7 @@ describe('Prompt v48 — LOT 1 : Préférences utilisateur en base (core_user_pr
 
   it('1.1 déclare userPreferences dans TABLES, le script 12 dans SQL_STEPS (après 11 et avant 07), et met à jour les versions', () => {
     expect(TABLES.userPreferences).toBe('core_user_preferences');
-    expect(APP_VERSION).toBe('5.16.1');
+    expect(APP_VERSION).toBe('5.16.2');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 

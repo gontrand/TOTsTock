@@ -19,6 +19,33 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.16.2',
+    schemaVersion: '2.10.0',
+    date: '2026-11-10',
+    title: {
+      fr: 'Postes d’impression : état réel, motif d’échec et suppression d’un poste',
+      en: 'Print stations: real status, failure reason and station deletion',
+      nl: 'Afdrukstations: echte status, foutreden en station verwijderen',
+    },
+    highlights: {
+      fr: [
+        'Nouveau panneau « Postes d’impression » : tous les postes avec leur état réel (en ligne / hors ligne), dernière activité et demandes en attente.',
+        'Bouton « Supprimer ce poste » (propriétaire ou administrateur) avec la fonction SQL delete_print_station (script 08).',
+        'Le motif de l’échec s’affiche sur les demandes en échec et le badge du poste reflète l’état réel du serveur.',
+      ],
+      en: [
+        'New "Print stations" panel: every station with its real status (online / offline), last activity and pending jobs.',
+        '"Delete this station" button (owner or administrator) backed by the delete_print_station SQL function (script 08).',
+        'The failure reason is shown on failed jobs and the station badge reflects the real server status.',
+      ],
+      nl: [
+        'Nieuw paneel "Afdrukstations": alle stations met echte status (online / offline), laatste activiteit en openstaande opdrachten.',
+        'Knop "Dit station verwijderen" (eigenaar of beheerder) met de SQL-functie delete_print_station (script 08).',
+        'De foutreden wordt getoond bij mislukte opdrachten en de statusbadge weerspiegelt de echte serverstatus.',
+      ],
+    },
+  },
+  {
     version: '5.16.1',
     schemaVersion: '2.10.0',
     date: '2026-11-10',

@@ -1,6 +1,6 @@
 -- TOT STOCK - SCRIPT 07 : COMPATIBILITÉ APPLICATION, SCHÉMA & DIAGNOSTIC (07_app_compat.sql)
 -- Description : Définit is_active_admin(), la table singleton public.core_app_compat (schema_version 2.10.0,
---   min_schema_version 1.0.0, latest_version 5.16.1), la fonction RPC public.diagnostic_installation()
+--   min_schema_version 1.0.0, latest_version 5.16.2), la fonction RPC public.diagnostic_installation()
 --   (17 contrôles, réservée aux rôles 0, 1 et 5) et le durcissement final des fonctions SECURITY DEFINER.
 -- Dépendances : Scripts 00, 09, 01 (01b), 02, 03, 04, 05, 06, 08, 11, 12, 13, 14, 15, 16, 17 et 18.
 -- Ordre d'exécution : Toujours exécuté EN DERNIER.
@@ -140,11 +140,11 @@ CREATE TRIGGER trg_app_compat_updated_at
 CREATE UNIQUE INDEX IF NOT EXISTS uq_core_app_compat_id ON public.core_app_compat (id);
 
 INSERT INTO public.core_app_compat (id, schema_version, min_schema_version, min_app_version, latest_version, message)
-VALUES (1, '2.10.0', '1.0.0', '1.0.0', '5.16.1', NULL)
+VALUES (1, '2.10.0', '1.0.0', '1.0.0', '5.16.2', NULL)
 ON CONFLICT (id) DO UPDATE
 SET schema_version = '2.10.0',
     min_schema_version = COALESCE(NULLIF(TRIM(public.core_app_compat.min_schema_version), ''), '1.0.0'),
-    latest_version = '5.16.1';
+    latest_version = '5.16.2';
 
 -- =========================================================================
 -- 3. DIAGNOSTIC D'INSTALLATION (Point 7, v37, v40, v41, v42)

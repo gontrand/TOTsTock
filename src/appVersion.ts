@@ -1,4 +1,4 @@
-export const APP_VERSION = '5.16.1';                // version de cette application
+export const APP_VERSION = '5.16.2';                // version de cette application
 export const EXPECTED_SCHEMA_VERSION = '2.10.0';    // version de schéma pour laquelle elle a été écrite (v58 : notifications lues par utilisateur, commandes annulées & préparateurs limités à leur dépôt)
 export const MIN_SUPPORTED_SCHEMA_VERSION = '1.0.0';// plus ancien schéma encore toléré (fenêtre N, N-1, N-2)
 

@@ -688,6 +688,19 @@ export async function rpcGetPrintJobStatus(
   };
 }
 
+export async function rpcDeletePrintStation(
+  stationId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const client = getClientSupabase();
+  if (!client) return { ok: false, error: 'Client Supabase non initialisé' };
+
+  const { data, error } = await client.rpc('delete_print_station', { p_station: stationId });
+  if (error) {
+    return { ok: false, error: error.message || 'Suppression du poste refusée' };
+  }
+  return { ok: Boolean(data) };
+}
+
 export async function rpcPurgePrintJobs(): Promise<{ deletedCount: number; error?: string }> {
   const client = getClientSupabase();
   if (!client) return { deletedCount: 0, error: 'Client Supabase non initialisé' };

@@ -839,11 +839,11 @@ describe('Prompt v56 — 5. Traçabilité complète des commandes (Détail, Jour
 
 describe('Prompt v56 — 6. Documentation & Versions 5.16.0 / Schéma 2.10.0 / versionCode 12', () => {
   it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0, versionCode=12, RECENT_CHANGELOG et n’inclut pas de fichier 19_order_trace.sql non demandé', () => {
-    expect(APP_VERSION).toBe('5.16.1');
+    expect(APP_VERSION).toBe('5.16.2');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
 
-    expect(RECENT_CHANGELOG[0].version).toBe('5.16.1');
+    expect(RECENT_CHANGELOG[0].version).toBe('5.16.2');
     expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.10.0');
 
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
@@ -851,11 +851,11 @@ describe('Prompt v56 — 6. Documentation & Versions 5.16.0 / Schéma 2.10.0 / v
     const versionCodeJson = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'android/version-code.json'), 'utf8'));
     const buildGradle = fs.readFileSync(path.join(ROOT_DIR, 'android/app/build.gradle'), 'utf8');
 
-    expect(pkg.version).toBe('5.16.1');
-    expect(desktopPkg.version).toBe('5.16.1');
+    expect(pkg.version).toBe('5.16.2');
+    expect(desktopPkg.version).toBe('5.16.2');
     expect(versionCodeJson.versionCode).toBeGreaterThanOrEqual(12);
     expect(buildGradle).toMatch(/versionCode (1[2-9]|[2-9]\d)/);
-    expect(buildGradle).toContain('versionName "5.16.1"');
+    expect(buildGradle).toContain('versionName "5.16.2"');
 
     // Le script 19_order_trace.sql est fourni séparément puis intégré au dépôt (étape 19 de SQL_STEPS)
     expect(fs.existsSync(path.join(ROOT_DIR, 'supabase-client/19_order_trace.sql'))).toBe(true);
