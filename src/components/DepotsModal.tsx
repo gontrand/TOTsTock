@@ -43,12 +43,6 @@ import { normalizeSupabaseUrl } from '../services/clientSupabase';
 import { copyToClipboard } from '../services/clipboard';
 import { DepotHoldersSection, DraftDepotHolder } from './DepotHoldersSection';
 import { safeGetSensitiveItem } from '../services/localCrypto';
-import { filterProjectsForSelection, isProjectClosed } from '../services/projectStatusService';
-import {
-  canUserViewDepot,
-  formatDepotNameForDisplay,
-  resolveDepotDepartmentName,
-} from '../utils/depotPermissions';
 
 export const DepotsModal: React.FC = () => {
   const {
@@ -161,15 +155,10 @@ export const DepotsModal: React.FC = () => {
     setPickupZones(pickupZones.filter((_, idx) => idx !== indexToRemove));
   };
 
-  const visibleDepots = useMemo(
-    () => depots.filter((d) => canUserViewDepot(d, currentUser, users, departments)),
-    [depots, currentUser, users, departments]
-  );
-
   const filteredDepots = useMemo(() => {
-    if (!searchQuery.trim()) return visibleDepots;
+    if (!searchQuery.trim()) return depots;
     const q = searchQuery.toLowerCase().trim();
-    return visibleDepots.filter(
+    return depots.filter(
       (d) =>
         d.name.toLowerCase().includes(q) ||
         (d.code && d.code.toLowerCase().includes(q)) ||
@@ -181,7 +170,7 @@ export const DepotsModal: React.FC = () => {
         (d.department_name && d.department_name.toLowerCase().includes(q)) ||
         (d.binome_names && d.binome_names.some((bn) => bn.toLowerCase().includes(q)))
     );
-  }, [visibleDepots, searchQuery]);
+  }, [depots, searchQuery]);
 
   const depotFormRef = useRef<HTMLFormElement | null>(null);
   const depotNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -277,50 +266,7 @@ export const DepotsModal: React.FC = () => {
     }
 
     const selectedUser = users.find((u) => String(u.id) === String(managerId));
-    const isMobileOrContainer = type === 'VEHICLE' || type === 'CONTAINER';
-    const driverDeptName = selectedUser?.department?.trim() || '';
-    const matchingDriverDept = driverDeptName
-      ? departments.find((dept) => dept.name.trim().toLowerCase() === driverDeptName.toLowerCase())
-      : undefined;
-
-    if (isMobileOrContainer) {
-      if (!managerId || !selectedUser) {
-        setErrorMessage(
-          tr(
-            language,
-            'Veuillez sélectionner un Chauffeur / Responsable titulaire pour ce véhicule ou conteneur.',
-            'Please select an assigned driver / manager for this vehicle or container.'
-          )
-        );
-        return false;
-      }
-      if (!driverDeptName) {
-        setErrorMessage(
-          tr(
-            language,
-            `Le collaborateur « ${selectedUser.name} » n'est rattaché à aucun département. Rattachez-le d'abord à un département avant de lui attribuer un véhicule ou conteneur.`,
-            `User "${selectedUser.name}" has no assigned department. Please assign them to a department first.`
-          )
-        );
-        return false;
-      }
-    }
-
-    const effectiveDepartmentId = isMobileOrContainer
-      ? matchingDriverDept
-        ? matchingDriverDept.id
-        : departmentId !== ''
-          ? departmentId
-          : null
-      : departmentId !== ''
-        ? departmentId
-        : null;
-    const selectedDept = departments.find((dept) => String(dept.id) === String(effectiveDepartmentId));
-    const effectiveDepartmentName = isMobileOrContainer
-      ? matchingDriverDept?.name || driverDeptName || null
-      : selectedDept
-        ? selectedDept.name
-        : null;
+    const selectedDept = departments.find((dept) => String(dept.id) === String(departmentId));
 
     const editingDepot =
       editingDepotId !== null ? depots.find((d) => String(d.id) === String(editingDepotId)) : null;
@@ -380,8 +326,8 @@ export const DepotsModal: React.FC = () => {
       manager_name: selectedUser ? selectedUser.name : null,
       binome_ids: type === 'VEHICLE' ? binomeIds : [],
       binome_names: type === 'VEHICLE' ? selectedBinomeUsers.map((u) => u.name) : [],
-      department_id: effectiveDepartmentId,
-      department_name: effectiveDepartmentName,
+      department_id: departmentId !== '' ? departmentId : null,
+      department_name: selectedDept ? selectedDept.name : null,
       is_active: isActive,
       pickup_zones: pickupZones,
     });
@@ -970,26 +916,12 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                             className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                           >
                             <option value="">{tr(language, '-- Sélectionner un chantier --', '-- Select project --')}</option>
-                            {filterProjectsForSelection(projects, 'CONTAINER').map((p) => (
+                            {projects.map((p) => (
                               <option key={p.id} value={p.project_number}>
                                 {p.project_number} - {p.project_name}
                               </option>
                             ))}
                           </SearchableSelect>
-                          {projectNumber &&
-                            (() => {
-                              const currentProj = projects.find(
-                                (p) =>
-                                  p.project_number.trim().toLowerCase() ===
-                                  projectNumber.trim().toLowerCase()
-                              );
-                              return isProjectClosed(currentProj) ? (
-                                <div className="mt-1.5 p-2 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
-                                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                                  <span>Projet terminé : pensez à rapatrier le matériel</span>
-                                </div>
-                              ) : null;
-                            })()}
                         </div>
                       </div>
                     )}
@@ -1042,30 +974,25 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                         onChange={(newMgrId) => {
                           setManagerId(newMgrId);
                           const newDriver = users.find((u) => String(u.id) === String(newMgrId));
-                          if (newDriver?.department) {
+                          if (newDriver?.department && newDriver.department !== 'Général') {
+                            // Preselect department if not explicitly set
                             const matchingDept = departments.find(
                               (d) => d.name.toLowerCase().trim() === newDriver.department!.toLowerCase().trim()
                             );
-                            if (type === 'VEHICLE' || type === 'CONTAINER') {
-                              setDepartmentId(matchingDept ? String(matchingDept.id) : '');
-                            } else if (matchingDept && !departmentId) {
+                            if (matchingDept && !departmentId) {
                               setDepartmentId(String(matchingDept.id));
                             }
-                            if (newDriver.department !== 'Général') {
-                              // Filter out existing binômes that are not in the new driver's department
-                              setBinomeIds((prev) =>
-                                prev.filter((bId) => {
-                                  const bUser = users.find((u) => String(u.id) === String(bId));
-                                  return (
-                                    bUser &&
-                                    String(bUser.id) !== String(newMgrId) &&
-                                    bUser.department?.toLowerCase().trim() === newDriver.department!.toLowerCase().trim()
-                                  );
-                                })
-                              );
-                            }
-                          } else if (type === 'VEHICLE' || type === 'CONTAINER') {
-                            setDepartmentId('');
+                            // Filter out existing binômes that are not in the new driver's department
+                            setBinomeIds((prev) =>
+                              prev.filter((bId) => {
+                                const bUser = users.find((u) => String(u.id) === String(bId));
+                                return (
+                                  bUser &&
+                                  String(bUser.id) !== String(newMgrId) &&
+                                  bUser.department?.toLowerCase().trim() === newDriver.department!.toLowerCase().trim()
+                                );
+                              })
+                            );
                           }
                         }}
                         className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold"
@@ -1084,44 +1011,18 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                         <Building2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                         <span>{tr(language, 'Département / Service de rattachement', 'Assigned Department')}</span>
                       </label>
-                      {type === 'VEHICLE' || type === 'CONTAINER' ? (
-                        (() => {
-                          const selectedDriver = users.find((u) => String(u.id) === String(managerId));
-                          const driverDept = selectedDriver?.department?.trim() || '';
-                          return (
-                            <div
-                              data-testid="depot-readonly-driver-department"
-                              className={`w-full px-3 py-2 text-xs rounded-xl border font-bold flex items-center justify-between gap-2 ${
-                                driverDept
-                                  ? 'bg-slate-100 dark:bg-slate-800/90 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
-                                  : 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300'
-                              }`}
-                            >
-                              <span>
-                                {driverDept
-                                  ? `${driverDept} (${tr(language, 'département du titulaire', "driver's department")})`
-                                  : selectedDriver
-                                    ? tr(language, '⚠️ Aucun département rattaché à ce collaborateur', '⚠️ No department assigned to this user')
-                                    : tr(language, 'Sélectionnez un titulaire pour renseigner son département', 'Select a driver to auto-fill department')}
-                              </span>
-                              <Lock className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                            </div>
-                          );
-                        })()
-                      ) : (
-                        <SearchableSelect
-                          value={departmentId}
-                          onChange={(val) => setDepartmentId(val)}
-                          className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold"
-                        >
-                          <option value="">{tr(language, '— Direction générale / Global —', '— General / Global —')}</option>
-                          {departments.map((d) => (
-                            <option key={d.id} value={d.id}>
-                              {d.name}
-                            </option>
-                          ))}
-                        </SearchableSelect>
-                      )}
+                      <SearchableSelect
+                        value={departmentId}
+                        onChange={(val) => setDepartmentId(val)}
+                        className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 font-bold"
+                      >
+                        <option value="">{tr(language, '— Direction générale / Global —', '— General / Global —')}</option>
+                        {departments.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </SearchableSelect>
                     </div>
                   </div>
 
@@ -1805,7 +1706,7 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-extrabold text-slate-900 dark:text-white text-xs">
-                          {formatDepotNameForDisplay(d, users)}
+                          {d.name}
                         </span>
                         {d.code && (
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
@@ -1847,45 +1748,22 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
                       </div>
 
                       {/* Responsable & Service / Département */}
-                      {(() => {
-                        const resolvedDept = resolveDepotDepartmentName(d, users);
-                        if (!d.manager_name && !resolvedDept) return null;
-                        return (
-                          <div className="flex items-center gap-3 text-[11px] text-slate-600 dark:text-slate-400 mt-1 flex-wrap">
-                            {d.manager_name && (
-                              <span className="flex items-center gap-1">
-                                <User className="w-3 h-3 text-amber-500 shrink-0" />
-                                <span>{d.type === 'VEHICLE' ? (tr(language, 'Chauffeur titulaire :', 'Assigned Driver:')) : (tr(language, 'Responsable :', 'Manager:'))} <strong className="text-slate-800 dark:text-slate-200">{d.manager_name}</strong></span>
-                              </span>
-                            )}
-                            {resolvedDept && (
-                              <span className="flex items-center gap-1">
-                                <Building2 className="w-3 h-3 text-blue-500 shrink-0" />
-                                <span>{tr(language, 'Département :', 'Dept:')} <strong className="text-slate-800 dark:text-slate-200">{resolvedDept}</strong></span>
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Alerte Projet terminé sur véhicule / conteneur rattaché */}
-                      {d.project_number &&
-                        (() => {
-                          const attachedProj = projects.find(
-                            (p) =>
-                              p.project_number.trim().toLowerCase() ===
-                              String(d.project_number).trim().toLowerCase()
-                          );
-                          if (!isProjectClosed(attachedProj)) return null;
-                          return (
-                            <div className="mt-1.5 px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-[11px] font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
-                              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                              <span>
-                                Projet terminé ({d.project_number}) : pensez à rapatrier le matériel
-                              </span>
-                            </div>
-                          );
-                        })()}
+                      {(d.manager_name || d.department_name) && (
+                        <div className="flex items-center gap-3 text-[11px] text-slate-600 dark:text-slate-400 mt-1 flex-wrap">
+                          {d.manager_name && (
+                            <span className="flex items-center gap-1">
+                              <User className="w-3 h-3 text-amber-500 shrink-0" />
+                              <span>{d.type === 'VEHICLE' ? (tr(language, 'Chauffeur titulaire :', 'Assigned Driver:')) : (tr(language, 'Responsable :', 'Manager:'))} <strong className="text-slate-800 dark:text-slate-200">{d.manager_name}</strong></span>
+                            </span>
+                          )}
+                          {d.department_name && (
+                            <span className="flex items-center gap-1">
+                              <Building2 className="w-3 h-3 text-blue-500 shrink-0" />
+                              <span>{tr(language, 'Département :', 'Dept:')} <strong className="text-slate-800 dark:text-slate-200">{d.department_name}</strong></span>
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Responsables stk_depot_holders & avertissement si aucun responsable de réception */}
                       {(() => {

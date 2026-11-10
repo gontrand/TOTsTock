@@ -1184,21 +1184,12 @@ export function buildDepartmentProjectsReport(
   const rows = projMovements.map((m) => {
     const isOut = (m.type || m.movement_type) === 'OUT';
     const qty = Number(m.quantity ?? m.quantity_changed ?? 0);
-    const matchedProj = m.site_number
-      ? projects.find(
-          (p) => p.project_number.trim().toLowerCase() === m.site_number!.trim().toLowerCase()
-        )
-      : undefined;
-    const isClosedProj = String(matchedProj?.status || '').toUpperCase() === 'CLOSED';
-    const projectLabel = m.site_number
-      ? `${m.site_number}${isClosedProj ? ' (Terminé)' : ''}`
-      : '—';
     return {
       date: formatDate(m.created_at),
       type: isOut
         ? tr(language, 'SORTIE', 'OUT', 'UIT')
         : tr(language, 'ENTRÉE', 'IN', 'IN'),
-      project: projectLabel,
+      project: m.site_number || '—',
       reference: m.product_ref || '',
       quantity: isOut ? -qty : qty,
     };

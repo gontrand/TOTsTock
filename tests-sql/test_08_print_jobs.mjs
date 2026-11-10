@@ -1664,7 +1664,7 @@ export async function runPrintJobsSqlTests() {
   );
   if (diagBeforeDropAuditPol.rows[0]?.status !== 'OK') {
     throw new Error(
-      `tables_without_rls_policies devait être OK, reçu : ${JSON.stringify(diagBeforeDropAuditPol.rows[0])}`
+      `tables_without_rls_policies devait être OK. TABLES: ${diagBeforeDropAuditPol.rows[0]?.details}`
     );
   }
 
