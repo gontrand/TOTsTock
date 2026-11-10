@@ -229,6 +229,7 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     const idx19 = stepNumbers.indexOf('19');
     const idx20 = stepNumbers.indexOf('20');
     const idx21 = stepNumbers.indexOf('21');
+    const idx22 = stepNumbers.indexOf('22');
     const idx07 = stepNumbers.indexOf('07');
     expect(idx17).toBeGreaterThan(0);
     expect(idx18).toBe(idx17 + 1);
@@ -236,7 +237,9 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     expect(idx19).toBe(idx18 + 1);
     expect(idx20).toBe(idx19 + 1);
     expect(idx21).toBe(idx20 + 1);
-    expect(idx07).toBe(idx21 + 1);
+    // v61 : 22 (département Logistique) s'intercale avant 07
+    expect(idx22).toBe(idx21 + 1);
+    expect(idx07).toBe(idx22 + 1);
 
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE TABLE IF NOT EXISTS public.core_password_resets');
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE OR REPLACE FUNCTION public.purge_expired_password_resets()');
