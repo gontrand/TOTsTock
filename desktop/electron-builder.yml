@@ -1,6 +1,6 @@
 appId: com.tot.stock.desktop
 productName: TOT Stock
-copyright: Copyright © 2026 TOT Inventory & Scan Edition
+copyright: Copyright © 2026 Gontrand NYUNG — TOT Stock (version bêta, tous droits réservés)
 artifactName: "TOT-Stock-${version}-${os}-${arch}.${ext}"
 
 directories:
@@ -18,6 +18,8 @@ extraResources:
     to: app-dist
     filter:
       - "**/*"
+      - "!**/*.sql"
+      - "!**/*.map"
 
 asar: true
 
@@ -30,6 +32,8 @@ win:
         - x64
 
 nsis:
+  # Conditions d'utilisation bêta affichées (et à accepter) pendant l'installation
+  license: build/licence-beta.txt
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true

@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { shouldRegisterServiceWorker } from './services/desktopBridge';
+import { LegalGate } from './components/LegalTerms';
 
 // Gestion du cache et du Service Worker PWA (désactivé sur l'application de bureau Electron)
 if (typeof window !== 'undefined') {
@@ -38,5 +39,9 @@ if (typeof window !== 'undefined') {
   } catch {}
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <LegalGate>
+    <App />
+  </LegalGate>
+);
 

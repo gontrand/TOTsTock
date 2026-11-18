@@ -1,5 +1,8 @@
 # TOT Stock — Application de Gestion de Stock & Dépôts (v23 / 5.5.0)
 
+> **VERSION BÊTA — Copyright © 2026 Gontrand NYUNG. Tous droits réservés.** Logiciel propriétaire : toute copie, distribution ou ingénierie inverse est interdite sans accord écrit. Utilisation réservée aux testeurs ayant signé le « Contrat de mise en test – Partenariat TOT Stock ». Voir `LICENSE.md`.
+
+
 Application multi-plateforme (Web / PWA / Android Capacitor) reposant sur **React 19**, **Vite**, **Tailwind CSS**, **Supabase** (PostgreSQL + RLS + Edge Functions) et **Capacitor Android**.
 
 ---

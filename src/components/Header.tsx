@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { BetaBadge } from './LegalTerms';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { PLAN_LABELS, normalizeToCanonicalPlan } from '../types';
@@ -206,6 +207,7 @@ export const Header: React.FC = () => {
           )}
           <div className="text-lg sm:text-xl font-black tracking-wider text-slate-900 dark:text-white flex items-center shrink-0 relative z-20">
             TOT<span className="text-orange-500 font-extrabold text-xl sm:text-2xl leading-none">.</span>
+            <BetaBadge className="ml-1.5" />
           </div>
         </div>
 

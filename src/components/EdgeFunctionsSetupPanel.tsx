@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { IS_TESTER_BUILD } from '../config/distribution';
 import {
   Check,
   CheckCircle2,
@@ -277,6 +278,8 @@ export const EdgeFunctionsSetupPanel: React.FC<EdgeFunctionsSetupPanelProps> = (
       </span>
     );
   };
+
+  if (IS_TESTER_BUILD) return null;
 
   return (
     <div className="space-y-4">

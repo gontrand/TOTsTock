@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { IS_TESTER_BUILD } from '../config/distribution';
 import { tr } from '../i18n/dutchTranslator';
 import { useApp } from '../context/AppContext';
 import { generateSecureRandomHex } from '../utils/crypto';
@@ -2051,7 +2052,7 @@ EXECUTE FUNCTION public.trg_fn_auto_license_details();`;
             </span>
           </button>
 
-          {canDb && (
+          {canDb && !IS_TESTER_BUILD && (
             <button
               type="button"
               onClick={() => setActiveTab('edge_functions')}
@@ -3826,6 +3827,8 @@ ON CONFLICT (id) DO UPDATE SET
                   <span>{t('sql_legacy_db_auto_fix_notice')}</span>
                 </div>
 
+                {!IS_TESTER_BUILD && (
+                <>
                 {/* SCRIPT 01 : AUTH LINK */}
                 <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-950 via-slate-900 to-indigo-950 text-white border border-purple-500/40 space-y-2.5 shadow-lg">
                   <div className="flex items-center justify-between">
@@ -4430,6 +4433,8 @@ ON CONFLICT (id) DO UPDATE SET
                     </button>
                   </div>
                 </div>
+                </>
+                )}
 
                 {supabaseConfig?.url && (
                   <button
@@ -4674,7 +4679,7 @@ ON CONFLICT (id) DO UPDATE SET
           )}
 
           {/* ======================= TAB 4: FONCTIONS EDGE ======================= */}
-          {activeTab === 'edge_functions' && canDb && (
+          {activeTab === 'edge_functions' && canDb && !IS_TESTER_BUILD && (
             <div className="space-y-3 animate-fadeIn">
               <EdgeFunctionsSetupPanel
                 language={language}

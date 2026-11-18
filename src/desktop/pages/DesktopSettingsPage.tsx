@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { IS_TESTER_BUILD } from '../../config/distribution';
 import { canUserManageMailSettings } from '../../services/mailingService';
 import { copyToClipboard as copyTextToClipboard } from '../../services/clipboard';
 import { shouldWarnPreparerWithoutDepot } from '../../services/notificationService';
@@ -4718,6 +4719,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   <Database className="w-4 h-4" />
                   <span>2. Connexion Base SQL Supabase (BYOD)</span>
                 </button>
+                {!IS_TESTER_BUILD && (
                 <button
                   type="button"
                   onClick={() => setLicenseSubTab('sql_diagnostic')}
@@ -4730,6 +4732,8 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   <Terminal className="w-4 h-4" />
                   <span>3. Scripts SQL (01 à 21) & Diagnostic</span>
                 </button>
+                )}
+                {!IS_TESTER_BUILD && (
                 <button
                   type="button"
                   onClick={() => setLicenseSubTab('edge_functions')}
@@ -4742,6 +4746,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                   <Server className="w-4 h-4" />
                   <span>4. Fonctions Edge</span>
                 </button>
+                )}
               </div>
 
               {/* SOUS-ONGLET 1 : LICENCE & ABONNEMENT */}
@@ -5807,7 +5812,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
               )}
 
               {/* SOUS-ONGLET 3 : SCRIPTS SQL (01 À 08) & DIAGNOSTIC */}
-              {licenseSubTab === 'sql_diagnostic' && (
+              {licenseSubTab === 'sql_diagnostic' && !IS_TESTER_BUILD && (
                 <div className="space-y-5">
                   {/* Bloc Diagnostic SQL */}
                   <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
@@ -6035,7 +6040,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
               )}
 
               {/* SOUS-ONGLET 4 : FONCTIONS EDGE */}
-              {licenseSubTab === 'edge_functions' && (
+              {licenseSubTab === 'edge_functions' && !IS_TESTER_BUILD && (
                 <EdgeFunctionsSetupPanel
                   language={language}
                   supabaseUrl={dbUrlInput || supabaseUrl}

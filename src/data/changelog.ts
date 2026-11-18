@@ -19,6 +19,84 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.18.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-18',
+    title: {
+      fr: 'Build testeurs : JavaScript obfusqué (protection renforcée, notamment pour l’APK)',
+      en: 'Tester build: obfuscated JavaScript (stronger protection, especially for the APK)',
+      nl: 'Testersbuild: geobfusceerde JavaScript (sterkere bescherming, vooral voor de APK)',
+    },
+    highlights: {
+      fr: [
+        'Le build « testeurs » (VITE_DISTRIBUTION=tester) obfusque désormais tout le JavaScript livré (noms de variables/fonctions et chaînes de caractères rendus illisibles), en plus du retrait des scripts SQL déjà en place.',
+        'S’applique automatiquement aux trois cibles construites depuis dist/ : PWA, application de bureau et APK Android — l’APK étant un simple fichier .zip, c’était la cible la plus facile à ouvrir pour un curieux.',
+        'Vérification automatique (npm run check:tester-dist) : échoue si l’obfuscation n’a pas tourné ou si javascript-obfuscator n’est pas installé, pour ne jamais livrer un build testeurs non protégé par erreur.',
+      ],
+      en: [
+        'The “tester” build (VITE_DISTRIBUTION=tester) now obfuscates all shipped JavaScript (variable/function names and strings made unreadable), on top of the existing SQL script removal.',
+        'Applies automatically to all three targets built from dist/: PWA, desktop app and Android APK — the APK being a plain .zip file, it was the easiest target for a curious person to open.',
+        'Automatic check (npm run check:tester-dist): fails if obfuscation did not run or javascript-obfuscator is not installed, so an unprotected tester build is never shipped by mistake.',
+      ],
+      nl: [
+        'De “testers”-build (VITE_DISTRIBUTION=tester) obfusceert nu alle geleverde JavaScript (variabele-/functienamen en tekststrings onleesbaar gemaakt), naast het al bestaande verwijderen van SQL-scripts.',
+        'Geldt automatisch voor de drie doelen die uit dist/ worden gebouwd: PWA, desktoptoepassing en Android-APK — de APK is een eenvoudig .zip-bestand en was het makkelijkste doel om te openen voor een nieuwsgierige.',
+        'Automatische controle (npm run check:tester-dist): mislukt als de obfuscatie niet is uitgevoerd of javascript-obfuscator niet is geïnstalleerd, zodat er nooit per ongeluk een onbeschermde testersbuild wordt uitgeleverd.',
+      ],
+    },
+  },
+  {
+    version: '5.17.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-18',
+    title: {
+      fr: 'Version bêta : conditions d’utilisation, protection de l’œuvre et build testeurs sans scripts SQL',
+      en: 'Beta version: terms of use, work protection and tester build without SQL scripts',
+      nl: 'Bètaversie: gebruiksvoorwaarden, bescherming van het werk en testersbuild zonder SQL-scripts',
+    },
+    highlights: {
+      fr: [
+        'Nouvel écran d’acceptation des conditions d’utilisation au premier lancement (propriété intellectuelle, interdiction de distribution, limitation de responsabilité, mention du « Contrat de mise en test – Partenariat TOT Stock »), aussi affiché dans l’installateur Windows et relisible depuis « À propos ».',
+        'Pastille « BETA » dans l’en-tête, le menu bureau, l’écran de connexion et « À propos » ; mention © Gontrand NYUNG.',
+        'Build « testeurs » (variable VITE_DISTRIBUTION=tester, commande npm run build:tester) : scripts SQL, fonctions Edge et schéma retirés de l’application, de l’installateur et de l’APK ; panneaux « Scripts SQL » et « Fonctions Edge » masqués.',
+      ],
+      en: [
+        'New terms-of-use acceptance screen at first launch (intellectual property, no distribution, limitation of liability, reference to the “Contrat de mise en test – Partenariat TOT Stock”), also shown in the Windows installer and readable from “About”.',
+        '“BETA” badge in the header, desktop menu, login screen and “About”; © Gontrand NYUNG notice.',
+        '“Tester” build (VITE_DISTRIBUTION=tester, npm run build:tester): SQL scripts, Edge functions and schema removed from the app, installer and APK; “SQL scripts” and “Edge functions” panels hidden.',
+      ],
+      nl: [
+        'Nieuw scherm voor het aanvaarden van de gebruiksvoorwaarden bij de eerste start (intellectuele eigendom, verbod op verspreiding, beperking van aansprakelijkheid, verwijzing naar het “Contrat de mise en test – Partenariat TOT Stock”), ook getoond in het Windows-installatieprogramma en te herlezen onder “Over”.',
+        '“BETA”-label in de koptekst, het desktopmenu, het inlogscherm en “Over”; vermelding © Gontrand NYUNG.',
+        'Testersbuild (VITE_DISTRIBUTION=tester, npm run build:tester): SQL-scripts, Edge-functies en schema verwijderd uit de app, het installatieprogramma en de APK; panelen “SQL-scripts” en “Edge-functies” verborgen.',
+      ],
+    },
+  },
+  {
+    version: '5.16.3',
+    schemaVersion: '2.10.0',
+    date: '2026-11-10',
+    title: {
+      fr: 'Manuels mis à jour : sorties de stock, commandes, rôles, poste d’impression et application bureau',
+      en: 'Updated manuals: stock exits, orders, roles, print station and desktop app',
+      nl: 'Bijgewerkte handleidingen: voorraaduitgang, bestellingen, rollen, afdrukstation en desktop-app',
+    },
+    highlights: {
+      fr: [
+        'Manuel intégré : nouveaux chapitres sur le magasin de sortie, la règle Logistique, la validation des commandes par seuil et par permission, la duplication de rôle, le poste d’impression et le cadre de fenêtre bureau.',
+        'Guide d’exploitation et fiche du poste d’impression mis à jour (scripts 21 et 22, suppression d’un poste, état des postes).',
+      ],
+      en: [
+        'Built-in manual: new chapters on the exit depot, the Logistics rule, order approval by threshold and permission, role duplication, the print station and the desktop window frame.',
+        'Operations guide and print station sheet updated (scripts 21 and 22, station deletion, station status).',
+      ],
+      nl: [
+        'Ingebouwde handleiding: nieuwe hoofdstukken over het uitgangsdepot, de Logistiek-regel, bestelgoedkeuring op drempel en recht, rol dupliceren, het afdrukstation en het desktopvenster.',
+        'Beheerhandleiding en fiche van het afdrukstation bijgewerkt (scripts 21 en 22, station verwijderen, stationstatus).',
+      ],
+    },
+  },
+  {
     version: '5.16.2',
     schemaVersion: '2.10.0',
     date: '2026-11-10',

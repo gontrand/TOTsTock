@@ -82,7 +82,14 @@ jobs:
         run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Compiler l'application web et synchroniser Android
+        env:
+          # Par défaut : build « testeurs » (sans scripts SQL ni fonctions Edge). Variable de dépôt TOT_DISTRIBUTION=stable pour un build complet.
+          VITE_DISTRIBUTION: ${{ vars.TOT_DISTRIBUTION || 'tester' }}
         run: npm run build:android
+
+      - name: Vérification de la protection (build testeurs)
+        if: ${{ (vars.TOT_DISTRIBUTION || 'tester') == 'tester' }}
+        run: node scripts/check-tester-dist.mjs dist
 
       - name: Installer les composants Android SDK
         run: |

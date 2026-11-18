@@ -6,6 +6,9 @@ import {
   compareSemver,
 } from '../appVersion';
 import { RECENT_CHANGELOG } from '../data/changelog';
+import { BetaBadge, LegalTermsDialog } from './LegalTerms';
+import { BETA_CONTRACT_NAME, COPYRIGHT_HOLDER, COPYRIGHT_YEAR, IS_TESTER_BUILD } from '../config/distribution';
+import { readLegalAcceptance } from '../services/legalAcceptance';
 import { useApp } from '../context/AppContext';
 import { tr } from '../i18n/dutchTranslator';
 import {
@@ -283,6 +286,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
     fromEmail: settings?.smtp_from_email || settings?.smtp_from || '',
   });
   const [copiedDiag, setCopiedDiag] = useState(false);
+  const [legalOpen, setLegalOpen] = useState(false);
   const [detectedOs] = useState<DesktopTargetOs>(() => detectClientDesktopOs());
 
   const encryptionMode = getLocalCryptoMode();
@@ -402,6 +406,38 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
 
   return (
     <div className="space-y-4 text-xs text-slate-800 dark:text-slate-100 text-left">
+      {/* 0. VERSION BÊTA & CONDITIONS D'UTILISATION */}
+      <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-500/10 border border-amber-300/70 dark:border-amber-500/40 space-y-2 shadow-2xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black text-amber-900 dark:text-amber-200 flex items-center gap-2">
+            <span>{tr(language, 'Version bêta', 'Beta version', 'Bètaversie')}</span>
+            <BetaBadge />
+          </h3>
+          <button
+            type="button"
+            onClick={() => setLegalOpen(true)}
+            className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] cursor-pointer"
+          >
+            {tr(language, 'Lire les conditions d’utilisation', 'Read the terms of use', 'Gebruiksvoorwaarden lezen')}
+          </button>
+        </div>
+        <p className="text-[11px] leading-relaxed text-amber-900/90 dark:text-amber-100/90">
+          {tr(
+            language,
+            `Réservée aux testeurs du « ${BETA_CONTRACT_NAME} ». Copie, distribution et ingénierie inverse interdites sans accord écrit. © ${COPYRIGHT_YEAR} ${COPYRIGHT_HOLDER}.`,
+            `Reserved for testers of the “${BETA_CONTRACT_NAME}”. Copying, distribution and reverse engineering are prohibited without written consent. © ${COPYRIGHT_YEAR} ${COPYRIGHT_HOLDER}.`,
+            `Voorbehouden aan testers van de “${BETA_CONTRACT_NAME}”. Kopiëren, verspreiden en reverse engineering zijn verboden zonder schriftelijke toestemming. © ${COPYRIGHT_YEAR} ${COPYRIGHT_HOLDER}.`
+          )}
+        </p>
+        {readLegalAcceptance() && (
+          <p className="text-[10px] font-semibold text-amber-800/80 dark:text-amber-200/70">
+            {tr(language, 'Conditions acceptées le', 'Terms accepted on', 'Voorwaarden aanvaard op')}{' '}
+            {new Date(readLegalAcceptance()!.acceptedAt).toLocaleDateString()}
+          </p>
+        )}
+      </div>
+      {legalOpen && <LegalTermsDialog language={language} onClose={() => setLegalOpen(false)} />}
+
       {/* 1. APPLICATION & SCHÉMA SQL */}
       <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -553,6 +589,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
                   'Voer de SQL-scripts uit (tot script 20 en daarna 07) om de database bij te werken.'
                 )}
               </span>
+              {!IS_TESTER_BUILD && (
               <button
                 type="button"
                 onClick={handleNavigateToSqlScripts}
@@ -568,6 +605,7 @@ export const AboutAppPanel: React.FC<AboutAppPanelProps> = ({
                   )}
                 </span>
               </button>
+              )}
             </div>
           )}
         </div>

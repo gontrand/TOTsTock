@@ -70,7 +70,13 @@ jobs:
       - name: Compilation de l'interface web (dist/)
         env:
           VITE_ALLOWED_SUPABASE_HOSTS: ${{ vars.VITE_ALLOWED_SUPABASE_HOSTS }}
+          # Par défaut : build « testeurs » (sans scripts SQL ni fonctions Edge). Variable de dépôt TOT_DISTRIBUTION=stable pour un build complet.
+          VITE_DISTRIBUTION: ${{ vars.TOT_DISTRIBUTION || 'tester' }}
         run: npm run build
+
+      - name: Vérification de la protection (build testeurs)
+        if: ${{ (vars.TOT_DISTRIBUTION || 'tester') == 'tester' }}
+        run: node scripts/check-tester-dist.mjs dist
 
       - name: Installation des dépendances bureau (desktop/)
         working-directory: desktop

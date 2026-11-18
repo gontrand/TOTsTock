@@ -1,9 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { tr } from '../i18n/dutchTranslator';
 import { KeyRound, Building2 } from 'lucide-react';
+import { APP_VERSION } from '../appVersion';
+import { BetaBadge, LegalTermsDialog } from './LegalTerms';
+import { BETA_CONTRACT_NAME, COPYRIGHT_HOLDER, COPYRIGHT_YEAR } from '../config/distribution';
 
 export const LoginWelcomeScreen: React.FC = () => {
-  const { appLogoUrl, setLoginModalOpen, setCompanySetupModalOpen, t } = useApp();
+  const { appLogoUrl, setLoginModalOpen, setCompanySetupModalOpen, t, language } = useApp();
+  const [legalOpen, setLegalOpen] = useState(false);
 
   return (
     <div className="flex-1 flex flex-col justify-between items-center px-4 py-8 pb-[max(env(safe-area-inset-bottom,0px),24px)] h-full min-h-[calc(100dvh-56px)] animate-fadeIn">
@@ -18,6 +23,17 @@ export const LoginWelcomeScreen: React.FC = () => {
         </div>
         <div className="text-xs sm:text-sm font-extrabold text-slate-500 dark:text-slate-400 tracking-wider uppercase mb-6">
           {t('login_edition')}
+        </div>
+        <div className="mt-[-12px] mb-6 flex flex-col items-center gap-1.5 px-4">
+          <BetaBadge />
+          <p className="max-w-xs text-[11px] font-semibold leading-snug text-slate-500 dark:text-slate-400">
+            {tr(
+              language,
+              `Version bêta réservée aux testeurs du « ${BETA_CONTRACT_NAME} ».`,
+              `Beta version reserved for testers of the “${BETA_CONTRACT_NAME}”.`,
+              `Bètaversie voorbehouden aan testers van de “${BETA_CONTRACT_NAME}”.`
+            )}
+          </p>
         </div>
       </div>
 
@@ -44,8 +60,19 @@ export const LoginWelcomeScreen: React.FC = () => {
 
       {/* Footer Credits */}
       <div className="text-center text-[11px] text-slate-400 dark:text-slate-500 font-semibold pb-2">
-        TOT - Inventory &amp; Scan Edition • Version v5.3.0
+        TOT - Inventory &amp; Scan Edition • Version v{APP_VERSION} Beta
+        <div className="mt-1">
+          © {COPYRIGHT_YEAR} {COPYRIGHT_HOLDER} •{' '}
+          <button
+            type="button"
+            onClick={() => setLegalOpen(true)}
+            className="cursor-pointer underline underline-offset-2 hover:text-orange-500"
+          >
+            {tr(language, 'Conditions d’utilisation', 'Terms of use', 'Gebruiksvoorwaarden')}
+          </button>
+        </div>
       </div>
+      {legalOpen && <LegalTermsDialog language={language} onClose={() => setLegalOpen(false)} />}
     </div>
   );
 };

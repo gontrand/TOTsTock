@@ -3,10 +3,13 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { testerProtectPlugin } from './scripts/tester-protect.mjs';
 
 export default defineConfig(() => {
   return {
     plugins: [
+      // Build « testeurs » (VITE_DISTRIBUTION=tester) : retire les scripts SQL / fonctions Edge du livrable
+      testerProtectPlugin('dist'),
       react(),
       tailwindcss(),
       VitePWA({
@@ -86,6 +89,7 @@ export default defineConfig(() => {
     },
     build: {
       emptyOutDir: false,
+      sourcemap: false,
     },
     server: {
       port: 3000,

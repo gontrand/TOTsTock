@@ -1,13 +1,17 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "5.16.2",
+  "license": "UNLICENSED",
+  "author": "Gontrand NYUNG",
+  "version": "5.18.0",
   "type": "module",
   "scripts": {
     "predev": "npm run build:sql",
     "dev": "vite --port=3000 --host=0.0.0.0",
     "check:version": "node scripts/check-version.mjs",
     "build:sql": "node scripts/build-sql.mjs",
+    "build:tester": "node scripts/build-tester.mjs",
+    "check:tester-dist": "node scripts/check-tester-dist.mjs dist",
     "bundle:functions": "node scripts/bundle-functions.mjs",
     "install:tot": "node scripts/tot-install.mjs",
     "build": "npm run check:version && npm run build:sql && vite build",
@@ -23,6 +27,7 @@
     "open:android": "npx cap open android",
     "desktop:dev": "npm run build && npm --prefix desktop run dev",
     "desktop:build": "npm run build && npm --prefix desktop run dist",
+    "desktop:build:tester": "npm run build:tester && npm --prefix desktop run dist",
     "desktop:pack": "npm run build && npm --prefix desktop run pack"
   },
   "dependencies": {
@@ -60,7 +65,7 @@
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.27.0 || ^0.28.0",
-    "javascript-obfuscator": "^5.10.1",
+    "javascript-obfuscator": "^4.1.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

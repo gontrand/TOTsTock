@@ -1,0 +1,33 @@
+﻿TOT STOCK — CONDITIONS D'UTILISATION (VERSION BÊTA)
+Copyright © 2026 Gontrand NYUNG — Tous droits réservés.
+
+VERSION BÊTA réservée aux testeurs ayant signé le « Contrat de mise en test – Partenariat TOT Stock ». Ces conditions complètent ce contrat ; en cas de contradiction, le contrat signé prévaut.
+
+1. VERSION BÊTA
+TOT Stock est une version bêta en cours de développement : des fonctionnalités peuvent être modifiées, ajoutées ou retirées, et des anomalies peuvent subsister. Elle n'est pas destinée à une distribution de masse ni à une exploitation en production sans accord écrit.
+
+2. ACCÈS RÉSERVÉ
+Le droit d'utilisation est personnel, non exclusif, non transférable et limité à la durée du test.
+
+3. PROPRIÉTÉ INTELLECTUELLE
+L'application, son code source, ses interfaces, sa documentation, sa base de données (structure des tables, fonctions et scripts), ses marques et ses logos sont protégés par le droit d'auteur et restent la propriété exclusive de Gontrand NYUNG. Aucun droit de propriété n'est cédé. Les données saisies par le testeur lui appartiennent.
+
+4. INTERDICTIONS
+Sans accord écrit préalable de l'auteur, il est interdit de : copier, distribuer, redistribuer, publier, louer, prêter, vendre ou sous-licencier l'application ou ses fichiers d'installation ; la mettre à disposition de tiers ; la décompiler, la désassembler, en extraire le code ou en faire l'ingénierie inverse ; extraire, reproduire ou documenter la structure de la base de données (tables, fonctions, scripts, règles de sécurité) ; créer une œuvre dérivée ou une application similaire. Toute distribution non autorisée est interdite et peut donner lieu à des poursuites.
+
+5. ABSENCE DE GARANTIE
+L'application est fournie « en l'état », sans garantie d'aucune sorte.
+
+6. LIMITATION DE RESPONSABILITÉ
+Dans les limites permises par la loi, l'auteur n'est pas responsable de la perte, de l'altération, de la fuite ou de l'indisponibilité des données, ni d'aucun autre dommage direct ou indirect lié à l'utilisation de la version bêta. Cette limitation ne s'applique pas en cas de dol ou lorsque la loi l'interdit. Le testeur effectue ses propres sauvegardes et saisit de préférence des données de test.
+
+7. DONNÉES PERSONNELLES ET CONFIDENTIALITÉ
+Le traitement des données personnelles est encadré par le contrat de mise en test (RGPD). Les informations non publiques de l'application sont confidentielles.
+
+8. SUSPENSION ET FIN
+L'accès peut être suspendu ou retiré en cas de non-respect de ces conditions. À la fin du test, l'application doit être désinstallée.
+
+9. DROIT APPLICABLE
+Droit belge. La version française fait foi.
+
+En cliquant sur « J'accepte » / « Suivant », vous reconnaissez avoir lu et accepté ces conditions. Elles vous seront présentées à nouveau au premier lancement de l'application.

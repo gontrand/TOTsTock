@@ -73,3 +73,13 @@ Pour que le PC imprime **tout seul sans cliquer** dans la boîte de dialogue sys
 | La boîte de dialogue d'impression s'affiche encore en mode automatique | Chrome n'a pas été lancé avec `--kiosk-printing` ou une fenêtre Chrome normale était déjà ouverte sur le même profil. | Utilisez le raccourci incluant `--kiosk-printing --user-data-dir="C:\TOTStockPrintProfile"` pour isoler la session d'impression. |
 | L'étiquette sort sur la mauvaise imprimante en mode automatique | En mode `--kiosk-printing`, Chrome utilise toujours l'imprimante par défaut de Windows. | Définissez la bonne imprimante par défaut dans les paramètres Windows. |
 | Les étiquettes sont coupées ou décalées sur planche Avery A4 | Les marges ou l'échelle d'impression du navigateur ont été modifiées. | Dans les paramètres d'impression du navigateur, réglez **Marges : Aucune (ou Par défaut)** et **Échelle : 100 %**. |
+
+---
+
+## 6. Version bureau : poste toujours actif, liste des postes et suppression (v5.16.2)
+
+- **Le poste reste actif en arrière-plan** : dès qu'un poste est configuré, la page *Poste d'impression* reste active même si vous changez de page ; la fenêtre ne ralentit plus ses minuteurs quand elle est réduite. Cochez **« Imprimer automatiquement à réception »** pour imprimer sans clic.
+- **Panneau « Postes d'impression (N) — X en ligne »** : liste tous les postes (● en ligne / ○ hors ligne, dépôt, dernière activité, demandes en attente). Un poste est « en ligne » s'il a signalé sa présence dans les 2 dernières minutes.
+- **Supprimer un poste** : corbeille dans le panneau (propriétaire du poste ou administrateur, sauf le poste utilisé). Fonction SQL `public.delete_print_station(uuid)` du script `08_print_jobs.sql` ; les demandes liées sont supprimées avec le poste. Les doublons viennent souvent d'un changement de nom : un nom différent crée un nouveau poste.
+- **Demandes en échec** : le motif s'affiche à côté de « Échec » ; le bouton *Relancer* réessaie l'impression.
+

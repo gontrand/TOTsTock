@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { BetaBadge } from '../components/LegalTerms';
 import {
   DESKTOP_MENU_COMMANDS,
   DesktopMenuCommandId,
@@ -639,8 +640,9 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
                 </div>
               )}
               {!sidebarCollapsed && (
-                <span className="text-base font-black tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0">
+                <span className="flex items-center gap-1.5 text-base font-black tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0">
                   TOT Stock
+                  <BetaBadge />
                 </span>
               )}
             </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { IS_TESTER_BUILD } from '../config/distribution';
 import { tr } from '../i18n/dutchTranslator';
 import DOMPurify from 'dompurify';
 import { useApp } from '../context/AppContext';
@@ -1032,6 +1033,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
             <span className="truncate">📖 {tr(language, 'Manuel (PDF)', 'Manual (PDF)')}</span>
           </button>
 
+          {!IS_TESTER_BUILD && (
           <button
             onClick={() => setActiveTab('android')}
             className={`py-2 px-2 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -1043,6 +1045,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
             <Smartphone className="w-3.5 h-3.5 shrink-0" />
             <span className="truncate">🤖 {tr(language, 'Android Studio', 'Android Studio')}</span>
           </button>
+          )}
 
           <button
             onClick={() => setActiveTab('marketing')}
@@ -1056,6 +1059,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
             <span className="truncate">🌐 {tr(language, 'Site Web HTML', 'Web HTML')}</span>
           </button>
 
+          {!IS_TESTER_BUILD && (
           <button
             onClick={() => setActiveTab('supabase')}
             className={`py-2 px-2 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -1067,6 +1071,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
             <Terminal className="w-3.5 h-3.5 shrink-0" />
             <span className="truncate">💾 {tr(language, 'Supabase CLI & SQL', 'Supabase CLI & SQL')}</span>
           </button>
+          )}
         </div>
 
         {/* Scrollable Content Body */}
@@ -1850,6 +1855,124 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                   </ul>
                 </div>
 
+                {/* Chapitres v5.16.x : sorties, commandes, rôles, poste d'impression, bureau */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400">
+                    <span>Sorties de stock : choix du magasin, règle « Logistique » et audit manuel</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Choix du magasin de sortie :</strong> lors d'une sortie (scan, panier ou fiche), un sélecteur <em>« Magasin de sortie »</em> apparaît uniquement si l&apos;article est disponible dans plusieurs magasins accessibles à l&apos;utilisateur (par exemple sa camionnette <em>et</em> un dépôt fixe). S&apos;il n&apos;y a qu&apos;un seul choix possible, rien n&apos;est affiché et le magasin est choisi automatiquement.
+                    </li>
+                    <li>
+                      <strong>Titulaire d&apos;une camionnette ou d&apos;un conteneur :</strong> il peut prélever dans son véhicule ou son conteneur, et choisir un dépôt fixe quand l&apos;article y figure aussi. Les règles du véhicule (titulaire, binômes, responsables) ne changent pas.
+                    </li>
+                    <li>
+                      <strong>Sortie directe sur un dépôt fixe (case « Logistique ») :</strong> la sortie directe depuis un dépôt fixe est réservée aux administrateurs (rôles 0 et 1), aux magasiniers et responsables logistique / magasin (rôles 2, 6 et 7), aux préparateurs et au personnel d&apos;un département coché <em>« 🚚 Logistique »</em> (Paramètres → Départements). Les autres utilisateurs passent par une <strong>commande</strong>. Le message <em>« Sortie directe interdite sur le dépôt fixe… »</em> l&apos;indique.
+                    </li>
+                    <li>
+                      <strong>Audit d&apos;inventaire :</strong> après un scan, la quantité comptée peut être saisie à la main dans le champ prévu avant de valider la ligne.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400">
+                    <span>Commandes : magasin de commande et validation hiérarchique</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Magasin de la commande :</strong> à l&apos;ajout d&apos;un article dans un panier de commande, la liste <em>« Magasin de la commande »</em> apparaît dès qu&apos;il y a plus d&apos;un magasin possible. Le premier article choisi fixe le magasin du panier.
+                    </li>
+                    <li>
+                      <strong>Validation selon un seuil :</strong> dans Paramètres → Départements, cochez <em>« Validation hiérarchique dès (€) »</em> et indiquez le seuil. Une commande dont le total atteint ou dépasse ce seuil passe en <strong>« En attente de validation »</strong>. Le département retenu est celui du chantier, sinon celui du compte du demandeur.
+                    </li>
+                    <li>
+                      <strong>Qui valide :</strong> aucun numéro de rôle n&apos;est écrit en dur. Peuvent valider le Super Administrateur, les titulaires de la permission <code>perm_order_approve</code> (« Valider ou Refuser une Commande ») ou <code>perm_orders_manage</code>, ainsi que le responsable, l&apos;adjoint du département ou du chantier. Un demandeur ne peut jamais valider sa propre commande s&apos;il n&apos;est pas validateur. Ses commandes passent alors par la validation.
+                    </li>
+                    <li>
+                      <strong>Contrôle côté serveur :</strong> le serveur applique lui-même le seuil à la création de la commande (script <code>22_departement_logistique.sql</code>). Une commande non conforme ne peut donc pas être envoyée directement comme « En attente ». Le montant total envoyé par l&apos;application n&apos;est pas recalculé.
+                    </li>
+                    <li>
+                      <strong>Si une commande ne passe pas en validation :</strong> vérifiez le département du demandeur (ou du chantier), la case et le seuil du département, le total de la commande (prix des articles) et les permissions du rôle du demandeur.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400">
+                    <span>Rôles : créer, modifier et dupliquer</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Créer un rôle :</strong> Paramètres → Utilisateurs &amp; Rôles → Rôles. Les permissions décident de tout : les numéros de rôle servent seulement d&apos;identifiant.
+                    </li>
+                    <li>
+                      <strong>Dupliquer un rôle :</strong> le bouton <em>« Dupliquer ce rôle »</em> (icône de copie, à côté de « Modifier ») préremplit le formulaire avec le nom « … (copie) » et les mêmes permissions. Ajustez puis enregistrez : un <strong>nouveau</strong> rôle est créé. Le rôle Super Administrateur ne peut pas être dupliqué.
+                    </li>
+                    <li>
+                      <strong>Bon à savoir :</strong> si un rôle porte un numéro réservé par défaut (par exemple 8, « Responsable de Département »), seules ses permissions comptent désormais. Cochez <em>« Valider ou Refuser une Commande »</em> pour les rôles qui doivent valider.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400">
+                    <span>Poste d&apos;impression : fonctionnement, état des postes et suppression</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Circuit :</strong> le mobile envoie la demande au serveur (Supabase) ; le poste fixe la récupère, imprime, puis signale « terminé » ou « échec ». Aucune étiquette n&apos;est stockée sur le téléphone.
+                    </li>
+                    <li>
+                      <strong>Poste toujours actif :</strong> dès qu&apos;un poste est configuré, il reste actif en arrière-plan sur le bureau même si vous changez de page. Le mode <em>« Imprimer automatiquement à réception »</em> doit être coché sur le poste pour que les étiquettes sortent sans clic.
+                    </li>
+                    <li>
+                      <strong>Voir les postes en ligne :</strong> sur le bureau, le panneau repliable <em>« Postes d&apos;impression (N) — X en ligne »</em> liste tous les postes (● en ligne / ○ hors ligne, dépôt, dernière activité, demandes en attente). Sur mobile, la liste des postes du mode scanner de préparation affiche aussi ● / ○.
+                    </li>
+                    <li>
+                      <strong>Motif d&apos;échec :</strong> sur une demande en échec, le motif s&apos;affiche à côté de « Échec » ; le bouton « Relancer » permet de réessayer.
+                    </li>
+                    <li>
+                      <strong>Supprimer un poste :</strong> la corbeille du panneau supprime un poste et ses demandes (réservé au propriétaire du poste et aux administrateurs ; le poste utilisé ne peut pas être supprimé). Les doublons viennent souvent d&apos;un changement de nom du poste.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400">
+                    <span>Application bureau : fenêtre, menu et inventaire</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li>
+                      <strong>Cadre de fenêtre moderne :</strong> la barre de titre est intégrée à l&apos;en-tête de l&apos;application (Windows et Linux). Les boutons réduire / agrandir / fermer prennent la couleur du thème clair ou sombre. Glissez la zone vide de l&apos;en-tête pour déplacer la fenêtre.
+                    </li>
+                    <li>
+                      <strong>Menu :</strong> le menu natif est accessible par le bouton <strong>☰</strong> à gauche de l&apos;en-tête, ou avec la touche <kbd>Alt</kbd>.
+                    </li>
+                    <li>
+                      <strong>Inventaire :</strong> un clic sur une ligne ouvre la fiche dans le <em>panneau de droite</em> (sans fenêtre superposée). Le panneau reste ouvert tant que vous restez sur la page ; il se ferme avec <kbd>Échap</kbd> ou la croix.
+                    </li>
+                    <li>
+                      <strong>Facturation :</strong> la TVA belge (21 %), la référence de devis stable et les coordonnées de paiement centralisées se règlent dans <code>src/config/billingConfig.ts</code> ; l&apos;IBAN / BIC n&apos;apparaissent que s&apos;ils sont renseignés.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Chapitre v5.17.0 : version bêta, conditions d'utilisation, build testeurs */}
+                <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+                  <h4 className="font-extrabold text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>Version bêta et conditions d&apos;utilisation (v5.17.0 à v5.18.0)</span>
+                  </h4>
+                  <ul className="list-disc pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
+                    <li><strong>Version bêta :</strong> TOT Stock est en phase de test, réservé aux testeurs ayant signé le « Contrat de mise en test – Partenariat TOT Stock ». La pastille <em>BETA</em> apparaît dans l&apos;en-tête, le menu bureau et l&apos;écran de connexion.</li>
+                    <li><strong>Conditions d&apos;utilisation :</strong> au premier lancement (et à chaque nouvelle version du texte), un écran demande d&apos;accepter les conditions : propriété intellectuelle, interdiction de copier ou distribuer sans accord écrit, absence de garantie, limitation de responsabilité (pertes ou fuites de données). L&apos;installateur Windows affiche aussi ces conditions. Elles se relisent à tout moment dans <em>À propos</em>.</li>
+                    <li><strong>Build testeurs :</strong> <code>npm run build:tester</code> (ou variable de dépôt GitHub <code>TOT_DISTRIBUTION</code> laissée à <code>tester</code>, valeur par défaut) produit une application sans scripts SQL, sans fonctions Edge et sans les panneaux correspondants. Mettre <code>TOT_DISTRIBUTION=stable</code> pour obtenir le build complet destiné à votre usage.</li>
+                    <li><strong>JavaScript obfusqué (v5.18.0) :</strong> le build testeurs rend aussi le JavaScript livré illisible (noms et chaînes de caractères brouillés), sur les trois cibles construites depuis <code>dist/</code> : PWA, application de bureau et <strong>APK Android</strong> — l&apos;APK étant un simple fichier .zip, c&apos;était la cible la plus facile à ouvrir. <code>npm run check:tester-dist</code> fait échouer le build si l&apos;obfuscation n&apos;a pas eu lieu. Cette protection ralentit et décourage un curieux ; elle ne remplace pas le contrat signé, seule vraie protection juridique.</li>
+                  </ul>
+                </div>
+
                 {/* Chapitre Mise à jour de la base et des scripts (Schéma 2.10.0 / App 5.16.0) */}
                 <div className="manual-chapter pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
                   <h4 className="font-extrabold text-sm text-indigo-700 dark:text-indigo-400 flex items-center gap-2">
@@ -1858,7 +1981,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
                   </h4>
                   <ol className="list-decimal pl-5 space-y-1.5 text-slate-600 dark:text-slate-300 text-xs leading-relaxed">
                     <li>
-                      <strong>Étape 1 — Scripts SQL (<code>01</code> à <code>21</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code>, <code>15_search_orders_movements.sql</code>, <code>16_audit_trail.sql</code>, <code>17_transferts_valides.sql</code>, <code>18_password_reset.sql</code>, <code>19_order_trace.sql</code>, <code>20_notification_reads.sql</code>, <code>21_vehicules_transferts_regles.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL (01 à 21)</em>).
+                      <strong>Étape 1 — Scripts SQL (<code>01</code> à <code>22</code>, avec <code>07_app_compat.sql</code> en dernier) :</strong> exécutez le fichier consolidé <code>dist/install.sql</code> dans le SQL Editor Supabase (ou rejouez dans l&apos;ordre les scripts jusqu&apos;à <code>13_transfer_stock_batch.sql</code>, <code>14_mailing.sql</code>, <code>15_search_orders_movements.sql</code>, <code>16_audit_trail.sql</code>, <code>17_transferts_valides.sql</code>, <code>18_password_reset.sql</code>, <code>19_order_trace.sql</code>, <code>20_notification_reads.sql</code>, <code>21_vehicules_transferts_regles.sql</code> puis <code>07_app_compat.sql</code> depuis l&apos;onglet <em>3. Scripts SQL (01 à 21)</em>).
                     </li>
                     <li>
                       <strong>Étape 2 — Fonctions Edge (onglet <em>4. Fonctions Edge</em>) :</strong> mettez à jour dans Supabase Dashboard les 4 fonctions autonomes (<code>APP_TOT-Stock_admin-users</code>, <code>APP_TOT-Stock_licenses_sync-license</code>, <code>APP_TOT-Stock_send-report-email</code>, <code>APP_TOT-Stock_password-reset</code>) générées dans <code>supabase-client/generated/edge-functions/</code>.
@@ -1878,7 +2001,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
           )}
 
           {/* TAB 2: EXPORT ANDROID STUDIO */}
-          {activeTab === 'android' && (
+          {activeTab === 'android' && !IS_TESTER_BUILD && (
             <div className="space-y-6 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-3xl border border-slate-200 dark:border-slate-800">
               <div className="border-b border-slate-200 dark:border-slate-700 pb-3 flex items-center justify-between">
                 <div>
@@ -2083,7 +2206,7 @@ CREATE INDEX IF NOT EXISTS idx_login_logs_user_date ON public.login_logs (user_i
           )}
 
           {/* TAB 4: SUPABASE CLI & SQL */}
-          {activeTab === 'supabase' && (
+          {activeTab === 'supabase' && !IS_TESTER_BUILD && (
             <div className="space-y-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-3xl border border-slate-200 dark:border-slate-800">
               <div className="border-b border-slate-200 dark:border-slate-700 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
