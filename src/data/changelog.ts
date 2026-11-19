@@ -19,6 +19,60 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.20.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-19',
+    title: {
+      fr: 'Synchronisation incrémentale (delta) : égress Supabase réduit, viable à plusieurs dizaines d’utilisateurs',
+      en: 'Incremental (delta) sync: reduced Supabase egress, viable for dozens of users',
+      nl: 'Incrementele (delta) synchronisatie: minder Supabase-egress, haalbaar voor tientallen gebruikers',
+    },
+    highlights: {
+      fr: [
+        'La synchronisation ne retélécharge plus tout le catalogue et tous les niveaux de stock à chaque fois : elle ne récupère que les lignes modifiées depuis la dernière synchro (filtre updated_at). Une synchro sans changement ne transfère quasiment rien.',
+        'Réconciliation complète automatique toutes les 5 minutes et au retour sur l’onglet, pour rattraper les suppressions (que le delta ne voit pas).',
+        'IMPORTANT — base de données : exécutez le script SQL mis à jour (dist/install.sql, qui inclut l’étape 23) dans Supabase. Il ajoute les déclencheurs updated_at sur les produits et les niveaux de stock, indispensables au delta. Sans cette étape, l’app bascule automatiquement sur la synchro complète (sûre, mais sans l’économie).',
+      ],
+      en: [
+        'Sync no longer re-downloads the whole catalogue and all stock levels every time: it only fetches rows changed since the last sync (updated_at filter). A sync with no change transfers almost nothing.',
+        'Automatic full reconciliation every 5 minutes and when returning to the tab, to catch deletions (which delta cannot see).',
+        'IMPORTANT — database: run the updated SQL script (dist/install.sql, which includes step 23) in Supabase. It adds the updated_at triggers on products and stock levels, required by delta. Without this step the app falls back to full sync (safe, but without the saving).',
+      ],
+      nl: [
+        'Synchronisatie downloadt niet langer elke keer de volledige catalogus en alle voorraadniveaus: alleen de rijen die sinds de laatste synchronisatie zijn gewijzigd (updated_at-filter). Een synchronisatie zonder wijziging verstuurt vrijwel niets.',
+        'Automatische volledige reconciliatie elke 5 minuten en bij terugkeer naar het tabblad, om verwijderingen op te vangen (die delta niet ziet).',
+        'BELANGRIJK — database: voer het bijgewerkte SQL-script (dist/install.sql, met stap 23) uit in Supabase. Het voegt de updated_at-triggers toe op producten en voorraadniveaus, vereist voor delta. Zonder deze stap valt de app terug op volledige synchronisatie (veilig, maar zonder de besparing).',
+      ],
+    },
+  },
+  {
+    version: '5.19.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-18',
+    title: {
+      fr: 'Synchronisation multi-appareils optimisée : forte baisse du trafic Supabase (egress)',
+      en: 'Optimised multi-device sync: large drop in Supabase traffic (egress)',
+      nl: 'Geoptimaliseerde multi-apparaatsynchronisatie: sterke daling van Supabase-verkeer (egress)',
+    },
+    highlights: {
+      fr: [
+        'Le sondage périodique de synchronisation passe de 6 à 60 secondes : le temps réel assure toujours les mises à jour instantanées entre appareils, le sondage n’est qu’un filet de secours.',
+        'Les modifications en rafale (import de produits, panier multi-articles, validations en lot) ne déclenchent plus qu’un seul rechargement regroupé au lieu d’un par ligne.',
+        'Objectif : éviter de dépasser les quotas du plan Supabase (egress, journaux) observés lors des tests intensifs, sans changer le fonctionnement visible de l’application.',
+      ],
+      en: [
+        'The periodic sync poll goes from 6 to 60 seconds: realtime still delivers instant cross-device updates, the poll is only a fallback.',
+        'Burst changes (product import, multi-item cart, batch approvals) now trigger a single grouped refresh instead of one per row.',
+        'Goal: avoid exceeding the Supabase plan quotas (egress, logs) seen during intensive testing, without changing the app’s visible behaviour.',
+      ],
+      nl: [
+        'De periodieke synchronisatiepeiling gaat van 6 naar 60 seconden: realtime levert nog steeds directe updates tussen apparaten, de peiling is enkel een vangnet.',
+        'Wijzigingen in bursts (productimport, winkelmand met meerdere artikelen, batchgoedkeuringen) activeren nu één gegroepeerde verversing in plaats van één per rij.',
+        'Doel: de Supabase-quota (egress, logs) die tijdens intensief testen werden overschreden vermijden, zonder het zichtbare gedrag van de app te wijzigen.',
+      ],
+    },
+  },
+  {
     version: '5.18.0',
     schemaVersion: '2.10.0',
     date: '2026-11-18',

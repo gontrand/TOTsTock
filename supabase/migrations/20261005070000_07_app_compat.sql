@@ -149,7 +149,7 @@ VALUES (1, '2.10.0', '1.0.0', '1.0.0', '5.17.0', NULL)
 ON CONFLICT (id) DO UPDATE
 SET schema_version = '2.10.0',
     min_schema_version = COALESCE(NULLIF(TRIM(public.core_app_compat.min_schema_version), ''), '1.0.0'),
-    latest_version = '5.18.0';
+    latest_version = '5.20.0';
 
 -- =========================================================================
 -- 3. DIAGNOSTIC D'INSTALLATION (Point 7, v37, v40, v41, v42)

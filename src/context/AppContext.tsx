@@ -2410,6 +2410,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let isPolling = false;
     let pendingSync = false;
     let lastLiveSyncAt = 0;
+    // Regroupement (debounce) des déclencheurs temps réel : une rafale d'écritures (import, panier multi-articles,
+    // validations en lot) ne provoque qu'UN seul rechargement complet au lieu d'un par ligne, ce qui réduit
+    // fortement l'egress Supabase. Le sondage périodique (plus bas) reste le filet de secours.
+    const LIVE_SYNC_DEBOUNCE_MS = 4000;
+    const LIVE_SYNC_POLL_MS = 60000;
+    // Réconciliation complète périodique : le sondage à 60 s et le temps réel ne récupèrent que les lignes
+    // modifiées (delta), ce qui ne voit PAS les suppressions matérielles de produits/stock. Une récupération
+    // complète toutes les 5 minutes (et à chaque retour sur l'onglet) rattrape ces suppressions.
+    const LIVE_SYNC_FULL_RECONCILE_MS = 300000;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Curseurs de synchro incrémentale (v5.20.0) : dernier updated_at connu pour produits et niveaux de stock.
+    // null = pas encore de curseur -> prochaine synchro complète. Un curseur défini -> synchro delta possible.
+    let productsCursor: string | null = null;
+    let stockLevelsCursor: string | null = null;
+    const advanceCursor = (current: string | null, candidate?: string): string | null => {
+      if (!candidate) return current;
+      if (!current) return candidate;
+      return Date.parse(candidate) > Date.parse(current) ? candidate : current;
+    };
+    const scheduleDebouncedSync = () => {
+      if (!isMounted) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (isMounted) runSilentLiveSync(true);
+      }, LIVE_SYNC_DEBOUNCE_MS);
+    };
 
     // Hydratation immédiate entre onglets/fenêtres locales (ex: Vue Bureau + Vue Mobile sur le même poste)
     const hydrateFromLocalStorage = () => {
@@ -2480,7 +2507,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const client = supabaseUrl && supabaseKey ? getClientSupabase(supabaseUrl, supabaseKey) : null;
 
-    const runSilentLiveSync = async (force = false) => {
+    const runSilentLiveSync = async (force = false, fullReconcile = false) => {
       if (!client) return;
       const now = Date.now();
       if (!force && now - lastLiveSyncAt < 1500) return;
@@ -2539,9 +2566,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         await refreshRejectedSyncOps();
 
-        // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel complet
+        // 2. Synchronisation incrémentale vers IndexedDB + rafraîchissement opérationnel
         await performIncrementalSync(client).catch(() => {});
-        const live = await fetchLiveOperationalData(client, currentUser);
+        // Delta (produits + niveaux de stock) quand on a déjà un curseur et qu'on n'est pas en réconciliation
+        // complète ; sinon récupération complète (premier chargement, retour sur l'onglet, timer de 5 min).
+        const useDelta = !fullReconcile && productsCursor !== null && stockLevelsCursor !== null;
+        const live = await fetchLiveOperationalData(
+          client,
+          currentUser,
+          useDelta ? { productsSince: productsCursor, stockLevelsSince: stockLevelsCursor } : undefined
+        );
         if (!isMounted) return;
         if (live.orders !== undefined) {
           const liveOrders = live.orders;
@@ -2561,17 +2595,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (currentUser) {
           reconcileUserBasketsWithRemote(live.userBaskets);
         }
-        if (live.products && live.products.length > 0) {
+        if (live.products !== undefined) {
           const liveProducts = live.products;
-          setProducts((prev) =>
-            JSON.stringify(prev) === JSON.stringify(liveProducts) ? prev : liveProducts
-          );
+          if (live.productsDelta) {
+            // Delta : fusionner par id (les lignes modifiées remplacent/ajoutent, le reste est conservé).
+            if (liveProducts.length > 0) {
+              setProducts((prev) => {
+                const map = new Map(prev.map((p) => [String(p.id), p]));
+                for (const p of liveProducts) map.set(String(p.id), p);
+                const next = Array.from(map.values());
+                return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+              });
+            }
+          } else if (liveProducts.length > 0) {
+            // Complet : remplacement (comportement d'origine).
+            setProducts((prev) =>
+              JSON.stringify(prev) === JSON.stringify(liveProducts) ? prev : liveProducts
+            );
+          }
+          productsCursor = advanceCursor(productsCursor, live.productsMaxUpdatedAt);
+          if (!live.productsDelta && productsCursor === null) {
+            // Après une récupération complète sans aucune ligne datée, armer le curseur pour permettre le delta.
+            productsCursor = new Date().toISOString();
+          }
         }
-        if (live.stockLevels && live.stockLevels.length > 0) {
+        if (live.stockLevels !== undefined) {
           const liveSl = live.stockLevels;
-          setStockLevels((prev) =>
-            JSON.stringify(prev) === JSON.stringify(liveSl) ? prev : liveSl
-          );
+          if (live.stockLevelsDelta) {
+            if (liveSl.length > 0) {
+              setStockLevels((prev) => {
+                const map = new Map(prev.map((s) => [String(s.id), s]));
+                for (const s of liveSl) map.set(String(s.id), s);
+                const next = Array.from(map.values());
+                return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+              });
+            }
+          } else if (liveSl.length > 0) {
+            setStockLevels((prev) =>
+              JSON.stringify(prev) === JSON.stringify(liveSl) ? prev : liveSl
+            );
+          }
+          stockLevelsCursor = advanceCursor(stockLevelsCursor, live.stockLevelsMaxUpdatedAt);
+          if (!live.stockLevelsDelta && stockLevelsCursor === null) {
+            stockLevelsCursor = new Date().toISOString();
+          }
         }
         if (live.movements !== undefined) {
           const liveMovements = live.movements;
@@ -2659,10 +2726,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ? client
           .channel('tot-live-multi-device-sync')
           .on('broadcast', { event: 'tot_data_mutated' }, () => {
-            runSilentLiveSync(true);
+            scheduleDebouncedSync();
           })
           .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-            runSilentLiveSync(true);
+            scheduleDebouncedSync();
           })
           .subscribe()
       : null;
@@ -2678,7 +2745,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bc.onmessage = (ev) => {
           if (ev?.data?.type === 'DATA_MUTATED') {
             hydrateFromLocalStorage();
-            runSilentLiveSync(true);
+            scheduleDebouncedSync();
           }
         };
       }
@@ -2688,26 +2755,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!ev.key) return;
       if (ev.key === 'tot_last_mutation_ping' || ev.key.startsWith(LOCAL_PREFIX)) {
         hydrateFromLocalStorage();
-        runSilentLiveSync(true);
+        scheduleDebouncedSync();
       }
     };
     window.addEventListener('storage', handleStorageEvent);
 
+    // Sondage de secours ralenti (60 s au lieu de 6 s) : le temps réel (postgres_changes) couvre les mises à jour
+    // instantanées entre appareils ; ce sondage ne sert qu'au rattrapage, d'où la fréquence réduite pour limiter
+    // l'egress Supabase. Déclenché seulement quand l'onglet est visible.
     const intervalId = setInterval(() => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-        runSilentLiveSync();
+        runSilentLiveSync(); // delta (produits + stock), le reste des tables (petites) reste complet
       }
-    }, 6000);
+    }, LIVE_SYNC_POLL_MS);
 
-    // Exécuter immédiatement à la connexion ou au changement de session utilisateur
+    // Réconciliation complète périodique (5 min) : rattrape les suppressions matérielles invisibles au delta.
+    const reconcileId = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        runSilentLiveSync(true, true);
+      }
+    }, LIVE_SYNC_FULL_RECONCILE_MS);
+
+    // Exécuter immédiatement à la connexion ou au changement de session utilisateur (récupération complète initiale)
     const initialTimer = setTimeout(() => {
-      runSilentLiveSync(true);
+      runSilentLiveSync(true, true);
     }, 250);
 
     const handleFocusOrVisible = () => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         hydrateFromLocalStorage();
-        runSilentLiveSync(true);
+        runSilentLiveSync(true, true); // complet au retour sur l'onglet : rattrape aussi les suppressions
       }
     };
     window.addEventListener('focus', handleFocusOrVisible);
@@ -2716,8 +2793,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       isMounted = false;
+      if (debounceTimer) clearTimeout(debounceTimer);
       clearTimeout(initialTimer);
       clearInterval(intervalId);
+      clearInterval(reconcileId);
       window.removeEventListener('storage', handleStorageEvent);
       window.removeEventListener('focus', handleFocusOrVisible);
       window.removeEventListener('online', handleFocusOrVisible);

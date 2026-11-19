@@ -2209,14 +2209,47 @@ export async function searchStockMovementsOnServer(
   return { rows, totalCount };
 }
 
+/** Plus grand updated_at (chaîne ISO) parmi des lignes brutes, pour faire avancer le curseur de synchro delta. */
+function maxUpdatedAtIso(rows: Array<{ updated_at?: unknown }> | null | undefined): string | undefined {
+  if (!Array.isArray(rows) || rows.length === 0) return undefined;
+  let bestMs = -1;
+  let bestIso: string | undefined;
+  for (const row of rows) {
+    const raw = row?.updated_at;
+    if (typeof raw !== 'string') continue;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms) && ms > bestMs) {
+      bestMs = ms;
+      bestIso = raw;
+    }
+  }
+  return bestIso;
+}
+
+/**
+ * Récupère les données opérationnelles vivantes.
+ *
+ * Synchronisation incrémentale (v5.20.0) : pour les deux tables les plus volumineuses — produits et niveaux de
+ * stock — on peut passer un curseur (`productsSince` / `stockLevelsSince`). Seules les lignes modifiées depuis ce
+ * curseur sont alors renvoyées (filtre `updated_at > curseur`), ce qui réduit fortement l'egress Supabase. Les
+ * champs `productsDelta` / `stockLevelsDelta` indiquent à l'appelant qu'il doit FUSIONNER (et non remplacer) ;
+ * `productsMaxUpdatedAt` / `stockLevelsMaxUpdatedAt` donnent le nouveau curseur. Sans curseur, comportement
+ * complet d'origine (remplacement). Les suppressions matérielles ne sont pas visibles en delta : l'appelant doit
+ * effectuer une réconciliation complète périodique (voir AppContext).
+ */
 export async function fetchLiveOperationalData(
   client: SupabaseClient,
-  currentUser?: User | null
+  currentUser?: User | null,
+  opts?: { productsSince?: string | null; stockLevelsSince?: string | null }
 ): Promise<{
   orders?: MaterialOrder[];
   products?: Product[];
+  productsDelta?: boolean;
+  productsMaxUpdatedAt?: string;
   movements?: StockMovement[];
   stockLevels?: StockLevel[];
+  stockLevelsDelta?: boolean;
+  stockLevelsMaxUpdatedAt?: string;
   depots?: Depot[];
   departments?: Department[];
   projects?: Project[];
@@ -2229,8 +2262,12 @@ export async function fetchLiveOperationalData(
   const result: {
     orders?: MaterialOrder[];
     products?: Product[];
+    productsDelta?: boolean;
+    productsMaxUpdatedAt?: string;
     movements?: StockMovement[];
     stockLevels?: StockLevel[];
+    stockLevelsDelta?: boolean;
+    stockLevelsMaxUpdatedAt?: string;
     depots?: Depot[];
     departments?: Department[];
     projects?: Project[];
@@ -2240,6 +2277,8 @@ export async function fetchLiveOperationalData(
     publicSettings?: Record<string, string>;
     userBaskets?: UserBasketSyncEntry | null;
   } = {};
+  const productsSince = typeof opts?.productsSince === 'string' ? opts.productsSince : null;
+  const stockLevelsSince = typeof opts?.stockLevelsSince === 'string' ? opts.stockLevelsSince : null;
 
   await Promise.all([
     (async () => {
@@ -2257,9 +2296,26 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const { data, error } = await client.from(TABLES.products).select('*').order('brand', { ascending: true });
-        if (!error && Array.isArray(data) && data.length > 0) {
-          result.products = data.map(normalizeProductRecord);
+        let query: any = client.from(TABLES.products).select('*');
+        if (productsSince && typeof query.gt === 'function') {
+          query = query.gt('updated_at', productsSince);
+        }
+        if (typeof query.order === 'function') {
+          query = query.order('brand', { ascending: true });
+        }
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          if (productsSince) {
+            // Delta : on renvoie même un tableau vide (= rien n'a changé), pour signaler une fusion, pas un remplacement.
+            result.products = data.map(normalizeProductRecord);
+            result.productsDelta = true;
+            result.productsMaxUpdatedAt = maxUpdatedAtIso(data);
+          } else if (data.length > 0) {
+            // Complet : conserve la garde « ne pas écraser avec un lot vide ».
+            result.products = data.map(normalizeProductRecord);
+            result.productsDelta = false;
+            result.productsMaxUpdatedAt = maxUpdatedAtIso(data);
+          }
         }
       } catch {}
     })(),
@@ -2340,9 +2396,15 @@ export async function fetchLiveOperationalData(
     })(),
     (async () => {
       try {
-        const { data, error } = await client.from(TABLES.stockLevels).select('*');
+        let query: any = client.from(TABLES.stockLevels).select('*');
+        if (stockLevelsSince && typeof query.gt === 'function') {
+          query = query.gt('updated_at', stockLevelsSince);
+        }
+        const { data, error } = await query;
         if (!error && Array.isArray(data)) {
           result.stockLevels = data.map(normalizeStockLevelRecord);
+          result.stockLevelsDelta = !!stockLevelsSince;
+          result.stockLevelsMaxUpdatedAt = maxUpdatedAtIso(data);
         }
       } catch {}
     })(),

@@ -141,6 +141,12 @@ export const SQL_STEPS = [
     label: 'Case « Logistique » sur les départements et sortie directe sur dépôt fixe réservée (camions et conteneurs inchangés)',
   },
   {
+    step: '23',
+    sourceRel: 'supabase-client/23_incremental_sync_updated_at.sql',
+    migrationName: '20261005069999_23_incremental_sync_updated_at.sql',
+    label: 'Triggers updated_at sur stk_products et stk_stock_levels (synchronisation incrémentale / baisse egress)',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',
