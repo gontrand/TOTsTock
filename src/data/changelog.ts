@@ -19,6 +19,30 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.20.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-19',
+    title: {
+      fr: 'Conditions d’utilisation : interdiction explicite de contournement et de désobfuscation',
+      en: 'Terms of use: explicit ban on circumvention and de-obfuscation',
+      nl: 'Gebruiksvoorwaarden: uitdrukkelijk verbod op omzeiling en de-obfuscatie',
+    },
+    highlights: {
+      fr: [
+        'L’article 4 des conditions d’utilisation (et le texte de l’installateur) interdit désormais explicitement de contourner les protections techniques, de désobfusquer ou de reconstituer le code protégé.',
+        'Les conditions mises à jour sont présentées à nouveau au premier lancement (acceptation redemandée).',
+      ],
+      en: [
+        'Article 4 of the terms of use (and the installer text) now explicitly prohibits circumventing the technical protections, de-obfuscating or reconstructing the protected code.',
+        'The updated terms are shown again at first launch (acceptance requested anew).',
+      ],
+      nl: [
+        'Artikel 4 van de gebruiksvoorwaarden (en de tekst van het installatieprogramma) verbiedt nu uitdrukkelijk het omzeilen van de technische beveiligingen, het de-obfusceren of het reconstrueren van de beschermde code.',
+        'De bijgewerkte voorwaarden worden opnieuw getoond bij de eerste start (aanvaarding opnieuw gevraagd).',
+      ],
+    },
+  },
+  {
     version: '5.20.0',
     schemaVersion: '2.10.0',
     date: '2026-11-19',

@@ -58,8 +58,8 @@ export const LEGAL_DOCUMENTS: Record<Language, LegalDocument> = {
       {
         title: '4. Interdictions',
         body: [
-          'Sans accord écrit préalable de l’auteur, il est interdit de : copier, distribuer, redistribuer, publier, louer, prêter, vendre ou sous-licencier l’application ou ses fichiers d’installation ; la mettre à disposition de tiers ; la décompiler, la désassembler, en extraire le code ou en faire l’ingénierie inverse ; extraire, reproduire ou documenter la structure de la base de données (tables, fonctions, scripts, règles de sécurité) ; créer une œuvre dérivée ou une application similaire à partir de celle-ci.',
-          'Toute distribution non autorisée est interdite et peut donner lieu à des poursuites.',
+          'Sans accord écrit préalable de l’auteur, il est interdit de : copier, distribuer, redistribuer, publier, louer, prêter, vendre ou sous-licencier l’application ou ses fichiers d’installation ; la mettre à disposition de tiers ; la décompiler, la désassembler, en extraire le code ou en faire l’ingénierie inverse ; contourner, désactiver ou altérer les mesures techniques de protection, notamment tenter de rendre lisible, de désobfusquer ou de reconstituer le code protégé de l’application ; extraire, reproduire ou documenter la structure de la base de données (tables, fonctions, scripts, règles de sécurité) ; créer une œuvre dérivée ou une application similaire à partir de celle-ci.',
+          'Toute distribution ou tentative de contournement non autorisée est interdite et peut donner lieu à des poursuites.',
         ],
       },
       {
@@ -137,8 +137,8 @@ export const LEGAL_DOCUMENTS: Record<Language, LegalDocument> = {
       {
         title: '4. Prohibited acts',
         body: [
-          'Without the author’s prior written consent, you may not: copy, distribute, redistribute, publish, rent, lend, sell or sublicense the application or its installation files; make it available to third parties; decompile, disassemble, extract its code or reverse-engineer it; extract, reproduce or document the database structure (tables, functions, scripts, security rules); create a derivative work or a similar application from it.',
-          'Any unauthorised distribution is prohibited and may lead to legal action.',
+          'Without the author’s prior written consent, you may not: copy, distribute, redistribute, publish, rent, lend, sell or sublicense the application or its installation files; make it available to third parties; decompile, disassemble, extract its code or reverse-engineer it; circumvent, disable or tamper with the technical protection measures, in particular attempt to make readable, de-obfuscate or reconstruct the application’s protected code; extract, reproduce or document the database structure (tables, functions, scripts, security rules); create a derivative work or a similar application from it.',
+          'Any unauthorised distribution or circumvention attempt is prohibited and may lead to legal action.',
         ],
       },
       {
@@ -216,8 +216,8 @@ export const LEGAL_DOCUMENTS: Record<Language, LegalDocument> = {
       {
         title: '4. Verboden handelingen',
         body: [
-          'Zonder voorafgaande schriftelijke toestemming van de auteur is het verboden: de toepassing of haar installatiebestanden te kopiëren, te verspreiden, door te geven, te publiceren, te verhuren, uit te lenen, te verkopen of in sublicentie te geven; ze ter beschikking van derden te stellen; ze te decompileren, te disassembleren, de code eruit te halen of reverse engineering toe te passen; de databasestructuur (tabellen, functies, scripts, beveiligingsregels) te extraheren, te reproduceren of te documenteren; een afgeleid werk of een gelijkaardige toepassing eruit te maken.',
-          'Elke niet-toegestane verspreiding is verboden en kan tot juridische stappen leiden.',
+          'Zonder voorafgaande schriftelijke toestemming van de auteur is het verboden: de toepassing of haar installatiebestanden te kopiëren, te verspreiden, door te geven, te publiceren, te verhuren, uit te lenen, te verkopen of in sublicentie te geven; ze ter beschikking van derden te stellen; ze te decompileren, te disassembleren, de code eruit te halen of reverse engineering toe te passen; de technische beveiligingsmaatregelen te omzeilen, uit te schakelen of te wijzigen, in het bijzonder pogen de beschermde code van de toepassing leesbaar te maken, te de-obfusceren of te reconstrueren; de databasestructuur (tabellen, functies, scripts, beveiligingsregels) te extraheren, te reproduceren of te documenteren; een afgeleid werk of een gelijkaardige toepassing eruit te maken.',
+          'Elke niet-toegestane verspreiding of omzeilingspoging is verboden en kan tot juridische stappen leiden.',
         ],
       },
       {

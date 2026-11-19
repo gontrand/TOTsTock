@@ -24,17 +24,17 @@ function memoryStorage() {
   };
 }
 
-describe('v5.17.0 à v5.20.0 — version bêta, conditions d’utilisation et protection de l’œuvre', () => {
-  it('aligne la version sur 5.20.0 (versionCode 20)', () => {
-    expect(APP_VERSION).toBe('5.20.0');
-    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(20);
-    expect(read('android/app/build.gradle')).toContain('versionName "5.20.0"');
+describe('v5.17.0 à v5.20.1 — version bêta, conditions d’utilisation et protection de l’œuvre', () => {
+  it('aligne la version sur 5.20.1 (versionCode 21)', () => {
+    expect(APP_VERSION).toBe('5.20.1');
+    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(21);
+    expect(read('android/app/build.gradle')).toContain('versionName "5.20.1"');
   });
 
   it('mémorise l’acceptation pour la version courante du texte et la redemande si le texte change', () => {
     const storage = memoryStorage();
     expect(hasAcceptedCurrentLegal(storage)).toBe(false);
-    const rec = saveLegalAcceptance('5.20.0', storage, new Date('2026-11-18T10:00:00Z'));
+    const rec = saveLegalAcceptance('5.20.1', storage, new Date('2026-11-18T10:00:00Z'));
     expect(rec.version).toBe(LEGAL_VERSION);
     expect(hasAcceptedCurrentLegal(storage)).toBe(true);
     storage.setItem(LEGAL_STORAGE_KEY, JSON.stringify({ version: '1999-01-01', acceptedAt: 'x', appVersion: '1' }));
@@ -55,6 +55,10 @@ describe('v5.17.0 à v5.20.0 — version bêta, conditions d’utilisation et pr
     expect(fr).toMatch(/distribution/i);
     expect(fr).toMatch(/fuite/i);
     expect(fr).toMatch(/ingénierie inverse/i);
+    // v5.20.1 : interdiction explicite de contournement / désobfuscation, dans les trois langues
+    expect(fr).toMatch(/désobfusquer|contourner/i);
+    expect(JSON.stringify(LEGAL_DOCUMENTS.en)).toMatch(/de-obfuscate|circumvent/i);
+    expect(JSON.stringify(LEGAL_DOCUMENTS.nl)).toMatch(/de-obfusceren|omzeilen/i);
   });
 
   it('branche l’écran d’acceptation dans main.tsx, la pastille BETA et la relecture dans À propos', () => {
@@ -100,7 +104,7 @@ describe('v5.17.0 à v5.20.0 — version bêta, conditions d’utilisation et pr
     expect(JSON.parse(read('package.json')).scripts['build:tester']).toBeTruthy();
   });
 
-  it('obfusque le JavaScript du build testeurs (v5.20.0) sans renommer les propriétés (risque de casse)', () => {
+  it('obfusque le JavaScript du build testeurs (v5.20.1) sans renommer les propriétés (risque de casse)', () => {
     expect(JSON.parse(read('package.json')).devDependencies['javascript-obfuscator']).toBeTruthy();
     // renameProperties DOIT rester faux : l'app lit des clés dynamiques (Supabase, JSON, i18n) par leur nom.
     expect(OBFUSCATOR_OPTIONS.renameProperties).toBe(false);

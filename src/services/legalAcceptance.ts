@@ -3,7 +3,7 @@
  * L'acceptation est mémorisée localement (poste ou appareil) pour une version précise du texte :
  * si LEGAL_VERSION change, l'utilisateur doit accepter à nouveau.
  */
-export const LEGAL_VERSION = '2026-11-18';
+export const LEGAL_VERSION = '2026-11-19';
 export const LEGAL_STORAGE_KEY = 'tot.legal.acceptance';
 
 export interface LegalAcceptanceRecord {
