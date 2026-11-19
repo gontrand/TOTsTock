@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { fetchLiveOperationalData } from '../services/clientSupabase';
 
 /**
- * v5.20.1 — synchronisation incrémentale (delta).
+ * v5.20.2 — synchronisation incrémentale (delta).
  * On vérifie que fetchLiveOperationalData :
  *  - sans curseur : récupère tout (productsDelta/stockLevelsDelta = false) ;
  *  - avec curseur : applique le filtre updated_at > curseur et signale un delta (à fusionner) ;
@@ -62,7 +62,7 @@ const STOCK = (id: string, updated: string) => ({
   updated_at: updated,
 });
 
-describe('v5.20.1 — synchronisation incrémentale (delta)', () => {
+describe('v5.20.2 — synchronisation incrémentale (delta)', () => {
   it('sans curseur : récupération complète, pas de filtre gt, productsDelta=false', async () => {
     const gtCalls: GtCall[] = [];
     const client = makeMockClient({

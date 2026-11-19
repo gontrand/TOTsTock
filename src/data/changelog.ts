@@ -19,6 +19,27 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.20.2',
+    schemaVersion: '2.10.0',
+    date: '2026-11-19',
+    title: {
+      fr: 'Correctif interne : tests alignés sur le nouveau script SQL 23',
+      en: 'Internal fix: tests aligned with the new SQL script 23',
+      nl: 'Interne correctie: tests afgestemd op het nieuwe SQL-script 23',
+    },
+    highlights: {
+      fr: [
+        'Correction d’un test d’intégration continue qui attendait encore 22 étapes SQL : l’ajout du script 23 (triggers updated_at) est désormais pris en compte. Aucun changement fonctionnel pour l’utilisateur.',
+      ],
+      en: [
+        'Fixed a CI test still expecting 22 SQL steps: the new script 23 (updated_at triggers) is now accounted for. No functional change for users.',
+      ],
+      nl: [
+        'Een CI-test die nog 22 SQL-stappen verwachtte, is gecorrigeerd: het nieuwe script 23 (updated_at-triggers) wordt nu meegeteld. Geen functionele wijziging voor gebruikers.',
+      ],
+    },
+  },
+  {
     version: '5.20.1',
     schemaVersion: '2.10.0',
     date: '2026-11-19',

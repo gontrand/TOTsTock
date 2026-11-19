@@ -205,10 +205,10 @@ function createMemoryStorage(): Storage {
 
 describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_reset.sql & Bundles Edge (4 fonctions)', () => {
   it('aligne APP_VERSION=5.16.0, EXPECTED_SCHEMA_VERSION=2.10.0, versionCode=12, déclare 18_password_reset.sql dans SQL_STEPS et synchronise les 4 bundles Edge sans createSyncLicenseHandler/createAdminUsersHandler manquants', () => {
-    expect(APP_VERSION).toBe('5.20.1');
+    expect(APP_VERSION).toBe('5.20.2');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
     expect(MIN_SUPPORTED_SCHEMA_VERSION).toBe('1.0.0');
-    expect(RECENT_CHANGELOG[0].version).toBe('5.20.1');
+    expect(RECENT_CHANGELOG[0].version).toBe('5.20.2');
     expect(RECENT_CHANGELOG[0].schemaVersion).toBe('2.10.0');
     expect(TABLES.passwordResets).toBe('core_password_resets');
 
@@ -217,11 +217,11 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     const versionCodeJson = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'android/version-code.json'), 'utf8'));
     const buildGradle = fs.readFileSync(path.join(ROOT_DIR, 'android/app/build.gradle'), 'utf8');
 
-    expect(pkg.version).toBe('5.20.1');
-    expect(desktopPkg.version).toBe('5.20.1');
+    expect(pkg.version).toBe('5.20.2');
+    expect(desktopPkg.version).toBe('5.20.2');
     expect(versionCodeJson.versionCode).toBeGreaterThanOrEqual(12);
     expect(buildGradle).toMatch(/versionCode (1[2-9]|[2-9]\d)/);
-    expect(buildGradle).toContain('versionName "5.20.1"');
+    expect(buildGradle).toContain('versionName "5.20.2"');
 
     const stepNumbers = SQL_STEPS.map((s: any) => String(s.step));
     const idx17 = stepNumbers.indexOf('17');
@@ -230,6 +230,7 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     const idx20 = stepNumbers.indexOf('20');
     const idx21 = stepNumbers.indexOf('21');
     const idx22 = stepNumbers.indexOf('22');
+    const idx23 = stepNumbers.indexOf('23');
     const idx07 = stepNumbers.indexOf('07');
     expect(idx17).toBeGreaterThan(0);
     expect(idx18).toBe(idx17 + 1);
@@ -239,7 +240,9 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
     expect(idx21).toBe(idx20 + 1);
     // v61 : 22 (département Logistique) s'intercale avant 07
     expect(idx22).toBe(idx21 + 1);
-    expect(idx07).toBe(idx22 + 1);
+    // v5.20.0 : 23 (triggers updated_at, synchro incrémentale) s'intercale avant 07
+    expect(idx23).toBe(idx22 + 1);
+    expect(idx07).toBe(idx23 + 1);
 
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE TABLE IF NOT EXISTS public.core_password_resets');
     expect(SQL_SCRIPT_18_PASSWORD_RESET).toContain('CREATE OR REPLACE FUNCTION public.purge_expired_password_resets()');
@@ -297,7 +300,7 @@ describe('Prompt v55 — Versions 5.16.0 / Schéma 2.10.0, Script 18_password_re
         `SELECT schema_version, latest_version FROM public.core_app_compat WHERE id = 1;`
       );
       expect(compatTableRes.rows[0]?.schema_version).toBe('2.10.0');
-      expect(compatTableRes.rows[0]?.latest_version).toBe('5.20.1');
+      expect(compatTableRes.rows[0]?.latest_version).toBe('5.20.2');
 
       // Insérer deux lignes dans core_password_resets (une expirée depuis 2h, une récente)
       await db.exec(`
