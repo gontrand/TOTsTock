@@ -19,6 +19,57 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.21.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-19',
+    title: {
+      fr: 'Sécurité : suppression des comptes et codes d’accès figés (portes dérobées)',
+      en: 'Security: removal of hardcoded accounts and access codes (backdoors)',
+      nl: 'Beveiliging: verwijdering van vaste accounts en toegangscodes (achterdeurtjes)',
+    },
+    highlights: {
+      fr: [
+        'Le compte d’amorçage (bootstrap) ne dépend plus d’un mot de passe figé dans le code : il utilise la variable VITE_BOOTSTRAP_ADMIN_PASSWORD, et se désactive automatiquement dès qu’un vrai administrateur (relié à un compte Supabase Auth) existe.',
+        'Suppression de la porte dérobée qui acceptait deux codes figés lors de la ré-authentification pour remplacer la clé Supabase.',
+      ],
+      en: [
+        'The bootstrap account no longer relies on a password hardcoded in the source: it uses the VITE_BOOTSTRAP_ADMIN_PASSWORD variable and disables itself automatically once a real administrator (linked to a Supabase Auth account) exists.',
+        'Removed the backdoor that accepted two hardcoded codes during the re-authentication to replace the Supabase key.',
+      ],
+      nl: [
+        'Het bootstrap-account steunt niet langer op een in de code vastgelegd wachtwoord: het gebruikt de variabele VITE_BOOTSTRAP_ADMIN_PASSWORD en schakelt zichzelf automatisch uit zodra er een echte beheerder (gekoppeld aan een Supabase Auth-account) bestaat.',
+        'Het achterdeurtje dat twee vaste codes accepteerde bij de herauthenticatie om de Supabase-sleutel te vervangen, is verwijderd.',
+      ],
+    },
+  },
+  {
+    version: '5.21.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-19',
+    title: {
+      fr: 'Sécurité : le mot de passe est désormais toujours vérifié à la connexion',
+      en: 'Security: the password is now always verified at login',
+      nl: 'Beveiliging: het wachtwoord wordt nu altijd gecontroleerd bij het inloggen',
+    },
+    highlights: {
+      fr: [
+        'Correction d’une faille majeure : la connexion acceptait n’importe quel mot de passe pour un profil non relié à un compte Supabase Auth. Désormais, un échec d’authentification refuse l’accès, sans exception.',
+        'Suppression de l’auto-création de compte au login et du profil « super administrateur » attribué automatiquement.',
+        'Conséquence : les comptes doivent être créés par un administrateur (fonction admin-users, qui crée le compte Auth et le profil). Les utilisateurs de test créés sans compte Auth devront être recréés ainsi.',
+      ],
+      en: [
+        'Fixed a major flaw: login accepted any password for a profile not linked to a Supabase Auth account. Now an authentication failure denies access, without exception.',
+        'Removed login-time account auto-creation and the automatically granted “super administrator” profile.',
+        'Consequence: accounts must be created by an administrator (admin-users function, which creates both the Auth account and the profile). Test users created without an Auth account must be recreated this way.',
+      ],
+      nl: [
+        'Een ernstig lek verholpen: bij het inloggen werd elk wachtwoord geaccepteerd voor een profiel zonder gekoppeld Supabase Auth-account. Een authenticatiefout weigert nu de toegang, zonder uitzondering.',
+        'Verwijderd: het automatisch aanmaken van een account bij het inloggen en het automatisch toegekende “superbeheerder”-profiel.',
+        'Gevolg: accounts moeten door een beheerder worden aangemaakt (admin-users-functie, die zowel het Auth-account als het profiel aanmaakt). Testgebruikers zonder Auth-account moeten zo opnieuw worden aangemaakt.',
+      ],
+    },
+  },
+  {
     version: '5.20.2',
     schemaVersion: '2.10.0',
     date: '2026-11-19',
@@ -29,13 +80,16 @@ export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
     },
     highlights: {
       fr: [
-        'Correction d’un test d’intégration continue qui attendait encore 22 étapes SQL : l’ajout du script 23 (triggers updated_at) est désormais pris en compte. Aucun changement fonctionnel pour l’utilisateur.',
+        'Correction d’un test d’intégration continue qui attendait encore 22 étapes SQL : l’ajout du script 23 (triggers updated_at) est désormais pris en compte.',
+        'Aucun changement fonctionnel ni de base de données : si le script 23 a déjà été exécuté avec la 5.20.0, rien à refaire.',
       ],
       en: [
-        'Fixed a CI test still expecting 22 SQL steps: the new script 23 (updated_at triggers) is now accounted for. No functional change for users.',
+        'Fixed a CI test still expecting 22 SQL steps: the new script 23 (updated_at triggers) is now accounted for.',
+        'No functional or database change: if script 23 was already run with 5.20.0, nothing to redo.',
       ],
       nl: [
-        'Een CI-test die nog 22 SQL-stappen verwachtte, is gecorrigeerd: het nieuwe script 23 (updated_at-triggers) wordt nu meegeteld. Geen functionele wijziging voor gebruikers.',
+        'Een CI-test die nog 22 SQL-stappen verwachtte, is gecorrigeerd: het nieuwe script 23 (updated_at-triggers) wordt nu meegeteld.',
+        'Geen functionele of databasewijziging: als script 23 al met 5.20.0 is uitgevoerd, hoeft er niets opnieuw.',
       ],
     },
   },

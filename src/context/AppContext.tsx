@@ -3803,10 +3803,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let activeProfile: any = null;
 
         if (authErr || !resolvedAuthUser) {
-          // Allow built-in Demo Super Admin (admin@tot-stock.app / admin1234) fallback if not registered in Supabase Auth
+          // Compte d'amorçage (bootstrap) intégré — UNIQUEMENT pour créer les premiers comptes réels.
+          // SÉCURITÉ (v5.21.1) :
+          //  - le mot de passe n'est plus figé en dur : il provient de VITE_BOOTSTRAP_ADMIN_PASSWORD
+          //    (valeur de repli « admin1234 » si la variable n'est pas définie) ;
+          //  - le bootstrap se DÉSACTIVE automatiquement dès qu'un vrai administrateur existe, c'est-à-dire
+          //    un utilisateur (≠ id 0), non verrouillé, de rôle 0 ou 1, relié à un compte Supabase Auth.
+          const bootstrapPassword =
+            (import.meta.env.VITE_BOOTSTRAP_ADMIN_PASSWORD as string | undefined)?.trim() || 'admin1234';
+          const realAdminExists = users.some(
+            (u) =>
+              Number(u.id) !== 0 &&
+              !u.is_blocked &&
+              Boolean((u as any).auth_user_id) &&
+              (Number(u.role_id) === 0 || Number(u.role_id) === 1)
+          );
           const isDemoSuperAdmin =
+            !realAdminExists &&
             (String(emailOrUserId) === '0' || email === 'admin@tot-stock.app') &&
-            passwordOrPin === 'admin1234';
+            passwordOrPin === bootstrapPassword;
           if (isDemoSuperAdmin) {
             const defaultAdmin = users.find((u) => Number(u.id) === 0) || {
               id: 0,
@@ -3830,50 +3845,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           const errCode = authErr?.message?.toLowerCase() || '';
 
-          // Vérifier si le compte existe et est actif dans public.users ou dans l'annuaire local
-          // (cas où l'utilisateur a été créé sans l'Edge Function admin-users, ou bien si "Confirm email" est actif sur Supabase)
-          const existingDbProfile =
-            (await fetchProfileByEmail(cleanEmail)) ||
-            users.find((u) => u.email && u.email.trim().toLowerCase() === cleanEmail) ||
-            null;
-
-          if (existingDbProfile && !existingDbProfile.is_blocked && passwordOrPin.trim().length >= 4) {
-            // Tenter d'enregistrer automatiquement le compte dans Supabase Auth s'il n'y figurait pas encore
-            if (errCode.includes('invalid login credentials') && passwordOrPin.trim().length >= 6) {
-              try {
-                const { data: signUpData, error: signUpErr } = await client.auth.signUp({
-                  email: cleanEmail,
-                  password: passwordOrPin,
-                  options: {
-                    data: {
-                      name: existingDbProfile.name,
-                      trigram: existingDbProfile.trigram,
-                      department: existingDbProfile.department || 'Général',
-                      role_id: existingDbProfile.role_id ?? 4,
-                    },
-                  },
-                });
-                if (!signUpErr && signUpData?.user) {
-                  resolvedAuthUser = signUpData.user;
-                  activeProfile = {
-                    ...existingDbProfile,
-                    auth_user_id: signUpData.user.id,
-                  };
-                }
-              } catch {}
-            }
-
-            // Si l'adresse e-mail est en attente de confirmation sur Supabase Auth ("Email not confirmed")
-            // ou si le profil dans public.users n'avait pas encore de auth_user_id lié (créé hors Edge Function)
-            if (
-              !activeProfile &&
-              (errCode.includes('email not confirmed') || !existingDbProfile.auth_user_id)
-            ) {
-              activeProfile = existingDbProfile;
-            }
-          }
-
-          if (!activeProfile && !resolvedAuthUser) {
+          // SÉCURITÉ (v5.21.0) : un échec de Supabase Auth refuse la connexion, sans exception.
+          // On NE connecte PLUS sur simple profil présent dans public.users, et on NE crée PLUS
+          // automatiquement le compte (auth.signUp) avec le mot de passe saisi : c'était un contournement
+          // de l'authentification (n'importe quel mot de passe fonctionnait pour un profil non lié à un
+          // compte Auth). Les comptes doivent être provisionnés par un administrateur via la fonction Edge
+          // admin-users (qui crée le compte Auth ET le profil). Le message ci-dessous guide l'utilisateur.
+          {
             const isNetErr = isNetworkOrFetchError(authErr);
             let friendlyMsg = tr(
               language,
@@ -3958,31 +3936,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // 5. Fallback: If STILL not found in DB, auto-provision user profile for this authenticated account!
-        if (!activeProfile && resolvedAuthUser) {
-          const meta = resolvedAuthUser.user_metadata || {};
-          const fallbackName = meta.name || cleanEmail.split('@')[0];
-          const fallbackTrigram = meta.trigram || fallbackName.substring(0, 3).toUpperCase();
-          activeProfile = {
-            id: resolvedAuthUser.id,
-            auth_user_id: resolvedAuthUser.id,
-            name: fallbackName,
-            trigram: fallbackTrigram,
-            email: cleanEmail,
-            department: meta.department || 'Général',
-            role_id: meta.role_id ?? 0, // Super admin by default for primary account
-            is_blocked: false,
-            must_change_pin: false,
-            is_preparer: false,
-            allowed_depots: ['*'],
-          };
-        }
-
+        // SÉCURITÉ (v5.21.0) : plus d'auto-création d'un profil « super admin » pour un compte authentifié
+        // sans profil. Un compte Auth valide doit déjà avoir son profil dans public.users (créé en même temps
+        // par la fonction Edge admin-users). Sinon, on refuse et on ferme la session : c'est à l'administrateur
+        // de provisionner le compte, pas à la connexion de s'octroyer des droits.
         if (!activeProfile) {
           await client.auth.signOut().catch(() => {});
           return {
             success: false,
-            message: 'Profil utilisateur introuvable dans la base TOT Stock pour ce compte.',
+            message: tr(
+              language,
+              'Profil utilisateur introuvable dans la base TOT Stock pour ce compte. Demandez à un administrateur de créer votre compte (fonction admin-users).',
+              'User profile not found in the TOT Stock database for this account. Ask an administrator to create your account (admin-users function).'
+            ),
           };
         }
 

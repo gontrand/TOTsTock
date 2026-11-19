@@ -21,7 +21,7 @@ import {
   createSupabaseEncryptedAuthStorage,
   readSensitiveLocalStorageSync,
   removeSensitiveLocalStorage, safeGetSensitiveItem } from './localCrypto';
-import { verifyPin, verifyLocalDevicePin, hasLocalDevicePin } from '../utils/crypto';
+import { verifyPin, verifyLocalDevicePin } from '../utils/crypto';
 import {
   Product,
   StockMovement,
@@ -511,15 +511,9 @@ export async function verifyUserPinOrPasswordForKeyReplacement(params: {
     }
   }
 
-  if (
-    !verified &&
-    !params.verifyPinFn &&
-    Number(userId) === 0 &&
-    !hasLocalDevicePin(0) &&
-    (cleanSecret === '0000' || cleanSecret === 'admin123')
-  ) {
-    verified = true;
-  }
+  // SÉCURITÉ (v5.21.1) : l'ancienne porte dérobée acceptant deux codes figés pour l'administrateur sans PIN
+  // local a été supprimée. La vérification passe désormais uniquement par le PIN réel (verifyPinFn / PIN du
+  // profil) ou par le mot de passe (verifyPasswordFn).
 
   if (!verified && params.verifyPasswordFn && user.email) {
     try {
