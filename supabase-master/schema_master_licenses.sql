@@ -307,3 +307,46 @@ $$;
 
 REVOKE ALL ON FUNCTION public.check_and_increment_rate_limit(TEXT, INT, INT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.check_and_increment_rate_limit(TEXT, INT, INT) TO service_role;
+
+-- =============================================================================
+-- REGISTRE DES INSTALLATIONS (v5.22.0)
+-- Compter les organisations qui utilisent l'app, même en Free, sans appel répété.
+-- Une ligne par projet client (organisation). Alimentée par la fonction Edge lors
+-- de la découverte de licence (action 'discover'), après preuve d'appartenance.
+-- Aucune donnée personnelle : seulement la référence de projet et la version.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS public."APP_TOT-Stock-installations" (
+  project_ref          TEXT PRIMARY KEY,
+  client_supabase_url  TEXT,
+  app_version          TEXT,
+  first_seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Accès réservé à la fonction Edge (service_role). Aucune policy => tout le reste est refusé.
+ALTER TABLE public."APP_TOT-Stock-installations" ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public."APP_TOT-Stock-installations" FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE public."APP_TOT-Stock-installations" TO service_role;
+
+-- Vue de synthèse : nombre d'organisations, actives sur 30 jours, free / payantes.
+-- La répartition joint sur la RÉFÉRENCE DE PROJET (sous-domaine Supabase), et non sur l'URL brute,
+-- car installations et licences ne normalisent pas l'URL de la même façon. « Payante » = l'organisation
+-- a une licence active, non expirée et non Free liée à son projet ; sinon elle est comptée comme Free.
+CREATE OR REPLACE VIEW public.master_installations_summary AS
+WITH paid AS (
+  SELECT DISTINCT
+    lower(substring(lower(client_supabase_url) FROM '([a-z0-9-]+)\.supabase\.')) AS ref
+  FROM public."APP_TOT-Stock-licenses"
+  WHERE COALESCE(is_active, TRUE) = TRUE
+    AND (expires_at IS NULL OR expires_at > now())
+    AND COALESCE(lower(plan_type), 'free') <> 'free'
+    AND client_supabase_url IS NOT NULL
+    AND client_supabase_url <> ''
+)
+SELECT
+  count(*)                                                              AS organisations_total,
+  count(*) FILTER (WHERE i.last_seen_at > now() - INTERVAL '30 days')   AS actives_30_jours,
+  count(*) FILTER (WHERE p.ref IS NULL)                                 AS free,
+  count(*) FILTER (WHERE p.ref IS NOT NULL)                             AS payantes
+FROM public."APP_TOT-Stock-installations" i
+LEFT JOIN paid p ON p.ref = lower(i.project_ref);

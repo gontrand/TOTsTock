@@ -1251,6 +1251,31 @@ serve(async (req) => {
         return genericDeniedResponse(403);
       }
 
+      // Registre des installations (v5.22.0) : compter les organisations qui utilisent l'app, même en Free.
+      // La preuve d'appartenance ci-dessus garantit qu'il s'agit d'une organisation réelle (elle possède son
+      // projet Supabase). Opération best-effort et totalement isolée (try/catch) : un échec ici ne doit JAMAIS
+      // bloquer ni modifier la découverte de licence. Aucune donnée personnelle n'est stockée.
+      try {
+        const installRef = extractProjectRef(normalizedTargetUrl);
+        if (installRef) {
+          const installVersion =
+            typeof (body as any).app_version === 'string'
+              ? (body as any).app_version.slice(0, 20)
+              : null;
+          await supabaseAdmin.from('APP_TOT-Stock-installations').upsert(
+            {
+              project_ref: installRef,
+              client_supabase_url: normalizedTargetUrl,
+              app_version: installVersion,
+              last_seen_at: new Date().toISOString(),
+            },
+            { onConflict: 'project_ref' }
+          );
+        }
+      } catch (_installErr) {
+        // silencieux : le registre des installations ne doit pas affecter la licence
+      }
+
       // 4. Recherche par correspondance stricte sur client_supabase_url (jamais une licence sans URL)
       const { data: candidates, error: candErr } = await supabaseAdmin
         .from('APP_TOT-Stock-licenses')
@@ -1267,7 +1292,7 @@ serve(async (req) => {
 
       // Prioriser une licence active, non expirée et payante s'il existe plusieurs entrées historiques
       const nowMs = Date.now();
-      const found =
+      let found =
         matchingRows.find(
           (r: any) =>
             r.is_active !== false &&
@@ -1284,25 +1309,65 @@ serve(async (req) => {
         matchingRows[0] ||
         null;
 
+      // Attribution automatique d'une licence FREE (v5.22.1) : plutôt que de refuser quand aucune licence
+      // n'existe, on CRÉE une ligne Free liée au projet (dont l'appartenance vient d'être prouvée). Ainsi chaque
+      // organisation possède une ligne de licence, y compris en Free, et le flux ci-dessous renvoie un jeton signé.
       if (!found) {
+        const freeModules = normalizeModules(null, false, 'free');
+        const { data: freeLicense, error: freeErr } = await supabaseAdmin
+          .from('APP_TOT-Stock-licenses')
+          .insert([
+            {
+              license_key: generateFormattedKey('free'),
+              plan_type: 'free',
+              modules: freeModules,
+              max_depots: plan_limits('free').max_depots,
+              organization_name: 'Organisation Free',
+              client_supabase_url: normalizedTargetUrl,
+              binding_allowed: false,
+              bound_at: new Date().toISOString(),
+              bound_by: 'auto_free_discover',
+              is_active: true,
+            },
+          ])
+          .select()
+          .single();
+
+        if (freeErr || !freeLicense) {
+          // En cas d'échec de création, on retombe sur l'ancien comportement : l'app appliquera le Free localement.
+          await logAndNotifyLicenseBinding(supabaseAdmin, {
+            license_key: 'NONE',
+            action_type: 'DISCOVER_NOT_FOUND',
+            new_url: normalizedTargetUrl,
+            performed_by: `user:${ownership.userId}`,
+            client_ip: clientIp,
+            message: `Attribution Free automatique impossible pour ${normalizedTargetUrl} : ${freeErr?.message || 'inconnue'}.`,
+            details: { user_id: ownership.userId },
+            notifyVendor: false,
+          });
+          return new Response(
+            JSON.stringify({
+              success: false,
+              code: 'LICENSE_NOT_FOUND',
+              message: 'Aucune licence enregistrée pour ce projet.',
+            }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404 }
+          );
+        }
+
+        found = freeLicense;
         await logAndNotifyLicenseBinding(supabaseAdmin, {
-          license_key: 'NONE',
-          action_type: 'DISCOVER_NOT_FOUND',
+          license_id: freeLicense.id,
+          license_key: freeLicense.license_key,
+          organization_name: freeLicense.organization_name,
+          action_type: 'FIRST_BINDING',
           new_url: normalizedTargetUrl,
           performed_by: `user:${ownership.userId}`,
           client_ip: clientIp,
-          message: `Aucune licence trouvée lors de la découverte automatique pour ${normalizedTargetUrl}.`,
-          details: { user_id: ownership.userId },
+          message: `Licence Free attribuée automatiquement à ${normalizedTargetUrl} (${freeLicense.license_key}).`,
+          details: { user_id: ownership.userId, auto_free: true },
           notifyVendor: false,
         });
-        return new Response(
-          JSON.stringify({
-            success: false,
-            code: 'LICENSE_NOT_FOUND',
-            message: 'Aucune licence enregistrée pour ce projet.',
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 404 }
-        );
       }
 
       if (found.is_active === false || found.revoked_at) {

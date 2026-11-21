@@ -19,6 +19,54 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.22.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-21',
+    title: {
+      fr: 'Attribution automatique d’une licence Free à chaque nouvelle organisation',
+      en: 'Automatic Free license assignment for each new organization',
+      nl: 'Automatische toewijzing van een Free-licentie aan elke nieuwe organisatie',
+    },
+    highlights: {
+      fr: [
+        'Quand une organisation relie l’app à son projet et n’a pas encore de licence, la base maître lui crée automatiquement une ligne Free (liée à son projet, après preuve d’appartenance) au lieu de refuser.',
+        'Chaque organisation possède donc désormais une ligne de licence, Free comprise : suivi et changements de forfait plus simples. La vue de synthèse compte toujours correctement Free et payantes.',
+      ],
+      en: [
+        'When an organization links the app to its project and has no license yet, the master database automatically creates a Free row for it (bound to its project, after ownership proof) instead of refusing.',
+        'Every organization now has a license row, including Free: easier tracking and plan changes. The summary view still counts Free and paid correctly.',
+      ],
+      nl: [
+        'Wanneer een organisatie de app aan haar project koppelt en nog geen licentie heeft, maakt de masterdatabase automatisch een Free-rij aan (gekoppeld aan haar project, na eigendomsbewijs) in plaats van te weigeren.',
+        'Elke organisatie heeft nu een licentierij, inclusief Free: eenvoudiger opvolgen en wijzigen van formule. De overzichtsweergave telt Free en betalend nog steeds correct.',
+      ],
+    },
+  },
+  {
+    version: '5.22.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-21',
+    title: {
+      fr: 'Registre des installations : compter les organisations, même en Free',
+      en: 'Installations registry: count organizations, even on Free',
+      nl: 'Installatieregister: organisaties tellen, zelfs op Free',
+    },
+    highlights: {
+      fr: [
+        'La base maître enregistre désormais chaque organisation qui relie l’app à son projet Supabase, Free comprise, lors de la découverte de licence (après preuve d’appartenance). Vous connaissez enfin le nombre d’organisations utilisatrices.',
+        'Aucun appel répété ni code ajouté côté application : on réutilise la vérification déjà effectuée à la configuration (limitée à une fois par 24 h). Aucune donnée personnelle n’est stockée (référence de projet et version seulement).',
+      ],
+      en: [
+        'The master database now records each organization that links the app to its Supabase project, including Free, during license discovery (after ownership proof). You finally know how many organizations use the app.',
+        'No repeated calls and no added app code: it reuses the check already performed at setup (limited to once per 24h). No personal data is stored (project reference and version only).',
+      ],
+      nl: [
+        'De masterdatabase registreert nu elke organisatie die de app aan haar Supabase-project koppelt, inclusief Free, tijdens de licentieontdekking (na eigendomsbewijs). U weet eindelijk hoeveel organisaties de app gebruiken.',
+        'Geen herhaalde oproepen en geen extra app-code: de controle die al bij de configuratie gebeurt, wordt hergebruikt (max. eenmaal per 24 u). Er worden geen persoonsgegevens opgeslagen (enkel projectreferentie en versie).',
+      ],
+    },
+  },
+  {
     version: '5.21.1',
     schemaVersion: '2.10.0',
     date: '2026-11-19',

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * v5.21.1 — durcissement de l'authentification (Option A).
+ * v5.22.1 — durcissement de l'authentification (Option A).
  * La connexion ne doit JAMAIS contourner Supabase Auth : un échec de signInWithPassword refuse l'accès.
  * On vérifie, au niveau du source de la fonction `login`, que les trois rattrapages dangereux ont disparu :
  *   1. auto-création du compte (auth.signUp) avec le mot de passe saisi ;
@@ -22,7 +22,7 @@ function loginBody(src: string): string {
   return src.slice(start, end);
 }
 
-describe('v5.21.1 — authentification durcie (le mot de passe est toujours vérifié)', () => {
+describe('v5.22.1 — authentification durcie (le mot de passe est toujours vérifié)', () => {
   const body = loginBody(appContext);
 
   it('vérifie toujours le mot de passe via Supabase Auth', () => {
