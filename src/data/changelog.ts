@@ -19,6 +19,30 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.3',
+    schemaVersion: '2.10.0',
+    date: '2026-11-25',
+    title: {
+      fr: 'Correctif : erreur de syntaxe SQL à l\'installation (étape 24)',
+      en: 'Fix: SQL syntax error during installation (step 24)',
+      nl: 'Fix: SQL-syntaxfout tijdens installatie (stap 24)',
+    },
+    highlights: {
+      fr: [
+        'Étape 24 : ALTER DEFAULT PRIVILEGES séparé par type d\'objet (tables, séquences, fonctions) ; la syntaxe groupée provoquait l\'erreur 42601 et bloquait install.sql.',
+        'Procédure 2 (base client) alignée sur le même bloc SQL corrigé.',
+      ],
+      en: [
+        'Step 24: ALTER DEFAULT PRIVILEGES split per object type (tables, sequences, functions); the grouped syntax raised error 42601 and blocked install.sql.',
+        'Procedure 2 (client base) aligned with the same corrected SQL block.',
+      ],
+      nl: [
+        'Stap 24: ALTER DEFAULT PRIVILEGES gesplitst per objecttype (tabellen, sequenties, functies); de gegroepeerde syntaxis gaf fout 42601 en blokkeerde install.sql.',
+        'Procedure 2 (klantdatabase) afgestemd op hetzelfde gecorrigeerde SQL-blok.',
+      ],
+    },
+  },
+  {
     version: '5.23.2',
     schemaVersion: '2.10.0',
     date: '2026-11-25',
