@@ -637,10 +637,8 @@ export const MaterialOrdersModal: React.FC = () => {
     });
   };
 
-  const isSuperAdmin =
-    Number(currentUser?.id) === 0 ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  // v5.23.0 : 100% permissions. Un « admin » est celui qui a perm_admin_level.
+  const isSuperAdmin = userHasPermission('perm_admin_level');
 
   const stopCamera = useCallback(() => {
     if (animFrameRef.current) {

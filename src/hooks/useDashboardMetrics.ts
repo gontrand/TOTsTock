@@ -103,7 +103,8 @@ export function useDashboardMetrics() {
   } = useApp();
 
   const userDept = (currentUser?.department || '').trim();
-  const isSuperAdmin = Number(currentUser?.id) === 0 || Number(currentUser?.role_id) === 0;
+  // v5.23.0 : 100% permissions.
+  const isSuperAdmin = userHasPermission('perm_admin_level');
   const role = roles.find((r) => Number(r.id) === Number(currentUser?.role_id));
 
   const userDepartmentObj = useMemo(() => {

@@ -77,9 +77,10 @@ export const PrintStationPanel: React.FC = () => {
   const allowedDepotsList = useMemo(() => {
     if (!currentUser) return [];
     const allowed = currentUser.allowed_depots || [];
+    // v5.23.0 : 100% permissions.
     if (
-      currentUser.role_id === 0 ||
-      currentUser.role_id === 1 ||
+      userHasPermission('perm_admin_level') ||
+      userHasPermission('perm_depot_view_all') ||
       allowed.includes('*') ||
       allowed.includes('ALL')
     ) {

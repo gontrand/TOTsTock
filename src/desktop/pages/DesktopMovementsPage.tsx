@@ -96,8 +96,8 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     [depots, currentUser, users]
   );
 
-  const isSuperAdmin =
-    Number(currentUser?.role_id) === 0 || Number(currentUser?.role_id) === 1;
+  // v5.23.0 : 100% permissions.
+  const isSuperAdmin = userHasPermission('perm_admin_level');
 
   const effectiveDepotFilter = selectedDepotFilter ?? globalDepotFilter ?? 'ALL';
   const locale = language === 'nl' ? 'nl-NL' : language === 'en' ? 'en-GB' : 'fr-FR';
@@ -190,13 +190,8 @@ export const DesktopMovementsPage: React.FC<DesktopMovementsPageProps> = ({
     (m: StockMovement): boolean => {
       if (!currentUser) return true;
       if (currentUser.is_blocked) return false;
-      const roleIdNum = Number(currentUser.role_id);
-      if (
-        isSuperAdmin ||
-        roleIdNum === 0 ||
-        roleIdNum === 1 ||
-        userHasPermission('perm_mov_view_all')
-      ) {
+      // v5.23.0 : 100% permissions.
+      if (isSuperAdmin || userHasPermission('perm_mov_view_all')) {
         return true;
       }
       const prod = productById.get(String(m.product_id));

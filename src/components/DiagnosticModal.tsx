@@ -31,6 +31,7 @@ export const DiagnosticModal: React.FC = () => {
     appCompat,
     language,
     t,
+    userHasPermission,
   } = useApp();
 
   const [loading, setLoading] = useState(false);
@@ -38,9 +39,8 @@ export const DiagnosticModal: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const isAllowedRole = Boolean(
-    currentUser && [0, 1, 5].includes(Number(currentUser.role_id))
-  );
+  // v5.23.0 : 100% permissions.
+  const isAllowedRole = Boolean(currentUser && userHasPermission('perm_diagnostic'));
 
   const fetchDiagnostic = useCallback(async () => {
     if (!isAllowedRole) return;

@@ -19,6 +19,60 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-25',
+    title: {
+      fr: 'Autorisations 100 % par permissions : plus aucun role_id codé en dur',
+      en: 'Permissions-only authorization: no more hardcoded role_id checks',
+      nl: 'Autorisatie 100 % op permissies: geen hardcoded role_id meer',
+    },
+    highlights: {
+      fr: [
+        'Pivot complet « 100 % permissions » : plus aucune comparaison role_id === 0/1 (ou IN (0,1,5,8)) dans le code applicatif. Seul le super admin (rôle 0) est bypassé, à un unique endroit dans userHasPermission().',
+        'Nouveau script SQL d\'étape 24 : GRANT standards étendus (service_role + authenticated + anon), ALTER DEFAULT PRIVILEGES et seeding automatique de perm_admin_level + perm_diagnostic + perm_mail_admin + perm_depot_view_all aux rôles concernés (0, 1, 2, 5, 6, 8).',
+        'Nouvelles permissions perm_admin_level, perm_diagnostic, perm_depot_view_all, perm_mail_admin, perm_orders_prepare_any_dept déclarées dans la matrice ; attribuables depuis l\'UI « Gestion des rôles ».',
+        'Policies RLS stk_depots et core_app_settings réécrites 100 % permissions, policy d\'INSERT core_user_preferences ajoutée pour que l\'admin puisse seeder les préférences d\'un nouvel utilisateur.',
+      ],
+      en: [
+        'Complete "permissions-only" pivot: no more role_id === 0/1 (or IN (0,1,5,8)) comparisons in application code. Only the super admin (role 0) is bypassed, in a single place in userHasPermission().',
+        'New SQL step 24: extended standard GRANTs (service_role + authenticated + anon), ALTER DEFAULT PRIVILEGES and automatic seeding of perm_admin_level + perm_diagnostic + perm_mail_admin + perm_depot_view_all on the relevant roles (0, 1, 2, 5, 6, 8).',
+        'New permissions perm_admin_level, perm_diagnostic, perm_depot_view_all, perm_mail_admin, perm_orders_prepare_any_dept declared in the matrix; assignable from the Roles management UI.',
+        'stk_depots and core_app_settings RLS policies rewritten 100 % permissions; INSERT policy on core_user_preferences added so the admin can seed a new user\'s preferences.',
+      ],
+      nl: [
+        'Volledige "100 % permissies" overgang: geen role_id === 0/1 (of IN (0,1,5,8)) vergelijkingen meer in de applicatiecode. Alleen de super admin (rol 0) wordt omzeild, op één enkele plaats in userHasPermission().',
+        'Nieuw SQL-stap 24 script: uitgebreide standaard GRANTs (service_role + authenticated + anon), ALTER DEFAULT PRIVILEGES en automatische seeding van perm_admin_level + perm_diagnostic + perm_mail_admin + perm_depot_view_all op de betrokken rollen (0, 1, 2, 5, 6, 8).',
+        'Nieuwe permissies perm_admin_level, perm_diagnostic, perm_depot_view_all, perm_mail_admin, perm_orders_prepare_any_dept toegevoegd aan de matrix; toewijsbaar via het Rollenbeheer scherm.',
+        'RLS-policies stk_depots en core_app_settings herschreven op 100 % permissies; INSERT-policy op core_user_preferences toegevoegd zodat de admin voorkeuren van een nieuwe gebruiker kan seeden.',
+      ],
+    },
+  },
+  {
+    version: '5.22.2',
+    schemaVersion: '2.10.0',
+    date: '2026-11-21',
+    title: {
+      fr: 'Site vitrine : nouveau slogan de positionnement',
+      en: 'Landing page: new positioning slogan',
+      nl: 'Landingspagina: nieuwe positioneringsslogan',
+    },
+    highlights: {
+      fr: [
+        'Ajout du slogan de positionnement en page d’accueil : « Une action métier doit être plus rapide à réaliser dans TOT qu’avec Excel, WhatsApp et un registre papier réunis. »',
+        'Le message est mis en avant dans le bandeau d’accueil, sous l’accroche principale, pour affirmer la promesse de rapidité de l’application.',
+      ],
+      en: [
+        'Added the positioning slogan on the landing page: “A business action must be faster to perform in TOT than with Excel, WhatsApp and a paper logbook combined.”',
+        'The message is highlighted in the hero banner, under the main headline, to assert the app’s promise of speed.',
+      ],
+      nl: [
+        'Positioneringsslogan toegevoegd op de landingspagina: “Een zakelijke handeling moet sneller uit te voeren zijn in TOT dan met Excel, WhatsApp en een papieren register samen.”',
+        'De boodschap wordt uitgelicht in de herobanner, onder de hoofdtitel, om de snelheidsbelofte van de app te benadrukken.',
+      ],
+    },
+  },
+  {
     version: '5.22.1',
     schemaVersion: '2.10.0',
     date: '2026-11-21',

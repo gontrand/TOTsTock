@@ -1,4 +1,5 @@
 import { Depot, User, Department, Project, Product, StockLevel } from '../types';
+import { isAdminLevel } from './userPerms';
 import { isDepotClosed, isUserAllowedForDepot } from './crypto';
 
 export const RESTRICTED_VEHICLE_LABEL = 'Véhicule (accès restreint)';
@@ -209,14 +210,19 @@ export function isUserProjectManagerForDepotDepartment(
  * responsables logistique / magasin, préparateurs et au personnel d'un département coché « Logistique ».
  * Si la liste des départements est inconnue, on ne bloque pas côté application (le serveur applique la règle).
  */
+// v5.23.0 — 100% permissions. Un utilisateur peut sortir directement d'un dépôt
+// fixe si son rôle est super admin (role 0, bypass codé en dur ici parce que la
+// liste des rôles n'est pas passée en paramètre), s'il est préparateur, ou si son
+// département est marqué logistique. Les rôles « admin général », « logistique »,
+// « magasinier » doivent recevoir ce droit via perm_depot_direct_out ou
+// perm_admin_level dans leurs permissions, et le code appelant doit utiliser
+// userHasPermission() en amont pour couvrir ce cas.
 export function canUserDirectOutFromFixedDepot(
   user: User | null | undefined,
   departments?: Department[] | null
 ): boolean {
   if (!user) return false;
-  if (Number(user.id) === 0) return true;
-  const role = Number(user.role_id);
-  if ([0, 1, 2, 6, 7].includes(role)) return true;
+  if (Number(user.role_id) === 0) return true; // super admin
   if ((user as any).is_preparer) return true;
   if (!departments || departments.length === 0) return true;
   const userDept = (user.department || '').trim().toLowerCase();
@@ -392,7 +398,7 @@ export function canUserBorrowFromDepot(
   }
 
   // SuperAdmin (ID 0 or Role 0) or Administrateur (Role 1) have full oversight
-  const isSuperOrAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isSuperOrAdmin = Number(user.id) === 0 || isAdminLevel(user);
 
   // Check if depot is closed
   if (isDepotClosed(depots, depotName)) {
@@ -493,7 +499,7 @@ export function canUserEnterStockInDepot(
   }
 
   // SuperAdmin (ID 0 or Role 0) or Administrateur (Role 1) have full oversight
-  const isSuperOrAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isSuperOrAdmin = Number(user.id) === 0 || isAdminLevel(user);
   if (isSuperOrAdmin) {
     return { allowed: true };
   }
@@ -653,7 +659,7 @@ export function canUserViewDepot(
   }
 
   if (!user || !depot) return false;
-  if (Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1) return true;
+  if (Number(user.id) === 0 || isAdminLevel(user)) return true;
 
   if (isDepotVehicleOrContainer(depot)) {
     // 1. Le responsable (chauffeur) et son binôme

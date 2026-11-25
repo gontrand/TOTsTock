@@ -134,12 +134,9 @@ export const DepotsModal: React.FC = () => {
   // Temporary depot deactivation is available starting from Standard plan
   const canDeactivateDepots = license?.plan_type && license.plan_type !== 'free';
 
+  // v5.23.0 : 100% permissions.
   const canEditDepotHolders = Boolean(
-    !currentUser ||
-      Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1 ||
-      userHasPermission('perm_manage_depots')
+    !currentUser || userHasPermission('perm_manage_depots')
   );
 
   const [isActive, setIsActive] = useState(true);

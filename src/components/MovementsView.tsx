@@ -62,7 +62,7 @@ export const MovementsView: React.FC = () => {
   } = useApp();
 
   const canSeeTabs = userHasPermission('perm_mov_tabs');
-  const canViewAll = isAdmin || Number(currentUser?.role_id) === 0 || userHasPermission('perm_mov_view_all');
+  const canViewAll = isAdmin || userHasPermission('perm_mov_view_all');
   const canViewDepot = userHasPermission('perm_mov_view_depot');
   const canMyTab = userHasPermission('perm_mov_tab_my') || canSeeTabs;
   const canProjTab = userHasPermission('perm_mov_tab_proj') || canSeeTabs;

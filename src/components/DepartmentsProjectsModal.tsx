@@ -136,10 +136,8 @@ export const DepartmentsProjectsModal: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [departmentsProjectsModal.open, activeTab, setDepartmentsProjectsModal]);
 
-  const isSuperOrAdmin =
-    Number(currentUser?.id) === 0 ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  // v5.23.0 : 100% permissions.
+  const isSuperOrAdmin = userHasPermission('perm_admin_level');
 
   const canEditDep = isSuperOrAdmin || userHasPermission('perm_dep_edit');
   const canDeleteDep = isSuperOrAdmin || userHasPermission('perm_dep_delete');

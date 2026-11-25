@@ -64,16 +64,9 @@ export const RecentActivityFeed: React.FC<RecentActivityFeedProps> = ({ customMo
   const [selectedActivity, setSelectedActivity] = useState<ActivityItem | null>(null);
   const [serverActivities, setServerActivities] = useState<ActivityItem[]>([]);
 
-  const canViewAllLoginLogs =
-    userHasPermission('perm_view_all_login_logs') ||
-    Number(currentUser?.id) === 0 ||
-    Number(currentUser?.role_id) === 0;
-
-  const canViewAuditLogs =
-    userHasPermission('perm_audit_view') ||
-    Number(currentUser?.id) === 0 ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  // v5.23.0 : 100% permissions.
+  const canViewAllLoginLogs = userHasPermission('perm_view_all_login_logs');
+  const canViewAuditLogs = userHasPermission('perm_audit_view');
 
   const canViewPrices = userHasPermission('perm_prod_view_price');
 

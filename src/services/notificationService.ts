@@ -8,6 +8,7 @@ import {
   StockTransferRecord,
   User,
 } from '../types';
+import { isAdminLevel } from '../utils/userPerms';
 import { getDismissedKeysSync } from './notificationReadService';
 import { getClosedProjectContainerAlertsForUser } from './projectStatusService';
 
@@ -473,7 +474,7 @@ export function shouldWarnPreparerWithoutDepot(params: {
   const { user, depotHolders = [], depots = [], roles = [] } = params;
   if (!user) return false;
   const roleIdNum = Number(user.role_id);
-  const isAdminRole = roleIdNum === 0 || roleIdNum === 1;
+  const isAdminRole = isAdminLevel(user);
   if (isAdminRole) return false;
 
   let isPreparerUser = Boolean(user.is_preparer);
@@ -521,7 +522,7 @@ export function isUserAuthorizedPreparerForOrder(params: {
   }
 
   const roleIdNum = Number(user.role_id);
-  const isAdminRole = roleIdNum === 0 || roleIdNum === 1;
+  const isAdminRole = isAdminLevel(user);
 
   // Les rôles 0 et 1 gardent « tous les dépôts » par défaut
   if (isAdminRole) {
@@ -717,7 +718,7 @@ export function isUserRecipientForStockAlert(params: {
       return true;
     }
     const roleIdNum = Number(user.role_id);
-    const isAdminRole = roleIdNum === 0 || roleIdNum === 1;
+    const isAdminRole = isAdminLevel(user);
     const hasExplicitDepots =
       Array.isArray(user.allowed_depots) &&
       user.allowed_depots.length > 0 &&
@@ -736,7 +737,7 @@ export function isUserRecipientForStockAlert(params: {
     }
   } else if (Boolean(user.is_preparer)) {
     const assigned = getAssignedDepotsForPreparer({ user, depotHolders, depots });
-    if (assigned.length > 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1) {
+    if (assigned.length > 0 || isAdminLevel(user)) {
       return true;
     }
   }
@@ -813,7 +814,7 @@ export function isUserRecipientForOrderEvent(ctx: OrderNotificationRecipientCont
     case 'ORDER_PENDING_PREP':
     case 'ORDER_TO_PREPARE': {
       const roleIdNum = Number(user.role_id);
-      const isAdminRole = roleIdNum === 0 || roleIdNum === 1;
+      const isAdminRole = isAdminLevel(user);
       if (isAdminRole && !user.is_preparer) {
         return false;
       }
@@ -943,7 +944,7 @@ export function isUserRecipientForTransferEvent(
 
   // 3. Logistique (hors simple admin 0/1 qui n'est pas explicitement logistique)
   const roleIdNum = Number(user.role_id);
-  const isAdminRole = roleIdNum === 0 || roleIdNum === 1;
+  const isAdminRole = isAdminLevel(user);
   const isExplicitLogistics = Boolean((user as any).is_logistics);
   if (isExplicitLogistics) {
     return true;

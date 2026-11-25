@@ -364,10 +364,8 @@ export const UsersRolesModal: React.FC = () => {
   if (!usersRolesModal.open) return null;
 
   const canManageUsers = userHasPermission('perm_manage_users');
-  const canForcePinReset =
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1 ||
-    userHasPermission('perm_user_force_pin');
+  // v5.23.0 : 100% permissions.
+  const canForcePinReset = userHasPermission('perm_user_force_pin');
   const canDeleteUser = userHasPermission('perm_user_delete') && !isDeptManager;
   const canManageRoles = userHasPermission('perm_manage_roles') && !isDeptManager;
 
@@ -398,8 +396,16 @@ export const UsersRolesModal: React.FC = () => {
     setUserIsPreparer(Boolean(u.is_preparer));
     setUserBinomeId(u.binome_id !== undefined && u.binome_id !== null ? u.binome_id : '');
     const allowed = u.allowed_depots || [];
-    const isAdminUser = Number(u.role_id) === 0 || Number(u.role_id) === 1;
-    setAllDepotsAllowed(allowed.includes('*') || (isAdminUser && allowed.length === 0));
+    // v5.23.0 : 100% permissions. Un user avec perm_admin_level ou perm_depot_view_all
+    // sur son rôle a accès à tous les dépôts par défaut si allowed_depots est vide.
+    const targetRole = roles.find((r) => Number(r.id) === Number(u.role_id));
+    const targetHasAdminLevel = Boolean(
+      targetRole?.permissions?.includes('*') ||
+      targetRole?.permissions?.includes('perm_admin_level') ||
+      targetRole?.permissions?.includes('perm_depot_view_all') ||
+      Number(u.role_id) === 0
+    );
+    setAllDepotsAllowed(allowed.includes('*') || (targetHasAdminLevel && allowed.length === 0));
     setUserAllowedDepots(allowed.filter((d) => d !== '*'));
     setUserFormMsg('');
 
@@ -1289,9 +1295,20 @@ export const UsersRolesModal: React.FC = () => {
                               </span>
                             )}
 
-                            {u.allowed_depots?.includes('*') ||
-                            ((Number(u.role_id) === 0 || Number(u.role_id) === 1) &&
-                              (!u.allowed_depots || u.allowed_depots.length === 0)) ? (
+                            {(() => {
+                              // v5.23.0 : 100% permissions. Label « Tous les dépôts » pour wildcard
+                              // explicite, ou pour un rôle qui a perm_admin_level / perm_depot_view_all
+                              // avec allowed_depots vide.
+                              if (u.allowed_depots?.includes('*')) return true;
+                              const uRole = roles.find((r) => Number(r.id) === Number(u.role_id));
+                              const uHasAdminLevel = Boolean(
+                                uRole?.permissions?.includes('*') ||
+                                uRole?.permissions?.includes('perm_admin_level') ||
+                                uRole?.permissions?.includes('perm_depot_view_all') ||
+                                Number(u.role_id) === 0
+                              );
+                              return uHasAdminLevel && (!u.allowed_depots || u.allowed_depots.length === 0);
+                            })() ? (
                               <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-medium">
                                 🏢 {tr(language, 'Tous les dépôts', 'All depots')}
                               </span>

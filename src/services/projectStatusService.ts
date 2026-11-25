@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Department, Depot, MaterialOrder, Project, ProjectStatus, User } from '../types';
+// v5.23.0 : vérification par permission (plus par role_id).
+import { isAdminLevel } from '../utils/userPerms';
 
 export type ProjectFilterStatus = 'IN_PROGRESS' | 'CLOSED' | 'ALL';
 
@@ -62,10 +64,8 @@ export function canUserManageProjectStatus(
 
   if (!user || user.id === undefined || user.id === null) return false;
 
-  const roleIdNum = Number(user.role_id);
-  if (roleIdNum === 0 || roleIdNum === 1 || Number(user.id) === 0) {
-    return true;
-  }
+  // v5.23.0 : 100% permissions.
+  if (isAdminLevel(user)) return true;
 
   if (!project) return false;
 

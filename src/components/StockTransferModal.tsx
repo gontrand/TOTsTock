@@ -116,9 +116,8 @@ export const StockTransferModal: React.FC = () => {
           ) ||
           (tItem.status === 'RETURNED_TO_STOCK' &&
             currentUser &&
-            (Number(currentUser.id) === 0 ||
-              Number(currentUser.role_id) === 0 ||
-              Number(currentUser.role_id) === 1 ||
+            (userHasPermission('perm_transfer_validate') ||
+              userHasPermission('perm_stock_receive_all') ||
               String(tItem.sender_id ?? '') === String(currentUser.id)))
       ),
     [transfers, currentUser, depots, depotHolders, userHasPermission]

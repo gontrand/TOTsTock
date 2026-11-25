@@ -1726,14 +1726,11 @@ CREATE POLICY "Depots read access" ON public.depots
   FOR SELECT TO authenticated, anon 
   USING (is_active = true);
 
-CREATE POLICY "Depots manager write access" ON public.depots 
-  FOR ALL TO authenticated 
+CREATE POLICY "Depots manager write access" ON public.depots
+  FOR ALL TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM public.users 
-      WHERE (users.auth_user_id = auth.uid() OR users.id::text = auth.uid()::text) 
-      AND users.role_id <= 1
-    )
+    public.current_user_has_perm('perm_manage_depots')
+    OR public.current_user_has_perm('perm_depot_create')
   );`;
 
   const SQL_ADD_EMAIL_COLUMN = `-- 1. Ajouter la colonne contact_email dans la table APP_TOT-Stock-licenses

@@ -1,4 +1,5 @@
 import { Department, MaterialOrder, Project, User } from '../types';
+import { isAdminLevel } from '../utils/userPerms';
 
 export const ORDER_AUDIT_CATEGORY = 'ORDERS' as const;
 
@@ -134,7 +135,7 @@ export function canUserViewOrderSignature(
   if (!user || user.id === undefined || user.id === null || !order) return false;
 
   const roleIdNum = Number(user.role_id);
-  if (roleIdNum === 0 || roleIdNum === 1 || Number(user.id) === 0) {
+  if (isAdminLevel(user)) {
     return true;
   }
 

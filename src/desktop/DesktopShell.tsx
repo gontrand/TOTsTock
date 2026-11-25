@@ -495,8 +495,7 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     userHasPermission('perm_tab_dashboard') || userHasPermission('perm_dash_kpi');
   const canInventory =
     userHasPermission('perm_tab_inventory') || userHasPermission('perm_prod_view');
-  const canInventoryAudit =
-    userHasPermission('perm_menu_inventory_audit') || Number(currentUser?.role_id) === 0;
+  const canInventoryAudit = userHasPermission('perm_menu_inventory_audit');
   const canOrderPrep =
     canUserAccessScannerMode(
       currentUser,
@@ -528,16 +527,10 @@ export const DesktopShell: React.FC<DesktopShellProps> = ({
     userHasPermission('perm_doc_android') ||
     userHasPermission('perm_doc_marketing') ||
     userHasPermission('perm_doc_supabase');
-  const canReports =
-    userHasPermission('perm_report_view') ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  const canReports = userHasPermission('perm_report_view');
   // V60 : menu « QR code entreprise » (même droit que le menu mobile : perm_menu_qr_config ou perm_config_db)
   const canQrConfig = userHasPermission('perm_menu_qr_config') || userHasPermission('perm_config_db');
-  const canAuditLog =
-    userHasPermission('perm_audit_view') ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  const canAuditLog = userHasPermission('perm_audit_view');
 
   const targetedOrderNotifs = getTargetedOrderNotificationsForUser({
     orders,

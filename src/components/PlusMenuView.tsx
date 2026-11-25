@@ -164,15 +164,9 @@ export const PlusMenuView: React.FC = () => {
   const canDbConfig = userHasPermission('perm_config_db');
   const canQrConfig = userHasPermission('perm_menu_qr_config') || canDbConfig;
   const canLicense = userHasPermission('perm_config_license') || canDbConfig;
-  const canDiagnostic = Boolean(
-    currentUser && [0, 1, 5].includes(Number(currentUser.role_id))
-  );
-  const canAuditTrail = Boolean(
-    currentUser &&
-      (Number(currentUser.role_id) === 0 ||
-        Number(currentUser.role_id) === 1 ||
-        userHasPermission('perm_audit_view'))
-  );
+  // v5.23.0 : 100% permissions.
+  const canDiagnostic = userHasPermission('perm_diagnostic');
+  const canAuditTrail = userHasPermission('perm_audit_view');
 
   // Documentation buttons
   const canDocManual = userHasPermission('perm_doc_manual');
@@ -180,16 +174,13 @@ export const PlusMenuView: React.FC = () => {
   const canDocMarketing = userHasPermission('perm_doc_marketing');
   const canDocSupabase = userHasPermission('perm_doc_supabase');
 
-  // Currency
+  // Currency — v5.23.0 : 100% permissions.
   const canManageCurrency = Boolean(
     currentUser && (
       userHasPermission('perm_manage_currency') ||
       canDbConfig ||
       canLicense ||
-      canRoles ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1 ||
-      Number(currentUser.id) === 0
+      canRoles
     )
   );
 

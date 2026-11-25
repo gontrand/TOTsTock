@@ -1,6 +1,8 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { Depot, Product, StockLevel, StockMovement, User } from '../types';
 import { TABLES } from '../constants/tables';
+// v5.23.0 : vérification par permission (plus par role_id).
+import { isAdminLevel } from '../utils/userPerms';
 import {
   isNetworkOrFetchError,
   pushMovementToSupabase,
@@ -599,8 +601,8 @@ export function canUserTransferStock(
   hasTransferPermission?: boolean
 ): boolean {
   if (!user) return false;
-  const roleId = Number(user.role_id);
-  const isAuthorized = roleId === 0 || roleId === 1 || Boolean(hasTransferPermission);
+  // v5.23.0 : 100% permissions.
+  const isAuthorized = isAdminLevel(user) || Boolean(hasTransferPermission);
   if (!isAuthorized) return false;
   return getActiveAllowedDepots(user, depots).length >= 2;
 }

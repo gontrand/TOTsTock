@@ -320,25 +320,30 @@ export const MAIL_PROVIDER_PRESETS: MailPresetDefinition[] = [
   },
 ];
 
-export const MAIL_ADMIN_ROLE_IDS = [0, 1, 5, 8] as const;
+// v5.23.0 — constante conservée pour rétro-compat du fallback ultime (role 0),
+// mais plus utilisée dans la logique de décision : les permissions sont la vérité.
+export const MAIL_ADMIN_ROLE_IDS = [0] as const;
 
 /**
- * Règle unique d'autorisation pour l'administration e-mail / SMTP (UI + SQL _tot_is_mail_admin + Edge Function) :
- * rôles 0, 1, 5, 8 ou permission perm_config_email ou perm_config_db.
+ * Règle unique d'autorisation pour l'administration e-mail / SMTP (UI + SQL + Edge Function) :
+ * v5.23.0 — 100% permissions. Un utilisateur gère les paramètres mail si son rôle
+ * porte perm_config_email, perm_config_db ou perm_mail_admin. Le super admin
+ * (role 0) passe via hasPerm (bypass intégré à userHasPermission).
  */
 export function canUserManageMailSettings(
   user?: { role_id?: number | string | null } | null,
   hasPerm?: (perm: string) => boolean
 ): boolean {
   if (!user) return false;
-  const roleId = Number(user.role_id);
-  if ((MAIL_ADMIN_ROLE_IDS as readonly number[]).includes(roleId)) {
-    return true;
-  }
   if (typeof hasPerm === 'function') {
-    return Boolean(hasPerm('perm_config_email') || hasPerm('perm_config_db'));
+    return Boolean(
+      hasPerm('perm_config_email') ||
+      hasPerm('perm_config_db') ||
+      hasPerm('perm_mail_admin')
+    );
   }
-  return false;
+  // Fallback de dernier recours : le super admin reste reconnaissable localement
+  return Number(user.role_id) === 0;
 }
 
 export interface MailAccountRecord {

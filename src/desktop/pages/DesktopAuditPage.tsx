@@ -71,10 +71,9 @@ export const DesktopAuditPage: React.FC<DesktopAuditPageProps> = ({
     inventoryAuditTargetDepot,
   } = useApp();
 
-  const canAudit =
-    userHasPermission('perm_menu_inventory_audit') || Number(currentUser?.role_id) === 0;
-  const canValidate =
-    userHasPermission('perm_inventory_validate') || Number(currentUser?.role_id) === 0;
+  // v5.23.0 : 100% permissions.
+  const canAudit = userHasPermission('perm_menu_inventory_audit');
+  const canValidate = userHasPermission('perm_inventory_validate');
   const canViewPrices = userHasPermission('perm_prod_view_price');
 
   const [activeTab, setActiveTab] = useState<DesktopAuditTabId>('matrix');

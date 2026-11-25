@@ -98,14 +98,8 @@ export const TransfersValidationPanel: React.FC<TransfersValidationPanelProps> =
 
   const [overdueServerIds, setOverdueServerIds] = useState<Set<string>>(new Set());
 
-  const canReceiveAll =
-    Boolean(
-      currentUser &&
-        (Number(currentUser.id) === 0 ||
-          Number(currentUser.role_id) === 0 ||
-          Number(currentUser.role_id) === 1 ||
-          userHasPermission('perm_stock_receive_all'))
-    );
+  // v5.23.0 : 100% permissions.
+  const canReceiveAll = userHasPermission('perm_stock_receive_all');
 
   const canResolveDisputes = canUserResolveTransferDispute(
     currentUser,

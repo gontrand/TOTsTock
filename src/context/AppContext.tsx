@@ -1796,9 +1796,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Permission check: only Administrators (role_id 1, SuperAdmin id 0/role 0, or roles with config permissions)
     const canChange =
       currentUser &&
-      (Number(currentUser.id) === 0 ||
-        Number(currentUser.role_id) === 0 ||
-        Number(currentUser.role_id) === 1 ||
+      (isAdminLevel(currentUser) ||
         roles
           .find((r) => Number(r.id) === Number(currentUser.role_id))
           ?.permissions?.some(
@@ -3360,56 +3358,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [currentUser, supabaseUrl, supabaseKey, effectiveAutoLogoutMinutes, logout]);
 
   // Permissions Check
+  // v5.23.0 : pivot 100% permissions. Le SEUL contrôle codé en dur est le bypass
+  // super admin (role_id === 0). Tous les autres rôles (y compris role 1) doivent
+  // avoir explicitement la permission requise dans core_roles.permissions. Une
+  // entrée '*' dans la liste des permissions sert de wildcard de sauvegarde.
   const userHasPermission = useCallback(
     (permissionKey: string): boolean => {
       if (!currentUser) return false;
-      if (
-        Number(currentUser.id) === 0 ||
-        Number(currentUser.role_id) === 0 ||
-        Number(currentUser.role_id) === 1
-      ) {
-        return true;
-      }
+      if (Number(currentUser.role_id) === 0) return true; // bypass super admin
       const role = roles.find((r) => Number(r.id) === Number(currentUser.role_id));
-      return Boolean(role?.permissions?.includes(permissionKey));
+      if (!role) return false;
+      if (role.permissions?.includes('*')) return true; // wildcard de sauvegarde
+      return Boolean(role.permissions?.includes(permissionKey));
     },
     [currentUser, roles]
   );
+
+  // v5.23.0 : propage la liste des permissions effectives sur currentUser
+  // pour que les services qui reçoivent un User puissent décider sans
+  // dépendre du contexte React (userPerms.ts). Évite de toucher à tous les
+  // setCurrentUser existants.
+  useEffect(() => {
+    if (!currentUser) return;
+    const role = roles.find((r) => Number(r.id) === Number(currentUser.role_id));
+    const effectivePerms = Array.isArray(role?.permissions) ? [...(role!.permissions as string[])] : [];
+    const currentPerms = Array.isArray((currentUser as any).permissions)
+      ? ((currentUser as any).permissions as string[])
+      : [];
+    const same =
+      currentPerms.length === effectivePerms.length &&
+      currentPerms.every((p, i) => p === effectivePerms[i]);
+    if (!same) {
+      setCurrentUser((prev) => (prev ? { ...prev, permissions: effectivePerms } : prev));
+    }
+  }, [currentUser, roles]);
 
   const canViewPrices = useMemo(() => {
     return userHasPermission('perm_prod_view_price');
   }, [userHasPermission]);
 
-  // Preparer eligibility:
-  // Everyone is demandeur by default!
-  // To be a preparer: Department has is_preparer_dept === true, AND user has is_preparer === true (or SuperAdmin/Admin role 0/1)
+  // Preparer eligibility — v5.23.0 : la permission `perm_orders_prepare` prend
+  // la place du bypass historique role 0/1. Les admins gardent le droit via
+  // cette permission attribuée à leur rôle dans core_roles.
   const isPreparer = useMemo(() => {
     if (!currentUser) return false;
-    if (
-      Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1
-    ) {
-      return true;
+    if (userHasPermission('perm_orders_prepare')) {
+      // Même les admins respectent la règle « département autorisé » si elle existe,
+      // sauf si le rôle est super admin (qui bypass tout).
+      if (Number(currentUser.role_id) === 0) return true;
     }
     const userDept = departments.find(
       (d) => d.name.toLowerCase().trim() === (currentUser.department || '').toLowerCase().trim()
     );
     const deptAllowsPreparers = Boolean(userDept?.is_preparer_dept);
     if (!deptAllowsPreparers) {
-      return false;
+      return userHasPermission('perm_orders_prepare_any_dept');
     }
-    return Boolean(currentUser.is_preparer);
-  }, [currentUser, departments]);
+    return Boolean(currentUser.is_preparer) || userHasPermission('perm_orders_prepare');
+  }, [currentUser, departments, userHasPermission]);
 
+  // isAdmin — v5.23.0 : alias stable pour « a les droits d'administration généraux »
+  // basé sur la permission `perm_admin_level`. Le super admin (role 0) la reçoit
+  // automatiquement via userHasPermission.
   const isAdmin = useMemo(() => {
     if (!currentUser) return false;
-    return (
-      Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1
-    );
-  }, [currentUser]);
+    return userHasPermission('perm_admin_level');
+  }, [currentUser, userHasPermission]);
 
   // Responsables de département et leurs suppléants (accès inter-départements)
   // "seuls les responsables de departement et leurs supleants peuvent voir les chantiers et les utilisateur d'autres départements"
@@ -3418,8 +3432,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Super Administrateur universel (rôle 0 ou permission '*')
     if (
       Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1 ||
       userHasPermission('*')
     ) {
       return true;
@@ -3816,7 +3828,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               Number(u.id) !== 0 &&
               !u.is_blocked &&
               Boolean((u as any).auth_user_id) &&
-              (Number(u.role_id) === 0 || Number(u.role_id) === 1)
+              (isAdminLevel(u))
           );
           const isDemoSuperAdmin =
             !realAdminExists &&
@@ -6089,9 +6101,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const userIdStr = currentUser ? String(currentUser.id) : '';
       const isRequesterApprover = Boolean(
         currentUser &&
-          (Number(currentUser.id) === 0 ||
-            Number(currentUser.role_id) === 0 ||
-            userHasPermission('perm_order_approve') ||
+          (userHasPermission('perm_order_approve') ||
             userHasPermission('perm_orders_manage') ||
             (proj &&
               (String(proj.manager_id) === userIdStr ||
@@ -6246,8 +6256,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           String(existing.preparer_id) !== String(currentUser?.id) &&
           !(
             Number(currentUser?.id) === 0 ||
-            Number(currentUser?.role_id) === 0 ||
-            Number(currentUser?.role_id) === 1 ||
             userHasPermission('perm_orders_manage')
           );
 
@@ -6316,8 +6324,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(targetOrder.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         );
 
@@ -6690,8 +6696,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(existingOrder.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         );
 
@@ -6802,7 +6806,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const canApproveOrder = useCallback(
     (order: MaterialOrder): boolean => {
       if (!currentUser) return false;
-      const isSuperAdmin = Number(currentUser.role_id) === 0 || Number(currentUser.id) === 0;
+      const isSuperAdmin = isAdminLevel(currentUser);
       // Super Admin ou détenteur de la permission « Valider ou Refuser une Commande » (aucun numéro de rôle écrit en dur)
       if (
         isSuperAdmin ||
@@ -6880,9 +6884,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               order.requester_name.trim().toLowerCase() === currentUser.name.trim().toLowerCase()))
       );
       const isManagerOrAdmin =
-        Number(currentUser?.id) === 0 ||
-        Number(currentUser?.role_id) === 0 ||
-        Number(currentUser?.role_id) === 1 ||
+        isAdminLevel(currentUser) ||
         Number(currentUser?.role_id) === 2 ||
         userHasPermission('perm_orders_manage') ||
         canApproveOrder(order);
@@ -7070,8 +7072,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         (targetOrder.requester_name && targetOrder.requester_name.toLowerCase() === currentUser.name.toLowerCase());
       const isAdminOrManager =
         Number(currentUser.id) === 0 ||
-        Number(currentUser.role_id) === 0 ||
-        Number(currentUser.role_id) === 1 ||
         userHasPermission('perm_orders_manage');
 
       if (!isRequester && !isAdminOrManager) {
@@ -7150,8 +7150,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(target.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         )
       ) {
@@ -7247,8 +7245,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(target.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         )
       ) {
@@ -7293,8 +7289,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(target.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         )
       ) {
@@ -7333,8 +7327,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         String(target.preparer_id) !== String(currentUser?.id) &&
         !(
           Number(currentUser?.id) === 0 ||
-          Number(currentUser?.role_id) === 0 ||
-          Number(currentUser?.role_id) === 1 ||
           userHasPermission('perm_orders_manage')
         )
       ) {
@@ -7386,9 +7378,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!ref) return false;
 
       // Strict RLS requirement: un utilisateur sans droit d'édition ne peut modifier que products.quantity
+      // v5.23.0 : 100% permissions.
       const canEditAll =
-        Number(currentUser?.id) === 0 ||
-        Number(currentUser?.role_id) === 0 ||
         userHasPermission('perm_products_manage') ||
         userHasPermission('perm_products_edit') ||
         userHasPermission('perm_prod_edit');
@@ -7706,7 +7697,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       overrideDepotName?: string
     ) => {
       // Règle stricte (PDF Chapitre 5) : Séparation entre celui qui compte et celui qui valide les écarts
-      const isSuperAdmin = Number(currentUser?.role_id) === 0 || Number(currentUser?.id) === 0;
+      const isSuperAdmin = isAdminLevel(currentUser);
       if (!isSuperAdmin && !userHasPermission('perm_inventory_validate')) {
         return {
           success: false,

@@ -1,4 +1,5 @@
 import { masterSupabase } from './masterSupabase';
+import { isAdminLevel } from '../utils/userPerms';
 import {
   LicenseInfo,
   LicenseVerificationResult,
@@ -1196,7 +1197,7 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
       if (savedUserRaw) {
         const savedUser = JSON.parse(savedUserRaw);
         const roleId = Number(savedUser?.role_id);
-        if (roleId === 0 || roleId === 1) {
+        if (isAdminLevel(user)) {
           return true;
         }
         const savedRolesRaw = localStorage.getItem('tot_inv_roles');

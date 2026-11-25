@@ -8,6 +8,8 @@ import {
   StockTransferStatus,
   User,
 } from '../types';
+// v5.23.0 : vérifications par permission (plus par role_id en dur).
+import { isAdminLevel } from '../utils/userPerms';
 
 export interface ReceiveLineDraft {
   product_id?: string;
@@ -156,7 +158,7 @@ export function getEligibleSourceDepots(
       : Boolean(hasStoreOrTransferPerm);
 
   const activeDepots = depots.filter((d) => d.is_active !== false);
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   if (isAdmin) {
     return activeDepots;
   }
@@ -276,7 +278,7 @@ export function canUserReceiveTransfer(
 ): boolean {
   if (!user || user.is_blocked) return false;
   if (transfer.status !== 'IN_TRANSIT') return false;
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   const userIdStr = String(user.id);
   if (String(transfer.sender_id) === userIdStr && !isAdmin) {
     return false;
@@ -311,7 +313,7 @@ export function canUserConfirmTransferAdjustment(
 ): boolean {
   if (!user || user.is_blocked) return false;
   if (transfer.status !== 'AWAITING_SENDER') return false;
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   const userIdStr = String(user.id);
   if (transfer.receiver_id && String(transfer.receiver_id) === userIdStr && !isAdmin) {
     return false;
@@ -342,7 +344,7 @@ export function canUserCancelTransfer(
 ): boolean {
   if (!user || user.is_blocked) return false;
   if (transfer.status !== 'IN_TRANSIT') return false;
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   const userIdStr = String(user.id);
   if (isAdmin || String(transfer.sender_id) === userIdStr) return true;
   const srcDepot = depots.find(
@@ -365,12 +367,8 @@ export function canUserResolveTransferDispute(
   hasReceiveAllPerm: boolean
 ): boolean {
   if (!user || user.is_blocked) return false;
-  return (
-    Number(user.id) === 0 ||
-    Number(user.role_id) === 0 ||
-    Number(user.role_id) === 1 ||
-    hasReceiveAllPerm
-  );
+  // v5.23.0 : 100% permissions.
+  return isAdminLevel(user) || hasReceiveAllPerm;
 }
 
 export function isTransferOverdue(
@@ -1146,7 +1144,7 @@ export function canUserReturnOverdueTransfer(
   const status = String(transfer.status || '').toUpperCase();
   if (status !== 'IN_TRANSIT' && status !== 'AWAITING_SENDER') return false;
 
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   if (isAdmin || hasStoreOrTransferPerm) return true;
 
   if (
@@ -1196,7 +1194,7 @@ export function getSenderUnresolvedOverdueTransfers(
   nowMs: number = Date.now()
 ): StockTransferRecord[] {
   if (!user || user.is_blocked) return [];
-  const isAdmin = Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1;
+  const isAdmin = isAdminLevel(user);
   if (isAdmin) return [];
   return (transfers || []).filter(
     (tr) =>
@@ -1342,9 +1340,8 @@ export function canViewStockLevelsReport(
   hasReportStockLevelsPerm: boolean
 ): boolean {
   if (!user || user.is_blocked) return false;
-  if (Number(user.id) === 0 || Number(user.role_id) === 0 || Number(user.role_id) === 1) {
-    return true;
-  }
+  // v5.23.0 : 100% permissions.
+  if (isAdminLevel(user)) return true;
   return Boolean(hasReportStockLevelsPerm);
 }
 

@@ -25,16 +25,16 @@ function memoryStorage() {
 }
 
 describe('v5.17.0 à v5.22.1 — version bêta, conditions d’utilisation et protection de l’œuvre', () => {
-  it('aligne la version sur 5.22.1 (versionCode 26)', () => {
-    expect(APP_VERSION).toBe('5.22.1');
-    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(26);
-    expect(read('android/app/build.gradle')).toContain('versionName "5.22.1"');
+  it('aligne la version sur 5.23.0 (versionCode 28)', () => {
+    expect(APP_VERSION).toBe('5.23.0');
+    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(28);
+    expect(read('android/app/build.gradle')).toContain('versionName "5.23.0"');
   });
 
   it('mémorise l’acceptation pour la version courante du texte et la redemande si le texte change', () => {
     const storage = memoryStorage();
     expect(hasAcceptedCurrentLegal(storage)).toBe(false);
-    const rec = saveLegalAcceptance('5.22.1', storage, new Date('2026-11-18T10:00:00Z'));
+    const rec = saveLegalAcceptance('5.23.0', storage, new Date('2026-11-18T10:00:00Z'));
     expect(rec.version).toBe(LEGAL_VERSION);
     expect(hasAcceptedCurrentLegal(storage)).toBe(true);
     storage.setItem(LEGAL_STORAGE_KEY, JSON.stringify({ version: '1999-01-01', acceptedAt: 'x', appVersion: '1' }));

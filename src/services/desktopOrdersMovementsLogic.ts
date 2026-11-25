@@ -9,6 +9,7 @@ import {
   StockMovement,
   User,
 } from '../types';
+import { isAdminLevel } from '../utils/userPerms';
 import { isUserAllowedForDepot } from '../utils/crypto';
 import { sanitizeCsvCell } from './desktopInventoryLogic';
 
@@ -263,9 +264,7 @@ export function filterOrdersByStatusAndSearch(
 
   const isAdmin =
     currentUser &&
-    (Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1 ||
+    (isAdminLevel(currentUser) ||
       Number(currentUser.role_id) === 2);
 
   return orders
@@ -388,11 +387,8 @@ export function canUserApproveOrRejectOrder(
   projects: Project[] = []
 ): boolean {
   if (!order || !currentUser || order.status !== 'WAITING_APPROVAL') return false;
-  if (
-    Number(currentUser.id) === 0 ||
-    Number(currentUser.role_id) === 0 ||
-    hasManageOrdersPerm
-  ) {
+  // v5.23.0 : 100% permissions.
+  if (isAdminLevel(currentUser) || hasManageOrdersPerm) {
     return true;
   }
 

@@ -75,6 +75,10 @@ export interface User {
   binome_name?: string | null;
   created_at?: string;
   updated_at?: string;
+  // v5.23.0 : liste des permissions effectives de l'utilisateur (venant de son rôle).
+  // Peuplée côté AppContext après chargement des rôles. Permet aux services qui
+  // reçoivent un User de faire leurs vérifications sans dépendre du contexte React.
+  permissions?: string[];
 }
 
 export interface Department {

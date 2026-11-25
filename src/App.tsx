@@ -107,6 +107,7 @@ const MainLayout: React.FC = () => {
     setTransfersModalOpen,
     inactivityWarning,
     stayConnectedFromInactivity,
+    userHasPermission,
   } = useApp();
 
   useDutchDomTranslator(language);
@@ -141,12 +142,11 @@ const MainLayout: React.FC = () => {
     }
   };
 
-  const isRole0Or1 = Boolean(
-    currentUser && (Number(currentUser.role_id) === 0 || Number(currentUser.role_id) === 1)
-  );
-  const isAdminRole = Boolean(
-    currentUser && [0, 1, 5].includes(Number(currentUser.role_id))
-  );
+  // v5.23.0 : 100% permissions.
+  // isRole0Or1 est utilisé pour permettre l'accès admin en mode maintenance (bypass maintenance).
+  // isAdminRole pour l'avertissement de schéma en retard (IT, Super Admin, Admin).
+  const isRole0Or1 = userHasPermission('perm_admin_level');
+  const isAdminRole = userHasPermission('perm_admin_level') || userHasPermission('perm_diagnostic');
 
   // Règles Point 4 :
   // - APP_VERSION < min_app_version (base) : blocage « Mettez l'application à jour »

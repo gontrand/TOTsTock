@@ -75,7 +75,7 @@ export const InventoryAuditModal: React.FC = () => {
 
   const canViewPrices = userHasPermission('perm_prod_view_price');
   const canAudit = userHasPermission('perm_menu_inventory_audit');
-  const canValidate = userHasPermission('perm_inventory_validate') || Number(currentUser?.role_id) === 0;
+  const canValidate = userHasPermission('perm_inventory_validate');
 
   // Scope filters
   const [selectedDepot, setSelectedDepot] = useState<string>(() => inventoryAuditTargetDepot || 'ALL');

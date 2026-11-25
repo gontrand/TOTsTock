@@ -53,15 +53,10 @@ export const DesktopAuditLogPage: React.FC<DesktopAuditLogPageProps> = ({
 }) => {
   const { currentUser, users, language, userHasPermission } = useApp();
 
-  const isSuperAdmin = Number(currentUser?.role_id) === 0 || Number(currentUser?.id) === 0;
-  const canViewAudit =
-    isSuperAdmin ||
-    Number(currentUser?.role_id) === 1 ||
-    userHasPermission('perm_audit_view');
-  const canViewLoginLogs =
-    isSuperAdmin ||
-    Number(currentUser?.role_id) === 1 ||
-    userHasPermission('perm_view_all_login_logs');
+  // v5.23.0 : 100% permissions.
+  const isSuperAdmin = userHasPermission('perm_admin_level');
+  const canViewAudit = userHasPermission('perm_audit_view');
+  const canViewLoginLogs = userHasPermission('perm_view_all_login_logs');
 
   const [activeTab, setActiveTab] = useState<'events' | 'logins'>('events');
 

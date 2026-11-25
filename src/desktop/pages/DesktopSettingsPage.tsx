@@ -666,7 +666,15 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
     setUserRoleId(Number(u.role_id));
     setUserDepartment(u.department || '');
     setUserIsPreparer(Boolean(u.is_preparer));
-    const isAdminUser = Number(u.role_id) === 0 || Number(u.role_id) === 1;
+    // v5.23.0 : 100% permissions. Un utilisateur a accès à tous les dépôts si son
+    // rôle a perm_admin_level, perm_depot_view_all ou si c'est le super admin.
+    const targetRole = roles.find((r) => Number(r.id) === Number(u.role_id));
+    const isAdminUser = Boolean(
+      targetRole?.permissions?.includes('*') ||
+      targetRole?.permissions?.includes('perm_admin_level') ||
+      targetRole?.permissions?.includes('perm_depot_view_all') ||
+      Number(u.role_id) === 0
+    );
     const isAll = Boolean(
       u.allowed_depots?.includes('*') ||
         (isAdminUser && (!u.allowed_depots || u.allowed_depots.length === 0))
@@ -705,12 +713,9 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   };
 
   const [draftDepotHolders, setDraftDepotHolders] = useState<DraftDepotHolder[]>([]);
+  // v5.23.0 : 100% permissions.
   const canEditDepotHolders = Boolean(
-    !currentUser ||
-      Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1 ||
-      userHasPermission('perm_manage_depots')
+    !currentUser || userHasPermission('perm_manage_depots')
   );
 
   const resetDepotForm = () => {
@@ -2918,9 +2923,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                         >
                                           <KeyRound className="w-3.5 h-3.5" />
                                         </button>
-                                        {(Number(currentUser?.role_id) === 0 ||
-                                          Number(currentUser?.role_id) === 1 ||
-                                          userHasPermission('perm_user_force_pin')) && (
+                                        {userHasPermission('perm_user_force_pin') && (
                                           <button
                                             type="button"
                                             onClick={async () => {

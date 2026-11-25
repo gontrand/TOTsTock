@@ -169,10 +169,8 @@ export const OrdersPreparationModal: React.FC = () => {
   const [thermalFormat, setThermalFormat] = useState<'60x40' | '100x150'>('60x40');
 
   // User depot access evaluation (v58: union allowed_depots ∪ depotHolders; vide = aucun pour un non-admin)
-  const isSuperAdmin =
-    Number(currentUser?.id) === 0 ||
-    Number(currentUser?.role_id) === 0 ||
-    Number(currentUser?.role_id) === 1;
+  // v5.23.0 : 100% permissions. L'accès « tous dépôts » passe par perm_admin_level ou perm_depot_view_all.
+  const isSuperAdmin = userHasPermission('perm_admin_level') || userHasPermission('perm_depot_view_all');
 
   const userAllowedDepots = useMemo(() => {
     if (!currentUser) return [];

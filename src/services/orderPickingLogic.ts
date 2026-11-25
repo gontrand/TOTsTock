@@ -506,9 +506,7 @@ export function isOrderLockedForUser(
   if (!currentUser) return true;
 
   const isSuperOrAdmin =
-    Number(currentUser.id) === 0 ||
-    Number(currentUser.role_id) === 0 ||
-    Number(currentUser.role_id) === 1 ||
+    isAdminLevel(currentUser) ||
     hasManagePerm;
 
   if (isSuperOrAdmin) return false;
@@ -526,9 +524,7 @@ export function canUserAccessScannerMode(
 ): boolean {
   if (!currentUser) return false;
   const isRole0Or1 =
-    Number(currentUser.id) === 0 ||
-    Number(currentUser.role_id) === 0 ||
-    Number(currentUser.role_id) === 1;
+    isAdminLevel(currentUser);
   if (isRole0Or1) return true;
   return Boolean((isPreparer || currentUser.is_preparer) && hasOrderPrepPerm);
 }

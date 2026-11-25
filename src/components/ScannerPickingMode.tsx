@@ -375,19 +375,17 @@ export const ScannerPickingMode: React.FC = () => {
     [orders, activeOrderId]
   );
 
-  // Allowed depots for filter
+  // Allowed depots for filter — v5.23.0 : 100% permissions.
   const userAllowedDepots = useMemo(() => {
     if (!currentUser) return [];
-    const isSuper =
-      Number(currentUser.id) === 0 ||
-      Number(currentUser.role_id) === 0 ||
-      Number(currentUser.role_id) === 1;
-    if (isSuper) return depots.map((d) => d.name);
+    if (userHasPermission('perm_admin_level') || userHasPermission('perm_depot_view_all')) {
+      return depots.map((d) => d.name);
+    }
     if (Array.isArray(currentUser.allowed_depots) && currentUser.allowed_depots.length > 0) {
       return currentUser.allowed_depots;
     }
     return depots.map((d) => d.name);
-  }, [currentUser, depots]);
+  }, [currentUser, depots, userHasPermission]);
 
   // Filtered and sorted orders for Screen 1
   const preparerOrders = useMemo(
