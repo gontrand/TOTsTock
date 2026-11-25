@@ -48,11 +48,11 @@ const ALLOWED_FILES_FOR_ROLE_ID_0 = new Set([
 ]);
 
 describe('v5.23.0 — 100% permissions (plus de role_id codés en dur)', () => {
-  it('aligne la version sur 5.23.1 (versionCode 29)', () => {
-    expect(APP_VERSION).toBe('5.23.1');
+  it('aligne la version sur 5.23.2 (versionCode 30)', () => {
+    expect(APP_VERSION).toBe('5.23.2');
     expect(EXPECTED_SCHEMA_VERSION).toBe('2.10.0');
-    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(29);
-    expect(read('android/app/build.gradle')).toContain('versionName "5.23.1"');
+    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(30);
+    expect(read('android/app/build.gradle')).toContain('versionName "5.23.2"');
   });
 
   it('userHasPermission bypasse uniquement role_id === 0 (plus role 1)', () => {

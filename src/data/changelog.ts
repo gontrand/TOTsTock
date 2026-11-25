@@ -19,6 +19,30 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.2',
+    schemaVersion: '2.10.0',
+    date: '2026-11-25',
+    title: {
+      fr: 'Correctif : tests e-mail et scanner alignés sur les permissions',
+      en: 'Fix: email and scanner tests aligned with permissions',
+      nl: 'Fix: e-mail- en scannertests afgestemd op permissies',
+    },
+    highlights: {
+      fr: [
+        'Tests e-mail/SMTP et verrouillage de commande alignés : le rôle 1 n\'a plus de bypass, seules les permissions (perm_mail_admin, perm_admin_level) comptent.',
+        'Aucun changement fonctionnel : correctif de la suite de tests uniquement.',
+      ],
+      en: [
+        'Email/SMTP and order-lock tests aligned: role 1 no longer bypasses, only permissions (perm_mail_admin, perm_admin_level) count.',
+        'No functional change: test suite fix only.',
+      ],
+      nl: [
+        'E-mail/SMTP- en ordervergrendelingstests afgestemd: rol 1 heeft geen bypass meer, alleen permissies (perm_mail_admin, perm_admin_level) tellen.',
+        'Geen functionele wijziging: enkel een fix van de testsuite.',
+      ],
+    },
+  },
+  {
     version: '5.23.1',
     schemaVersion: '2.10.0',
     date: '2026-11-25',

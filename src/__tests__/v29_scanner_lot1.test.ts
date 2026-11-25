@@ -249,7 +249,7 @@ describe('Prompt v29 — Lot 1: Pure Order Picking Logic & Scanner Mode rules', 
 
     const prep1: User = { id: 'u-prep-1', name: 'Marc', trigram: 'MMA', role_id: 3, pin_hash: '', is_blocked: false };
     const prep2: User = { id: 'u-prep-2', name: 'Paul', trigram: 'PPA', role_id: 3, pin_hash: '', is_blocked: false };
-    const adminUser: User = { id: 'u-admin', name: 'Admin', trigram: 'ADM', role_id: 1, pin_hash: '', is_blocked: false };
+    const adminUser: User = { id: 'u-admin', name: 'Admin', trigram: 'ADM', role_id: 1, permissions: ['perm_admin_level'], pin_hash: '', is_blocked: false };
 
     expect(isOrderLockedForUser(order, prep1)).toBe(false);
     expect(isOrderLockedForUser(order, prep2)).toBe(true);
