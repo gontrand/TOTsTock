@@ -19,6 +19,30 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.4',
+    schemaVersion: '2.10.0',
+    date: '2026-11-25',
+    title: {
+      fr: 'Correctif : suite de tests (valeurs numériques restaurées)',
+      en: 'Fix: test suite (numeric values restored)',
+      nl: 'Fix: testsuite (numerieke waarden hersteld)',
+    },
+    highlights: {
+      fr: [
+        'Tests v32, v50 et v56 restaurés : trois valeurs sans lien avec la version (hauteur d\'étiquette, limite d\'e-mails/heure, minutes d\'inactivité) avaient été modifiées par erreur.',
+        'Aucun changement fonctionnel dans l\'application.',
+      ],
+      en: [
+        'Tests v32, v50 and v56 restored: three version-unrelated values (label height, emails/hour limit, idle minutes) had been changed by mistake.',
+        'No functional change in the application.',
+      ],
+      nl: [
+        'Tests v32, v50 en v56 hersteld: drie waarden zonder verband met de versie (labelhoogte, e-maillimiet per uur, inactiviteitsminuten) waren per vergissing gewijzigd.',
+        'Geen functionele wijziging in de applicatie.',
+      ],
+    },
+  },
+  {
     version: '5.23.3',
     schemaVersion: '2.10.0',
     date: '2026-11-25',

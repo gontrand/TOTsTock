@@ -375,7 +375,7 @@ describe('Prompt v32 — Pont Frontend desktopBridge.ts & Poste d’impression',
     const callArg = printLabelSpy.mock.calls[0][0];
     expect(callArg.printerName).toBe('Zebra_ZD421');
     expect(callArg.pageWidthMm).toBe(50);
-    expect(callArg.pageHeightMm).toBe(31);
+    expect(callArg.pageHeightMm).toBe(30);
     expect(callArg.copies).toBe(2);
     expect(callArg.silent).toBe(true);
     expect(callArg.html).toContain('VIS-M8-50');
