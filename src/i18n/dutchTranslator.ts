@@ -6,6 +6,16 @@ import type { Language } from './translations';
  * across all components, modals, context messages, roles, departments, and permissions.
  */
 export const EXACT_NL_DICTIONARY: Record<string, string> = {
+  "Administration level (cross-cutting rights)": "Beheerdersniveau (transversale rechten)",
+  "v5.23.0 — \"Admin\" pivot. Replaces the historical role 0/1 bypass: screens that offered full access to administrators now check this permission.": "v5.23.0 — „Admin”-spil. Vervangt de historische bypass voor rol 0/1: schermen met volledige toegang voor beheerders controleren nu dit recht.",
+  "Access to installation diagnostic": "Toegang tot installatiediagnose",
+  "v5.23.0 — Grants access to the Diagnostic modal (RLS / schema / functions compliance view). Replaces the historical role 0/1/5 bypass.": "v5.23.0 — Geeft toegang tot het diagnosevenster (RLS / schema / functies). Vervangt de historische bypass voor rol 0/1/5.",
+  "View all depots (ignoring user restriction)": "Alle depots bekijken (beperking negeren)",
+  "v5.23.0 — Lets the user see every depot in dropdowns and filters, even when allowed_depots is restricted.": "v5.23.0 — Laat de gebruiker elk depot zien in keuzelijsten en filters, ook als allowed_depots beperkt is.",
+  "Email / SMTP administration": "E-mail / SMTP-beheer",
+  "v5.23.0 — Pivot for canUserManageMailSettings. Replaces the historical role 0/1/5/8 list.": "v5.23.0 — Spil voor canUserManageMailSettings. Vervangt de historische lijst met rol 0/1/5/8.",
+  "Prepare orders from all departments": "Bestellingen van alle afdelingen voorbereiden",
+  "v5.23.0 — Bypasses the \"preparation restricted to preparer-flagged departments\" rule.": "v5.23.0 — Omzeilt de regel „voorbereiding beperkt tot afdelingen van voorbereiders”.",
   // Locale codes
   'fr-FR': 'nl-NL',
   'en-US': 'nl-NL',

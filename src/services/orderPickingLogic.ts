@@ -1,5 +1,6 @@
 import { Depot, MaterialOrder, MaterialOrderItem, Product, Role, User } from '../types';
 import { playScanBeep } from '../utils/crypto';
+import { isAdminLevel } from '../utils/userPerms';
 import { getUnlockedAudioContext, hapticFeedback } from '../utils/haptics';
 import { isUserAuthorizedPreparerForOrder } from './notificationService';
 import {

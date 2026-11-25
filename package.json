@@ -3,7 +3,7 @@
   "private": true,
   "license": "UNLICENSED",
   "author": "Gontrand NYUNG",
-  "version": "5.23.0",
+  "version": "5.23.1",
   "type": "module",
   "scripts": {
     "predev": "npm run build:sql",

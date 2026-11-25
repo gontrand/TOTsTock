@@ -269,6 +269,7 @@ import {
   recordExplicitUserScanActivity,
 } from '../services/inactivityWatchdog';
 import { subscribeDesktopPowerResume } from '../services/desktopBridge';
+import { isAdminLevel } from '../utils/userPerms';
 import {
   buildNotificationKey,
   isUserRecipientForOrderEvent,

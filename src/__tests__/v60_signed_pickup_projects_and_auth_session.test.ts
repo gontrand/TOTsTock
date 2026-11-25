@@ -172,7 +172,7 @@ describe('v60 — Section 8 : Retrait signé (demandeur ou délégué uniquement
     expect(canUserViewOrderSignature({ id: 'u_dep_dep', role_id: 3 }, collectedOrder, departments, projects, users)).toBe(true);
     expect(canUserViewOrderSignature({ id: 'u_proj_mgr', role_id: 3 }, collectedOrder, departments, projects, users)).toBe(true);
     expect(canUserViewOrderSignature({ id: 'u_proj_dep', role_id: 3 }, collectedOrder, departments, projects, users)).toBe(true);
-    expect(canUserViewOrderSignature({ id: 'u_admin', role_id: 1 }, collectedOrder, departments, projects, users)).toBe(true);
+    expect(canUserViewOrderSignature({ id: 'u_admin', role_id: 1, permissions: ['perm_admin_level'] } as any, collectedOrder, departments, projects, users)).toBe(true);
     expect(canUserViewOrderSignature({ id: 'u_super', role_id: 0 }, collectedOrder, departments, projects, users)).toBe(true);
 
     // Non habilité : autre collaborateur
@@ -252,9 +252,9 @@ describe('v60 — Section 9 : Projets en cours (IN_PROGRESS) / terminés (CLOSED
     expect(badge).toContain('par Marc Resp');
   });
 
-  it('autorise uniquement admin (0/1), resp dép + suppléants, conducteur + suppléants à terminer/rouvrir un projet', () => {
+  it('autorise uniquement super admin (0) / perm_admin_level, resp dép + suppléants, conducteur + suppléants à terminer/rouvrir un projet', () => {
     expect(canUserManageProjectStatus({ id: 'u_admin', role_id: 0 }, openProject, departments)).toBe(true);
-    expect(canUserManageProjectStatus({ id: 'u_admin1', role_id: 1 }, openProject, departments)).toBe(true);
+    expect(canUserManageProjectStatus({ id: 'u_admin1', role_id: 1, permissions: ['perm_admin_level'] } as any, openProject, departments)).toBe(true);
     expect(canUserManageProjectStatus({ id: 'u_dep_mgr', role_id: 3 }, openProject, departments)).toBe(true);
     expect(canUserManageProjectStatus({ id: 'u_dep_dep', role_id: 3 }, openProject, departments)).toBe(true);
     expect(canUserManageProjectStatus({ id: 'u_site_mgr', role_id: 3 }, openProject, departments)).toBe(true);

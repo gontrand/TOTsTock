@@ -52,6 +52,7 @@ describe('v59 — Fiche référence cliquable, véhicules/conteneurs, KPI, entr�
       name: 'Admin Global',
       trigram: 'ADM',
       role_id: 1,
+      permissions: ['perm_admin_level'],
       department: 'Direction',
       custom_permissions: [],
     },

@@ -19,6 +19,30 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-25',
+    title: {
+      fr: 'Correctif : imports manquants et tests alignés sur le modèle 100 % permissions',
+      en: 'Fix: missing imports and tests aligned with the permissions-only model',
+      nl: 'Fix: ontbrekende imports en tests afgestemd op het 100 % permissiesmodel',
+    },
+    highlights: {
+      fr: [
+        'Correction d\'imports manquants (isAdminLevel) dans AppContext et orderPickingLogic qui provoquaient une ReferenceError au runtime (mode scanner, préparation de commandes).',
+        'Traductions néerlandaises ajoutées pour les nouvelles permissions (niveau administration, diagnostic, tous les dépôts, administration e-mail, préparation tous départements) ; tests v50, v59 et v60 alignés sur le modèle par permissions.',
+      ],
+      en: [
+        'Fixed missing isAdminLevel imports in AppContext and orderPickingLogic that caused a runtime ReferenceError (scanner mode, order preparation).',
+        'Dutch translations added for the new permissions (administration level, diagnostic, all depots, email administration, prepare all departments); v50, v59 and v60 tests aligned with the permissions model.',
+      ],
+      nl: [
+        'Ontbrekende isAdminLevel-imports hersteld in AppContext en orderPickingLogic die een ReferenceError tijdens runtime veroorzaakten (scannermodus, orderbereiding).',
+        'Nederlandse vertalingen toegevoegd voor de nieuwe permissies (beheerdersniveau, diagnose, alle depots, e-mailbeheer, alle afdelingen voorbereiden); tests v50, v59 en v60 afgestemd op het permissiesmodel.',
+      ],
+    },
+  },
+  {
     version: '5.23.0',
     schemaVersion: '2.10.0',
     date: '2026-11-25',
