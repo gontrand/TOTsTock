@@ -19,6 +19,78 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.23.7',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Correctif : installation SQL (caractère % dans les messages d\'étape)',
+      en: 'Fix: SQL installation (% character in step messages)',
+      nl: 'Fix: SQL-installatie (%-teken in stapmeldingen)',
+    },
+    highlights: {
+      fr: [
+        'Le générateur d\'install.sql échappe désormais le caractère % dans les messages RAISE NOTICE ; l\'étape 24 provoquait « too few parameters specified for RAISE ».',
+        'Nouveau test de garde sur dist/install.sql ; installation validée sur PostgreSQL 16 (avec et sans Vault, puis rejeu sans erreur).',
+      ],
+      en: [
+        'The install.sql generator now escapes the % character in RAISE NOTICE messages; step 24 raised "too few parameters specified for RAISE".',
+        'New guard test on dist/install.sql; installation validated on PostgreSQL 16 (with and without Vault, then replayed without errors).',
+      ],
+      nl: [
+        'De install.sql-generator escapet nu het %-teken in RAISE NOTICE-meldingen; stap 24 gaf "too few parameters specified for RAISE".',
+        'Nieuwe controletest op dist/install.sql; installatie gevalideerd op PostgreSQL 16 (met en zonder Vault, daarna zonder fouten herhaald).',
+      ],
+    },
+  },
+  {
+    version: '5.23.6',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Correctif : envoi de rapports par e-mail sur la base active',
+      en: 'Fix: report emails use the active database connection',
+      nl: 'Fix: rapport-e-mails gebruiken de actieve databaseverbinding',
+    },
+    highlights: {
+      fr: [
+        'L\'envoi de rapports par e-mail utilise la connexion Supabase active de l\'application (même cause que le panneau e-mail corrigé en 5.23.5).',
+        'Aucun changement de schéma SQL.',
+      ],
+      en: [
+        'Report emailing uses the application\'s active Supabase connection (same cause as the email panel fixed in 5.23.5).',
+        'No SQL schema change.',
+      ],
+      nl: [
+        'Het versturen van rapporten per e-mail gebruikt de actieve Supabase-verbinding (zelfde oorzaak als het e-mailpaneel uit 5.23.5).',
+        'Geen wijziging van het SQL-schema.',
+      ],
+    },
+  },
+  {
+    version: '5.23.5',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Correctif : panneau e-mail connecté à la base active',
+      en: 'Fix: email panel uses the active database connection',
+      nl: 'Fix: e-mailpaneel gebruikt de actieve databaseverbinding',
+    },
+    highlights: {
+      fr: [
+        'Le panneau « E-mails Multi-Fournisseurs » utilise désormais la connexion Supabase active de l\'application ; il affichait à tort « Connexion Supabase requise » alors que la base était connectée.',
+        'Aucun changement de schéma SQL.',
+      ],
+      en: [
+        'The "Multi-provider emails" panel now uses the application\'s active Supabase connection; it wrongly showed "Supabase connection required" while the database was connected.',
+        'No SQL schema change.',
+      ],
+      nl: [
+        'Het paneel "E-mails multi-providers" gebruikt nu de actieve Supabase-verbinding van de applicatie; het toonde ten onrechte "Supabase-verbinding vereist" terwijl de database verbonden was.',
+        'Geen wijziging van het SQL-schema.',
+      ],
+    },
+  },
+  {
     version: '5.23.4',
     schemaVersion: '2.10.0',
     date: '2026-11-25',

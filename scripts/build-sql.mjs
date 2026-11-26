@@ -486,7 +486,7 @@ export function generateInstallSqlContent(rootDir = ROOT_DIR) {
   for (const item of SQL_STEPS) {
     const absSource = path.join(rootDir, item.sourceRel);
     const raw = fs.readFileSync(absSource, 'utf8').trim();
-    const safeNotice = `=== [TOT STOCK v${appVersion}] Étape ${item.step} : ${item.label} (${item.sourceRel}) ===`.replace(/'/g, "''");
+    const safeNotice = `=== [TOT STOCK v${appVersion}] Étape ${item.step} : ${item.label} (${item.sourceRel}) ===`.replace(/%/g, '%%').replace(/'/g, "''");
 
     chunks.push(
       `-- -------------------------------------------------------------------------`,

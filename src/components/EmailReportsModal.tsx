@@ -194,9 +194,9 @@ export const EmailReportsModal: React.FC = () => {
 
     setIsSending(true);
     try {
-      const supabaseUrl = (safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
-      const supabaseKey = (safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const sendUrl = String(supabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+      const sendKey = String(supabaseKey || safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
+      const client = getClientSupabase(sendUrl, sendKey);
 
       let success = false;
       let errorMsg = '';

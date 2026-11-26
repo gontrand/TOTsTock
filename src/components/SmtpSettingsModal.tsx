@@ -68,6 +68,8 @@ export const EmailSettingsPanel: React.FC<EmailSettingsPanelProps> = ({
     updateSetting,
     currentUser,
     userHasPermission,
+    supabaseUrl: ctxSupabaseUrl,
+    supabaseKey: ctxSupabaseKey,
   } = useApp();
 
   const isAdmin = canUserManageMailSettings(currentUser, userHasPermission);
@@ -129,10 +131,12 @@ export const EmailSettingsPanel: React.FC<EmailSettingsPanelProps> = ({
   const [isPurgingLogs, setIsPurgingLogs] = useState(false);
 
   const getSupabaseClient = useCallback(() => {
-    const supabaseUrl = (safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
-    const supabaseKey = (safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
+    // Priorité à la connexion active de l'application (même source que le reste de l'app),
+    // puis anciens noms de clés en dernier recours.
+    const supabaseUrl = String(ctxSupabaseUrl || safeGetSensitiveItem('tot_inv_supabase_url') || '').trim();
+    const supabaseKey = String(ctxSupabaseKey || safeGetSensitiveItem('tot_inv_supabase_key') || '').trim();
     return getClientSupabase(supabaseUrl, supabaseKey);
-  }, []);
+  }, [ctxSupabaseUrl, ctxSupabaseKey]);
 
   // Nettoyage de sécurité des anciens identifiants éventuels dans localStorage
   useEffect(() => {
