@@ -27,6 +27,7 @@ import { DesktopProductDetailPanel } from '../components/DesktopProductDetailPan
 import { registerDesktopInlinePanel } from '../../services/desktopInlinePanelRegistry';
 import { DesktopProductFormDrawer } from '../components/DesktopProductFormDrawer';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { BulkDeleteProductsDialog } from '../../components/BulkDeleteProductsDialog';
 import { requestGuardedNavigation } from '../../services/unsavedChangesGuard';
 import { copyToClipboard } from '../../services/clipboard';
 import { logAuditEventServer } from '../../services/auditService';
@@ -52,6 +53,7 @@ import {
   Copy,
   ExternalLink,
   X,
+  Trash2,
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
@@ -99,6 +101,8 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
   const canCreateProduct = userHasPermission('perm_action_create_prod') || canEditProduct;
   const canViewPrices = userHasPermission('perm_prod_view_price');
   const canPrintLabels = userHasPermission('perm_menu_print_labels');
+  const canDeleteProducts = userHasPermission('perm_prod_delete');
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const canExportCsv = userHasPermission('perm_mov_export_csv') || userHasPermission('perm_prod_view');
 
   // Le panneau latéral remplace la fiche modale tant que cette page est affichée
@@ -892,7 +896,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
 
         {/* Bulk Selection Action Bar */}
         {selectedIds.size > 0 && (
-          <div className="mx-4 mt-3 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 text-white flex items-center justify-between gap-4 text-xs no-print">
+          <div className="mx-4 mt-3 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 text-white flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs no-print">
             <div className="flex items-center gap-2 font-semibold">
               <span className="font-mono tabular-nums text-orange-400">{selectedIds.size}</span>
               <span>
@@ -904,7 +908,7 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                 )}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {canPrintLabels && (
                 <button
                   type="button"
@@ -961,6 +965,19 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
                   <span>{t('desktop_bulk_export_csv')}</span>
                 </button>
               )}
+              {canDeleteProducts && (
+                <button
+                  type="button"
+                  data-testid="desktop-bulk-delete-btn"
+                  onClick={() => setBulkDeleteOpen(true)}
+                  className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>
+                    {tr(language, 'Supprimer la sélection', 'Delete selection', 'Selectie verwijderen')}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setSelectedIds(new Set())}
@@ -970,6 +987,14 @@ export const DesktopInventoryPage: React.FC<DesktopInventoryPageProps> = ({
               </button>
             </div>
           </div>
+        )}
+
+        {bulkDeleteOpen && canDeleteProducts && (
+          <BulkDeleteProductsDialog
+            products={selectedProducts}
+            onClose={() => setBulkDeleteOpen(false)}
+            onDone={() => setSelectedIds(new Set())}
+          />
         )}
 
         {/* Data Table Container */}

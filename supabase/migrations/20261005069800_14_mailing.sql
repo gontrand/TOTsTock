@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS public.core_mail_senders (
     length(trim(from_name)) BETWEEN 1 AND 120
   ),
   CONSTRAINT core_mail_senders_from_email_chk CHECK (
-    from_email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
+    from_email = ''
+    OR from_email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
   ),
   CONSTRAINT core_mail_senders_reply_to_chk CHECK (
     reply_to IS NULL

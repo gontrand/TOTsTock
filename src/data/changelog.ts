@@ -19,6 +19,108 @@ export interface ChangelogEntry {
  */
 export const RECENT_CHANGELOG: readonly ChangelogEntry[] = [
   {
+    version: '5.24.2',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Validation claire des expéditeurs et comptes Microsoft 365',
+      en: 'Clear validation of senders and Microsoft 365 accounts',
+      nl: 'Duidelijke validatie van afzenders en Microsoft 365-accounts',
+    },
+    highlights: {
+      fr: [
+        'Le nom affiché d\'un expéditeur est vérifié (1 à 120 caractères) avant l\'envoi à la base.',
+        'Un compte Microsoft 365 exige un Tenant ID et un Client ID valides, avec un message explicite au lieu d\'une erreur SQL.',
+      ],
+      en: [
+        'A sender display name is checked (1 to 120 characters) before it reaches the database.',
+        'A Microsoft 365 account requires a valid Tenant ID and Client ID, with a clear message instead of a SQL error.',
+      ],
+      nl: [
+        'De weergavenaam van een afzender wordt gecontroleerd (1 tot 120 tekens) voordat hij de database bereikt.',
+        'Een Microsoft 365-account vereist een geldig Tenant ID en Client ID, met een duidelijke melding in plaats van een SQL-fout.',
+      ],
+    },
+  },
+  {
+    version: '5.24.1',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Correctif : expéditeur e-mail vide enregistrable',
+      en: 'Fix: empty email sender can be saved',
+      nl: 'Fix: lege e-mailafzender kan worden opgeslagen',
+    },
+    highlights: {
+      fr: [
+        'Enregistrer un expéditeur sans adresse (repli sur le compte d\'envoi actif) ne provoque plus l\'erreur « core_mail_senders_from_email_chk ».',
+        'La correction est incluse dans l\'étape SQL 25 : ré-exécutez install.sql sur la base cliente.',
+      ],
+      en: [
+        'Saving a sender without an address (falling back to the active sending account) no longer raises « core_mail_senders_from_email_chk ».',
+        'The fix is part of SQL step 25: re-run install.sql on the client database.',
+      ],
+      nl: [
+        'Een afzender zonder adres opslaan (terugval op het actieve verzendaccount) geeft niet langer de fout « core_mail_senders_from_email_chk ».',
+        'De fix zit in SQL-stap 25: voer install.sql opnieuw uit op de klantdatabase.',
+      ],
+    },
+  },
+  {
+    version: '5.24.0',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Suppression multiple de références, migration de dépôt et boutons toujours visibles',
+      en: 'Bulk item deletion, depot migration and always-visible buttons',
+      nl: 'Meervoudig verwijderen van referenties, depotmigratie en altijd zichtbare knoppen',
+    },
+    highlights: {
+      fr: [
+        'Inventaire (bureau) : « Supprimer la sélection » supprime plusieurs références en une fois, après confirmation obligatoire (saisie de SUPPRIMER au-delà de 10), réservé à la permission perm_prod_delete.',
+        'Suppression d\'un dépôt : le contenu complet (références et lignes de stock, quantités additionnées si la référence existe déjà) est migré vers le dépôt choisi avant la suppression, de façon transactionnelle côté serveur (étape SQL 25).',
+        'Présentation : fenêtres de confirmation toujours entièrement visibles (boutons fixes en bas), barre d\'actions de sélection qui passe à la ligne, colonne Actions du tableau des utilisateurs collée à droite.',
+        'Correctif : une référence à une variable inexistante dans la découverte de licence est corrigée.',
+      ],
+      en: [
+        'Inventory (desktop): "Delete selection" removes several items at once after mandatory confirmation (type DELETE beyond 10), restricted to the perm_prod_delete permission.',
+        'Deleting a depot: its full content (items and stock lines, quantities added when the item already exists) is migrated to the chosen depot first, transactionally on the server (SQL step 25).',
+        'Layout: confirmation dialogs always fully visible (fixed buttons at the bottom), selection action bar wraps, Actions column of the users table pinned to the right.',
+        'Fix: a reference to a non-existent variable in license discovery has been corrected.',
+      ],
+      nl: [
+        'Inventaris (desktop): "Selectie verwijderen" verwijdert meerdere referenties tegelijk na verplichte bevestiging (typ VERWIJDEREN vanaf 10), voorbehouden aan het recht perm_prod_delete.',
+        'Depot verwijderen: de volledige inhoud (referenties en voorraadlijnen, hoeveelheden opgeteld als de referentie al bestaat) wordt eerst naar het gekozen depot gemigreerd, transactioneel op de server (SQL-stap 25).',
+        'Weergave: bevestigingsvensters altijd volledig zichtbaar (vaste knoppen onderaan), actiebalk van de selectie loopt door op een nieuwe regel, kolom Acties van de gebruikerstabel rechts vastgezet.',
+        'Fix: een verwijzing naar een niet-bestaande variabele in de licentie-ontdekking is hersteld.',
+      ],
+    },
+  },
+  {
+    version: '5.23.8',
+    schemaVersion: '2.10.0',
+    date: '2026-11-26',
+    title: {
+      fr: 'Exemple d\'amorçage du compte admin avec données virtuelles',
+      en: 'Admin account bootstrap example with sample data',
+      nl: 'Voorbeeld van opstart van het beheerdersaccount met voorbeeldgegevens',
+    },
+    highlights: {
+      fr: [
+        'Nouveau script d\'exemple (docs/exemples) : liaison du compte administrateur et données fictives (dépôt, catégories, 3 articles), rejouable, avec script de nettoyage.',
+        'Procédure 2 (base client) : nouvelle section 7.4 décrivant l\'amorçage de démonstration.',
+      ],
+      en: [
+        'New example script (docs/exemples): admin account linking and sample data (depot, categories, 3 items), replayable, with a cleanup script.',
+        'Procedure 2 (client base): new section 7.4 describing the demo bootstrap.',
+      ],
+      nl: [
+        'Nieuw voorbeeldscript (docs/exemples): koppeling van het beheerdersaccount en voorbeeldgegevens (depot, categorieën, 3 artikelen), herhaalbaar, met opruimscript.',
+        'Procedure 2 (klantdatabase): nieuwe sectie 7.4 met de demo-opstart.',
+      ],
+    },
+  },
+  {
     version: '5.23.7',
     schemaVersion: '2.10.0',
     date: '2026-11-26',

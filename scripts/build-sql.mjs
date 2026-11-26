@@ -153,6 +153,12 @@ export const SQL_STEPS = [
     label: 'v5.23.0 : grants étendus (service_role + authenticated + anon), seeding perm_admin_level sur rôles 0/1/2/5/6/8, policies 100% permissions',
   },
   {
+    step: '25',
+    sourceRel: 'supabase-client/25_bulk_delete_and_depot_migration.sql',
+    migrationName: '20261005069999_25_bulk_delete_and_depot_migration.sql',
+    label: 'v5.24.0 : suppression multiple de références et migration du contenu d\'un dépôt (RPC delete_products_bulk, migrate_depot_content)',
+  },
+  {
     step: '07',
     sourceRel: 'supabase-client/07_app_compat.sql',
     migrationName: '20261005070000_07_app_compat.sql',

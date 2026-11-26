@@ -25,10 +25,10 @@ function memoryStorage() {
 }
 
 describe('v5.17.0 à v5.22.1 — version bêta, conditions d’utilisation et protection de l’œuvre', () => {
-  it('aligne la version sur 5.23.7 (versionCode 35)', () => {
-    expect(APP_VERSION).toBe('5.23.7');
-    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(35);
-    expect(read('android/app/build.gradle')).toContain('versionName "5.23.7"');
+  it('aligne la version sur 5.24.2 (versionCode 39)', () => {
+    expect(APP_VERSION).toBe('5.24.2');
+    expect(JSON.parse(read('android/version-code.json')).versionCode).toBe(39);
+    expect(read('android/app/build.gradle')).toContain('versionName "5.24.2"');
   });
 
   it('mémorise l’acceptation pour la version courante du texte et la redemande si le texte change', () => {

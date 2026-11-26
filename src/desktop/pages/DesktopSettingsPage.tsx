@@ -4,6 +4,7 @@ import { canUserManageMailSettings } from '../../services/mailingService';
 import { copyToClipboard as copyTextToClipboard } from '../../services/clipboard';
 import { shouldWarnPreparerWithoutDepot } from '../../services/notificationService';
 import { SearchableSelect } from '../../components/SearchableSelect';
+import { DepotDeleteDialog } from '../../components/DepotDeleteDialog';
 import {
   AlertTriangle,
   ArrowDownAZ,
@@ -404,6 +405,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
   // Feedback message
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [depotToDeleteDialog, setDepotToDeleteDialog] = useState<Depot | null>(null);
 
   // Local encryption & safe local reset state
   const [cryptoMode, setCryptoMode] = useState(() => getLocalCryptoMode());
@@ -2769,7 +2771,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               <ArrowUpDown className="w-3 h-3" />
                             </button>
                           </th>
-                          <th className="py-2 px-3 text-right">Actions</th>
+                          <th className="py-2 px-3 text-right sticky right-0 z-10 bg-slate-50 dark:bg-slate-800 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.2)]">Actions</th>
                         </tr>
                         {/* Ligne de filtres par colonne */}
                         <tr className="bg-slate-100/70 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700 normal-case font-normal">
@@ -2845,7 +2847,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               <option value="PREPARER">Préparateur</option>
                             </SearchableSelect>
                           </th>
-                          <th className="py-1.5 px-2 text-right text-[10px] text-slate-400">
+                          <th className="py-1.5 px-2 text-right text-[10px] text-slate-400 sticky right-0 z-10 bg-slate-100 dark:bg-slate-800 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.2)]">
                             Col. filtrées
                           </th>
                         </tr>
@@ -2863,7 +2865,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                               roles.find((r) => r.id === u.role_id)?.name || `Rôle #${u.role_id}`;
                             const isSuper = Number(u.id) === 0 || Number(u.role_id) === 0;
                             return (
-                              <tr key={String(u.id)} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                              <tr key={String(u.id)} className="group hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
                                 <td className="py-2 px-3 font-mono font-bold text-orange-600">
                                   {u.trigram}
                                 </td>
@@ -2875,7 +2877,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                     </span>
                                   )}
                                 </td>
-                                <td className="py-2 px-3 font-mono text-slate-500">
+                                <td className="py-2 px-3 font-mono text-slate-500 max-w-[14rem] truncate" title={u.email || undefined}>
                                   {u.email || '—'}
                                 </td>
                                 <td className="py-2 px-3">{u.department || '—'}</td>
@@ -2887,7 +2889,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                                     <span className="text-emerald-600 font-bold">Actif</span>
                                   )}
                                 </td>
-                                <td className="py-2 px-3 text-right">
+                                <td className="py-2 px-3 text-right whitespace-nowrap sticky right-0 z-[5] bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.2)]">
                                   <div className="inline-flex items-center gap-1">
                                     <button
                                       type="button"
@@ -3256,6 +3258,13 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
           {/* ===================================================================== */}
           {/* SECTION : DÉPÔTS, MAGASINS & VÉHICULES (Filtres, Tri & Unicité)        */}
           {/* ===================================================================== */}
+          {depotToDeleteDialog && (
+            <DepotDeleteDialog
+              depot={depotToDeleteDialog}
+              onClose={() => setDepotToDeleteDialog(null)}
+              onDeleted={() => setErrorMessage(null)}
+            />
+          )}
           {section === 'depots' && (
             <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
               <div className="flex items-center justify-between">
@@ -3534,10 +3543,7 @@ export const DesktopSettingsPage: React.FC<DesktopSettingsPageProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={async () => {
-                              const res = await deleteDepot(d.id);
-                              if (!res.success) setErrorMessage(res.message);
-                            }}
+                            onClick={() => setDepotToDeleteDialog(d)}
                             className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-rose-50 text-rose-600 cursor-pointer"
                             title="Supprimer ce dépôt"
                           >

@@ -6,6 +6,7 @@ import {
   useRegisterUnsavedForm,
 } from '../services/unsavedChangesGuard';
 import { useApp } from '../context/AppContext';
+import { DepotDeleteDialog } from './DepotDeleteDialog';
 import { SearchableSelect } from './SearchableSelect';
 import {
   X,
@@ -1618,111 +1619,17 @@ FOR EACH ROW EXECUTE FUNCTION public.check_license_depot_quota();
               </div>
             )}
 
-            {/* Delete Confirmation Modal / Card Overlay */}
+            {/* Suppression d'un dépôt : migration obligatoire du contenu (v5.24.0) */}
             {depotToDelete && (
-              <div className="mt-1.5 p-3 rounded-2xl bg-rose-50/95 dark:bg-rose-950/90 border-2 border-rose-300 dark:border-rose-800 text-xs shadow-lg animate-fadeIn shrink-0">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-xl bg-rose-200 dark:bg-rose-900/80 text-rose-700 dark:text-rose-300 flex items-center justify-center shrink-0">
-                    <AlertTriangle className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-black text-rose-900 dark:text-rose-100 text-sm">
-                      {tr(language, `Supprimer le dépôt « ${depotToDelete.name} » ?`, `Delete depot "${depotToDelete.name}"?`)}
-                    </h3>
-
-                    {productsInDepotToDelete.length === 0 ? (
-                      <p className="text-slate-600 dark:text-slate-300 mt-1">
-                        {tr(language, "Aucune référence n'est rattachée à ce dépôt. La suppression sera immédiate et répercutée dans Supabase.", 'No items are linked to this depot. Deletion will take effect immediately and sync with Supabase.')}
-                      </p>
-                    ) : (
-                      <div className="mt-2 space-y-2">
-                        <p className="text-rose-800 dark:text-rose-200 font-semibold">
-                          {language === 'fr' ? (
-                            <>
-                              Attention : <strong>{productsInDepotToDelete.length} référence(s)</strong> sont actuellement stockées dans ce dépôt.
-                            </>
-                          ) : (
-                            <>
-                              Warning: <strong>{productsInDepotToDelete.length} item(s)</strong> are currently stored in this depot.
-                            </>
-                          )}
-                        </p>
-
-                        <div className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-rose-200 dark:border-rose-900 space-y-2">
-                          <div className="font-bold text-slate-800 dark:text-slate-200">
-                            {tr(language, 'Que souhaitez-vous faire de ces références ?', 'What would you like to do with these items?')}
-                          </div>
-
-                          {otherDepotOptions.length > 0 && (
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="reassignChoice"
-                                checked={reassignAction === 'transfer'}
-                                onChange={() => setReassignAction('transfer')}
-                                className="text-amber-600 focus:ring-amber-500"
-                              />
-                              <span className="font-medium text-slate-700 dark:text-slate-300">
-                                {tr(language, 'Transférer vers un autre dépôt :', 'Transfer to another depot:')}
-                              </span>
-                              <SearchableSelect
-                                value={targetTransferDepot}
-                                disabled={reassignAction !== 'transfer'}
-                                onChange={(val) => setTargetTransferDepot(val)}
-                                recentKey="depots"
-                                className="ml-1 px-2 py-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-bold text-xs outline-none focus:ring-1 focus:ring-amber-500"
-                              >
-                                {otherDepotOptions.map((opt) => (
-                                  <option key={opt.id} value={opt.name}>
-                                    {opt.name} {opt.code ? `(${opt.code})` : ''}
-                                  </option>
-                                ))}
-                              </SearchableSelect>
-                            </label>
-                          )}
-
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="radio"
-                              name="reassignChoice"
-                              checked={reassignAction === 'detach'}
-                              onChange={() => setReassignAction('detach')}
-                              className="text-amber-600 focus:ring-amber-500"
-                            />
-                            <span className="font-medium text-slate-700 dark:text-slate-300">
-                              {tr(language, 'Détacher les références (conserver le stock sans magasin attribué)', 'Detach items (keep stock with no assigned depot)')}
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-rose-200/80 dark:border-rose-900/80">
-                      <button
-                        type="button"
-                        onClick={() => setDepotToDelete(null)}
-                        disabled={isDeleting}
-                        className="px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs hover:bg-white dark:hover:bg-slate-800 transition cursor-pointer"
-                      >
-                        {tr(language, 'Annuler', 'Cancel')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={executeDelete}
-                        disabled={isDeleting}
-                        className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs flex items-center gap-1.5 shadow transition cursor-pointer disabled:opacity-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>
-                          {isDeleting
-                            ? tr(language, 'Suppression en cours...', 'Deleting...')
-                            : tr(language, 'Confirmer la suppression', 'Confirm Delete')}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <DepotDeleteDialog
+                depot={depotToDelete}
+                onClose={() => setDepotToDelete(null)}
+                onDeleted={(message) => {
+                  setSuccessMessage(message);
+                  if (editingDepotId === depotToDelete.id) resetForm();
+                  setTimeout(() => setSuccessMessage(null), 4000);
+                }}
+              />
             )}
 
             {/* Collapsible SQL Table Creation Guide */}

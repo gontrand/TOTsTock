@@ -289,6 +289,24 @@ export const EmailSettingsPanel: React.FC<EmailSettingsPanelProps> = ({
       return;
     }
 
+    if (provider === 'msgraph') {
+      const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const domain = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+      const tenant = msgraphTenantId.trim();
+      if (!tenant || !(guid.test(tenant) || domain.test(tenant)) || !guid.test(msgraphClientId.trim())) {
+        setMsg({
+          type: 'error',
+          text: tr(
+            language,
+            'Microsoft 365 : Tenant ID (GUID ou domaine) et Client ID (GUID) valides requis.',
+            'Microsoft 365: a valid Tenant ID (GUID or domain) and Client ID (GUID) are required.',
+            'Microsoft 365: een geldig Tenant ID (GUID of domein) en Client ID (GUID) zijn vereist.'
+          ),
+        });
+        return;
+      }
+    }
+
     if (provider === 'smtp' && !host.trim()) {
       setMsg({
         type: 'error',
@@ -525,6 +543,19 @@ export const EmailSettingsPanel: React.FC<EmailSettingsPanelProps> = ({
   };
 
   const handleSaveSenderRow = async (row: MailSenderRecord) => {
+    const fromNameLen = (row.from_name || '').trim().length;
+    if (fromNameLen < 1 || fromNameLen > 120) {
+      setMsg({
+        type: 'error',
+        text: tr(
+          language,
+          `Le nom affiché (from_name) de ${row.app_code.toUpperCase()} doit contenir entre 1 et 120 caractères.`,
+          `The display name (from_name) for ${row.app_code.toUpperCase()} must be 1 to 120 characters long.`,
+          `De weergavenaam (from_name) voor ${row.app_code.toUpperCase()} moet 1 tot 120 tekens bevatten.`
+        ),
+      });
+      return;
+    }
     if (row.from_email && !isValidEmailAddress(row.from_email)) {
       setMsg({
         type: 'error',

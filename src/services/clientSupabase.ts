@@ -2820,6 +2820,78 @@ export async function deleteProductFromSupabase(
   }
 }
 
+/**
+ * v5.24.0 — Suppression multiple de références (RPC transactionnelle delete_products_bulk, étape SQL 25).
+ * Si la fonction n'existe pas encore sur la base (étape 25 non appliquée), repli par lots sur le DELETE direct.
+ */
+export async function deleteProductsBulkFromSupabase(
+  client: SupabaseClient,
+  productIds: string[]
+): Promise<{ success: boolean; deleted: number; error?: string }> {
+  const ids = Array.from(new Set(productIds.map(String).filter(Boolean)));
+  if (ids.length === 0) return { success: true, deleted: 0 };
+  try {
+    let deleted = 0;
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200);
+      const { data, error } = await client.rpc('delete_products_bulk', { p_ids: chunk });
+      if (!error) {
+        deleted += Number((data as any)?.deleted ?? chunk.length);
+        continue;
+      }
+      const msg = String(error.message || '');
+      const rpcMissing =
+        (error as any).code === 'PGRST202' ||
+        (error as any).code === '42883' ||
+        /could not find the function|does not exist/i.test(msg);
+      if (!rpcMissing) {
+        notifyRealtimeDataMutated('products');
+        return { success: false, deleted, error: msg };
+      }
+      const { error: delErr } = await client.from(TABLES.products).delete().in('id', chunk);
+      if (delErr) {
+        notifyRealtimeDataMutated('products');
+        return { success: false, deleted, error: delErr.message };
+      }
+      deleted += chunk.length;
+    }
+    notifyRealtimeDataMutated('products');
+    return { success: true, deleted };
+  } catch (err: any) {
+    return { success: false, deleted: 0, error: err?.message || 'Erreur inattendue.' };
+  }
+}
+
+/**
+ * v5.24.0 — Migration de tout le contenu d'un dépôt vers un autre (RPC migrate_depot_content, étape SQL 25).
+ * Aucun repli : sans la fonction, l'opération est refusée pour ne jamais perdre de stock.
+ */
+export async function migrateDepotContentOnSupabase(
+  client: SupabaseClient,
+  sourceName: string,
+  targetName: string
+): Promise<{ success: boolean; error?: string; missingFunction?: boolean }> {
+  try {
+    const { error } = await client.rpc('migrate_depot_content', {
+      p_source: sourceName,
+      p_target: targetName,
+    });
+    if (!error) {
+      notifyRealtimeDataMutated('products');
+      notifyRealtimeDataMutated('depots');
+      return { success: true };
+    }
+    const msg = String(error.message || '');
+    const missing =
+      (error as any).code === 'PGRST202' ||
+      (error as any).code === '42883' ||
+      /could not find the function|does not exist/i.test(msg);
+    return { success: false, error: msg, missingFunction: missing };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Erreur inattendue.' };
+  }
+}
+
 export async function upsertDepartmentToSupabase(
   client: SupabaseClient,
   dep: Department

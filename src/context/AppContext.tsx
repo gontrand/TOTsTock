@@ -120,6 +120,8 @@ import {
   formatPostgresErrorMessage,
   upsertProductToSupabase,
   deleteProductFromSupabase,
+  deleteProductsBulkFromSupabase,
+  migrateDepotContentOnSupabase,
   upsertDepartmentToSupabase,
   deleteDepartmentFromSupabase,
   upsertProjectToSupabase,
@@ -469,6 +471,7 @@ interface AppContextType {
     options?: { isNew?: boolean; editingId?: string | null }
   ) => Promise<boolean>;
   deleteProduct: (productId: string) => Promise<boolean>;
+  deleteProducts: (productIds: string[]) => Promise<{ success: boolean; deleted: number; message: string }>;
 
   // Cart & Movements
   addToCart: (product: Product, qty?: number, targetDepotName?: string) => void;
@@ -7684,6 +7687,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [products, supabaseUrl, supabaseKey, userHasPermission, currentUser, language, logActivity]);
 
+  // v5.24.0 — Suppression multiple de références (confirmation demandée côté UI)
+  const deleteProducts = useCallback(
+    async (productIds: string[]): Promise<{ success: boolean; deleted: number; message: string }> => {
+      if (!userHasPermission('perm_prod_delete')) {
+        return {
+          success: false,
+          deleted: 0,
+          message: tr(
+            language,
+            "Accès refusé : vous n'avez pas la permission de supprimer des références.",
+            'Access denied: you do not have permission to delete items.',
+            'Toegang geweigerd: u hebt geen toestemming om referenties te verwijderen.'
+          ),
+        };
+      }
+      const ids = Array.from(new Set(productIds.map(String))).filter((id) => products.some((p) => String(p.id) === id));
+      if (ids.length === 0) {
+        return { success: false, deleted: 0, message: tr(language, 'Aucune référence à supprimer.', 'No item to delete.', 'Geen referenties om te verwijderen.') };
+      }
+
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      if (client) {
+        const res = await deleteProductsBulkFromSupabase(client, ids);
+        if (!res.success) {
+          return {
+            success: false,
+            deleted: 0,
+            message: tr(
+              language,
+              `La suppression a échoué côté serveur : ${res.error || 'erreur inconnue'}. Aucune référence n'a été retirée de l'application.`,
+              `Server-side deletion failed: ${res.error || 'unknown error'}. No item was removed from the app.`,
+              `Verwijderen op de server mislukt: ${res.error || 'onbekende fout'}. Er is niets verwijderd uit de app.`
+            ),
+          };
+        }
+      }
+
+      const idSet = new Set(ids);
+      const removed = products.filter((p) => idSet.has(String(p.id)));
+      setProducts((prev) => prev.filter((p) => !idSet.has(String(p.id))));
+      setStockLevels((prev) => prev.filter((sl) => !idSet.has(String(sl.product_id))));
+      setActiveProductId(null);
+
+      logActivity({
+        type: 'PRODUCT_DELETED',
+        category: 'SYSTEM',
+        title: tr(language, 'Articles supprimés (lot)', 'Products deleted (batch)', 'Artikelen verwijderd (batch)'),
+        description:
+          `${ids.length} ` +
+          tr(language, 'référence(s) : ', 'item(s): ', 'referentie(s): ') +
+          removed
+            .slice(0, 10)
+            .map((p) => p.reference)
+            .join(', ') +
+          (removed.length > 10 ? '…' : ''),
+        user_name: currentUser?.name || 'Administrateur',
+        user_trigram: currentUser?.trigram || 'ADM',
+        meta: { status: 'warning', count: ids.length },
+      });
+
+      return {
+        success: true,
+        deleted: ids.length,
+        message: tr(
+          language,
+          `${ids.length} référence(s) supprimée(s).`,
+          `${ids.length} item(s) deleted.`,
+          `${ids.length} referentie(s) verwijderd.`
+        ),
+      };
+    },
+    [products, supabaseUrl, supabaseKey, userHasPermission, currentUser, language, logActivity]
+  );
+
   // Inventory Reconciliation & Stock Adjustments (LOT 1 & LOT 3 via commitStockMovement)
   const applyInventoryAdjustments = useCallback(
     async (
@@ -8563,25 +8640,87 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (id: string | number, reassignToDepotName?: string) => {
       const target = depots.find((d) => String(d.id) === String(id));
       if (!target) return { success: false, message: 'Dépôt introuvable.' };
+      const targetKey = target.name.toLowerCase();
 
-      // Check if products are tied to this depot
-      const affectedProducts = products.filter(
-        (p) => p.store_name?.toLowerCase() === target.name.toLowerCase()
-      );
+      // Références et lignes de stock rattachées à ce dépôt
+      const affectedProducts = products.filter((p) => p.store_name?.toLowerCase() === targetKey);
+      const affectedStockLines = stockLevels.filter((sl) => String(sl.depot_name || '').toLowerCase() === targetKey);
+      const hasContent = affectedProducts.length > 0 || affectedStockLines.length > 0;
 
-      if (affectedProducts.length > 0 && reassignToDepotName === undefined) {
+      if (hasContent && reassignToDepotName === undefined) {
         return {
           success: false,
-          message: `Impossible de supprimer "${target.name}" : ${affectedProducts.length} référence(s) y sont rattachée(s).`,
+          message: `Impossible de supprimer "${target.name}" : ${affectedProducts.length} référence(s) et ${affectedStockLines.length} ligne(s) de stock y sont rattachées. Migrez d'abord son contenu vers un autre dépôt.`,
         };
       }
 
-      // Reassign or detach affected products
-      if (affectedProducts.length > 0 && reassignToDepotName !== undefined) {
-        const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const client = getClientSupabase(supabaseUrl, supabaseKey);
+      const isTransfer = hasContent && Boolean(reassignToDepotName);
+
+      if (isTransfer) {
+        const dest = depots.find((d) => d.name.toLowerCase() === String(reassignToDepotName).toLowerCase());
+        if (!dest) return { success: false, message: 'Dépôt de destination introuvable.' };
+        if (String(dest.id) === String(target.id)) {
+          return { success: false, message: 'Le dépôt de destination doit être différent du dépôt à supprimer.' };
+        }
+
+        // 1) Migration côté serveur (transactionnelle). Échec = rien n'est supprimé.
+        if (client) {
+          const mig = await migrateDepotContentOnSupabase(client, target.name, dest.name);
+          if (!mig.success) {
+            return {
+              success: false,
+              message: mig.missingFunction
+                ? "La migration de dépôt nécessite l'étape SQL 25 (migrate_depot_content) : exécutez dist/install.sql ou supabase-client/25_bulk_delete_and_depot_migration.sql dans Supabase, puis réessayez. Rien n'a été supprimé."
+                : `La migration du contenu a échoué : ${mig.error || 'erreur inconnue'}. Rien n'a été supprimé.`,
+            };
+          }
+        }
+
+        // 2) Migration locale : lignes de stock fusionnées (somme) ou déplacées, références rattachées
+        const destKey = dest.name.toLowerCase();
+        setStockLevels((prev) => {
+          const destByProduct = new Map<string, StockLevel>();
+          prev.forEach((sl) => {
+            if (String(sl.depot_name || '').toLowerCase() === destKey) destByProduct.set(String(sl.product_id), sl);
+          });
+          const next: StockLevel[] = [];
+          const mergedIntoDest = new Map<string, StockLevel>();
+          prev.forEach((sl) => {
+            if (String(sl.depot_name || '').toLowerCase() !== targetKey) {
+              next.push(sl);
+              return;
+            }
+            const pid = String(sl.product_id);
+            const existing = destByProduct.get(pid);
+            if (existing) {
+              const base = mergedIntoDest.get(pid) || existing;
+              mergedIntoDest.set(pid, {
+                ...base,
+                quantity: Number(base.quantity || 0) + Number(sl.quantity || 0),
+                min_alert: Math.max(Number(base.min_alert || 0), Number(sl.min_alert || 0)),
+                rack_location: base.rack_location || sl.rack_location,
+              });
+            } else {
+              next.push({ ...sl, depot_name: dest.name });
+            }
+          });
+          return next.map((sl) => {
+            if (String(sl.depot_name || '').toLowerCase() === destKey) {
+              const merged = mergedIntoDest.get(String(sl.product_id));
+              if (merged) return merged;
+            }
+            return sl;
+          });
+        });
+        setProducts((prev) =>
+          prev.map((p) => (p.store_name?.toLowerCase() === targetKey ? { ...p, store_name: dest.name } : p))
+        );
+      } else if (affectedProducts.length > 0 && reassignToDepotName !== undefined) {
+        // Détachement : les références n'ont plus de dépôt principal attribué
         setProducts((prev) =>
           prev.map((p) => {
-            if (p.store_name?.toLowerCase() === target.name.toLowerCase()) {
+            if (p.store_name?.toLowerCase() === targetKey) {
               const updated = { ...p, store_name: reassignToDepotName };
               if (client) {
                 upsertProductToSupabase(client, updated).catch((err) =>
@@ -8596,23 +8735,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       setDepots((prev) => prev.filter((d) => String(d.id) !== String(id)));
-      const client = getClientSupabase(supabaseUrl, supabaseKey);
       if (client) {
         deleteDepotFromSupabase(client, id, target.name).catch((err) =>
           console.warn('Erreur delete depot Supabase:', err)
         );
       }
 
+      if (isTransfer) {
+        logActivity({
+          type: 'DEPOT_UPDATED',
+          category: 'SYSTEM',
+          title: tr(language, 'Dépôt supprimé après migration', 'Depot deleted after migration', 'Depot verwijderd na migratie'),
+          description: `${target.name} → ${reassignToDepotName} (${affectedProducts.length} réf., ${affectedStockLines.length} ligne(s) de stock)`,
+          user_name: currentUser?.name || 'Administrateur',
+          user_trigram: currentUser?.trigram || 'ADM',
+          meta: { status: 'warning' },
+        });
+      }
+
       return {
         success: true,
         message: `Dépôt "${target.name}" supprimé avec succès.${
-          affectedProducts.length > 0
-            ? ` (${affectedProducts.length} référence(s) ${reassignToDepotName ? `transférée(s) vers « ${reassignToDepotName} »` : 'détachée(s)'})`
+          hasContent
+            ? ` (${affectedProducts.length} référence(s) et ${affectedStockLines.length} ligne(s) de stock ${reassignToDepotName ? `migrée(s) vers « ${reassignToDepotName} »` : 'détachée(s)'})`
             : ''
         }`,
       };
     },
-    [depots, products, supabaseUrl, supabaseKey]
+    [depots, products, stockLevels, supabaseUrl, supabaseKey, language, currentUser, logActivity]
   );
 
   const toggleDepotStatus = useCallback(
@@ -8781,6 +8931,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       canViewPrices,
       saveProduct,
       deleteProduct,
+      deleteProducts,
       addToCart,
       updateCartQty,
       updateCartItemDepot,
@@ -9023,6 +9174,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       userHasPermission,
       saveProduct,
       deleteProduct,
+      deleteProducts,
       addToCart,
       updateCartQty,
       updateCartItemDepot,

@@ -1197,7 +1197,7 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
       if (savedUserRaw) {
         const savedUser = JSON.parse(savedUserRaw);
         const roleId = Number(savedUser?.role_id);
-        if (isAdminLevel(user)) {
+        if (isAdminLevel({ ...savedUser, role_id: roleId })) {
           return true;
         }
         const savedRolesRaw = localStorage.getItem('tot_inv_roles');
@@ -1206,7 +1206,11 @@ async function canCurrentUserDiscoverLicense(client: any, authUser?: any): Promi
           if (Array.isArray(savedRoles)) {
             const matchingRole = savedRoles.find((r: any) => Number(r?.id) === roleId);
             if (matchingRole && Array.isArray(matchingRole.permissions)) {
-              return matchingRole.permissions.includes('perm_config_license');
+              return (
+                matchingRole.permissions.includes('*') ||
+                matchingRole.permissions.includes('perm_admin_level') ||
+                matchingRole.permissions.includes('perm_config_license')
+              );
             }
           }
         }
